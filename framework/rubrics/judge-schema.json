@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["score", "passed", "checks", "reason"],
+  "properties": {
+    "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "通过项占比 0~1" },
+    "passed": { "type": "boolean", "description": "是否达标：无 red_line fail 且所有非 pending check 全 pass" },
+    "checks": {
+      "type": "array",
+      "description": "逐条 checklist 结果，必须覆盖 rubric.md 中每个 CHECK/RED id",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "pass"],
+        "properties": {
+          "id": { "type": "string" },
+          "pass": { "type": "boolean", "description": "pending-user 时为 false 但 judged_by=user 区分" },
+          "note": { "type": "string" },
+          "layer": { "type": "string", "enum": ["static", "logic", "run"] },
+          "red_line": { "type": "boolean", "description": "是否崩溃级硬线（一票否决）" },
+          "judged_by": { "type": "string", "enum": ["auto", "llm", "user"] }
+        }
+      }
+    },
+    "reason": { "type": "string" }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "target": "<target-name>",
+  "baseline": true,
+  "isolate": true,
+  "budget_usd": 0.5,
+  "timeout_secs": 600
+}
