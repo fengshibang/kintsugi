@@ -2,8 +2,9 @@
 # evals 共享库 —— 被 runner.sh / judge.sh / run_all.sh source
 # 依赖：claude CLI、bash、python3、GNU timeout（刻意不依赖 jq/lua）
 #
-# 注意：EVALS_DIR / REPO_ROOT 按文件位置推算，不调用 git，这样即使 runner
-# cd 进临时 worktree 后本文件被重新 source，也不会误把 worktree 根当成仓库根。
+# FRAMEWORK_DIR 按文件位置推算（插件内只读框架目录），不调用 git，这样即使
+# runner cd 进临时 worktree 后本文件被重新 source，也不会误判框架目录。
+# EVALS_DIR 由调用方显式注入（项目数据目录），脚本不猜 $PWD，保证插件只读可复用。
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-300}"
@@ -12,7 +13,8 @@ RUN_MODEL="${RUN_MODEL:-}"
 JUDGE_MODEL="${JUDGE_MODEL:-}"
 PASS_THRESHOLD="${PASS_THRESHOLD:-0.8}"
 
-EVALS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FRAMEWORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+: "${EVALS_DIR:?未设置 EVALS_DIR：请指向项目数据目录，如 <repo>/.claude/evals（例：EVALS_DIR=.claude/evals bash framework/run_all.sh）}"
 REPO_ROOT="$(cd "$EVALS_DIR/../.." && pwd)"
 RUNS_DIR="$EVALS_DIR/runs"
 REPORT_DIR="$EVALS_DIR/report"
