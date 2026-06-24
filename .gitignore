@@ -1,0 +1,4 @@
+runs/
+report/*.json
+report/report.md
+__pycache__/
