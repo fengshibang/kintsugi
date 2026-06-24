@@ -1,5 +1,5 @@
 {
-  "name": "mentor-kit-dev",
+  "name": "mentor-kit",
   "owner": { "name": "RougeLua" },
   "plugins": [
     { "name": "mentor-kit", "source": "./" }

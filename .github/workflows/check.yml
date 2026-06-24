@@ -1,0 +1,35 @@
+name: check
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash 语法检查
+        run: |
+          set -e
+          for f in framework/*.sh framework/lib/*.sh; do
+            [ -f "$f" ] || continue
+            bash -n "$f"
+          done
+
+      - name: python 语法检查
+        run: |
+          set -e
+          for f in framework/*.py framework/lib/*.py; do
+            [ -f "$f" ] || continue
+            python3 -m py_compile "$f"
+          done
+
+      - name: JSON 有效性
+        run: |
+          set -e
+          python3 -m json.tool .claude-plugin/plugin.json > /dev/null
+          python3 -m json.tool .claude-plugin/marketplace.json > /dev/null

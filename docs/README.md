@@ -48,12 +48,21 @@ EVALS_DIR=/path/to/your/evals bash "${CLAUDE_PLUGIN_ROOT}/framework/run_all.sh"
 
 ## 安装
 
-本地 marketplace（开发期）。在 `~/.claude/settings.json` 配置（`path` 换成本机插件实际路径）：
+### 已发布（GitHub marketplace）
+
+```
+/plugin marketplace add fengshibang/mentor-kit
+/plugin install mentor-kit@mentor-kit
+```
+
+### 开发期（本机 directory source）
+
+在 `~/.claude/settings.json` 配置（`path` 换成本机插件实际路径）：
 ```jsonc
 {
-  "enabledPlugins": { "mentor-kit@local-dev": true },
+  "enabledPlugins": { "mentor-kit@mentor-kit": true },
   "extraKnownMarketplaces": {
-    "local-dev": { "source": { "source": "directory", "path": "<插件安装路径，如 /home/<user>/.claude/plugins-dev/mentor-kit>" } }
+    "mentor-kit": { "source": { "source": "directory", "path": "<插件安装路径，如 /home/<user>/.claude/plugins-dev/mentor-kit>" } }
   }
 }
 ```
