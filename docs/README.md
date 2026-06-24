@@ -80,3 +80,10 @@ EVALS_DIR=/path/to/your/evals bash "${CLAUDE_PLUGIN_ROOT}/framework/run_all.sh"
 机制是否有效 = **徒弟返工率随 eval 迭代单调下降**。三条曲线：通过率（应升）/ 往返轮数（K=3→K=1）/ eval 规模（先涨后平）。若返工率不降反升 → 某 case 写错了，回滚（数据入 git 可回滚）。
 
 设计依据：被使用项目的 `docs/superpowers/specs/` 下 `mentor-kit-plugin-design.md`。
+
+## 首次迁移回归结论（v0.1.0）
+
+- **路径解耦验证**：✅ 通过。`FRAMEWORK_DIR`（插件 framework）/ `EVALS_DIR`（项目数据）/ `REPO_ROOT` 三者正确分离；框架资源（judge-schema + lib 4 脚本 + templates）在插件可达，case 数据在项目可达，未注入 `EVALS_DIR` 时脚本报错守卫生效。
+- **语法**：✅ 全框架 `bash -n` 通过。
+- **占位符化**：✅ skills / commands / README 无 glm/qwen/war3 硬编码，无 `cd .claude/evals`。
+- **端到端 `run_all.sh` 回归**：⏳ 待补。需在装好插件的环境跑 `EVALS_DIR=<数据目录> bash "${CLAUDE_PLUGIN_ROOT}/framework/run_all.sh"`，确认现有 case 通过率不退化（`PASS_THRESHOLD=0.8`）。开发期已用路径可达性验证替代（真实跑被测 claude 会话成本高，留待首次实际使用时补跑）。
