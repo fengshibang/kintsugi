@@ -24,7 +24,7 @@ RUBRIC="$CASE_DIR/rubric.md"
 EXPECTED="$CASE_DIR/expected.md"
 PRODUCT="$RUN_DIR/product"
 CHANGED_JSON="$RUN_DIR/changed_files.json"
-SCHEMA="$EVALS_DIR/rubrics/judge-schema.json"
+SCHEMA="$FRAMEWORK_DIR/rubrics/judge-schema.json"
 
 [[ -f "$PARSED" ]] || die "找不到 parsed.json: $PARSED（先跑 runner.sh）"
 [[ -f "$RUBRIC" ]] || die "缺少 rubric.md: $RUBRIC"
@@ -35,7 +35,7 @@ JUDGE_MODEL_CFG="$(cfg_get "$CASE_DIR/config.json" judge_model "")"
 CID="$(basename "$CASE_DIR")"
 
 # 1) 解析 rubric
-CHECKS_JSON="$(python3 "$EVALS_DIR/lib/rubric.py" "$RUBRIC")"
+CHECKS_JSON="$(python3 "$FRAMEWORK_DIR/lib/rubric.py" "$RUBRIC")"
 echo "$CHECKS_JSON" > "$RUN_DIR/rubric_parsed.json"
 
 # 2) --merge-user 模式：直接读 user-verdict.json + 已有 score.json，重算
@@ -182,7 +182,7 @@ llm = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 print(json.dumps({"rubric": rubric, "auto": auto, "llm": llm}, ensure_ascii=False))
 PY
 )"
-printf '%s' "$MERGE_IN" | python3 "$EVALS_DIR/lib/judge_merge.py" > "$RUN_DIR/merge.json"
+printf '%s' "$MERGE_IN" | python3 "$FRAMEWORK_DIR/lib/judge_merge.py" > "$RUN_DIR/merge.json"
 
 python3 - "$RUN_DIR/merge.json" "$RUN_DIR/score.json" "$CID" "$MODE" <<'PY'
 import json, sys, pathlib, datetime

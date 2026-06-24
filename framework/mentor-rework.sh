@@ -25,7 +25,7 @@ CID="$(basename "$CASE_DIR")"
 [[ -f "$CASE_DIR/prompt.md" ]] || die "缺少 prompt.md"
 [[ -f "$CASE_DIR/rubric.md" ]] || die "缺少 rubric.md"
 EXPECTED_FILE="$CASE_DIR/expected.md"
-RUBRIC_PARSED="$(python3 "$EVALS_DIR/lib/rubric.py" "$CASE_DIR/rubric.md")"
+RUBRIC_PARSED="$(python3 "$FRAMEWORK_DIR/lib/rubric.py" "$CASE_DIR/rubric.md")"
 
 REWORK_DIR="$RUNS_DIR/rework-$(date +%Y%m%d-%H%M%S)-$CID"
 mkdir -p "$REWORK_DIR"
@@ -68,7 +68,7 @@ print(json.dumps({"round": rnd, "base_prompt": base, "rubric": rubric,
                   "last_score": last, "expected": expected}))
 PY
 )"
-  printf '%s' "$STAGE_IN" | python3 "$EVALS_DIR/lib/rework_stages.py" > "$ROUND_DIR/prompt.md"
+  printf '%s' "$STAGE_IN" | python3 "$FRAMEWORK_DIR/lib/rework_stages.py" > "$ROUND_DIR/prompt.md"
 
   # ---- 跑 runner（PROMPT_FILE 覆盖 prompt）----
   BL_ARG=""
