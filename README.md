@@ -11,7 +11,7 @@
 ### 已发布（GitHub marketplace）
 
 ```
-/plugin marketplace add fengshibang/mentor-kit
+/plugin marketplace add fengshibang/kintsugi
 /plugin install mentor-kit@mentor-kit
 ```
 
