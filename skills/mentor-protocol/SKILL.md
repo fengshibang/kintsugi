@@ -48,11 +48,11 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 
 **拆分时**：
 1. 师傅判断是否拆 → 不拆走一对一，拆则继续
-2. 师傅输出结构化 decomposition 计划（JSON 格式，见下方模板）
-3. 并行 spawn 多个徒弟（各自 worktree 隔离）：`Agent({ model:"haiku", isolation:"worktree", prompt:<徒弟模板> })`
-4. 每个徒弟独立完成 part → 师傅逐个三层审查
-5. 审完所有 part → spawn 集成徒弟（worktree 合并）
-6. 集成徒弟 `git merge` 所有 part + 解决冲突 + 跑通整体
+2. 师傅输出结构化 decomposition 计划（JSON 格式，见下方模板，每个 part 含 `branch` 字段）
+3. 师傅先手动 `git worktree add <path> -b <branch>` 创建 N 个 worktree（每个 worktree 一个命名分支），然后并行 spawn 多个徒弟：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<徒弟模板> })`（prompt 里传 worktree 路径 + 分支名）
+4. 每个徒弟在各自 worktree 的命名分支上完成 part → commit → 师傅逐个三层审查
+5. 审完所有 part → spawn 集成徒弟：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<集成徒弟模板> })`
+6. 集成徒弟按分支名 `git merge <branch-1> <branch-2> ...` 合并所有 part + 解决冲突 + 跑通整体
 7. 师傅对集成徒弟的产出做最终三层审查
 8. 错误沉淀：每个徒弟 + 集成徒弟各自沉淀自己的 case
 
@@ -64,6 +64,7 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
   "parts": [
     {
       "id": "part-1",
+      "branch": "part-1",
       "desc": "<part 1 具体目标>",
       "files": ["<预计改动的文件/目录>"],
       "deps": [],
@@ -71,6 +72,7 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
     },
     {
       "id": "part-2",
+      "branch": "part-2",
       "desc": "<part 2 具体目标>",
       "files": ["<预计改动的文件/目录>"],
       "deps": ["part-1"],
@@ -90,7 +92,8 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 【崩溃级硬红线】<仅极少数会导致静默失效/全局崩的硬约束，≤10 条>
 【自检】产出后跑 <你的自动检查命令>，报告一并返回
 【输出】①改动清单 ②自检报告 ③不确定处明确标出
-【worktree】你工作在独立 worktree（<worktree 路径>），改动只在本 worktree，不要动 main 分支
+【worktree】你工作在独立 worktree（<worktree 路径>），分支 <part-N>，改动只在本 worktree 的该分支，不要动 main 分支
+【分支】在本 worktree 的分支 <part-N> 上 commit 你的改动
 ```
 
 ### 集成徒弟 prompt 模板
@@ -100,10 +103,12 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 ```
 【任务】将以下 part 的改动合并到 main 分支，解决冲突，确保整体跑通
 【part 列表】
-- part-1: <改动清单>，worktree: <路径>
-- part-2: <改动清单>，worktree: <路径>
+- part-1: <改动清单>，分支: part-1
+- part-2: <改动清单>，分支: part-2
+【合并前检查】
+1. 确认每个 part 的分支已 commit（在各自 worktree 检查 git status）
 【合并策略】
-1. 逐个 git merge 各 part 的 worktree 到 main
+1. 按分支名逐个 git merge <branch-1> <branch-2> ... 到 main
 2. 遇到冲突：按 part 的依赖关系解决（依赖方优先）
 3. 合并后跑 <整体验证命令>，确保整体跑通
 【输出】①合并日志 ②冲突解决记录 ③整体验证结果 ④不确定处明确标出
@@ -111,9 +116,14 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 
 ### worktree 生命周期
 
-- **创建**：师傅 spawn 徒弟时，用 `Agent({ isolation: "worktree" })`，每个徒弟自动获得独立 worktree
-- **合并**：集成徒弟在 main worktree 执行 `git merge <worktree-branch>`
-- **清理**：集成徒弟合并完成后，自动清理 worktree（`git worktree remove`）
+师傅拥有 worktree 全生命周期：
+
+- **创建**：师傅用 `git worktree add <path> -b <branch>` 创建 worktree + 命名分支（每个 part 一个 worktree）
+- **分配**：师傅 spawn 徒弟时传 worktree 路径 + 分支名
+- **合并**：集成徒弟按分支名 `git merge <branch-1> <branch-2> ...` 合并到 main
+- **清理**：师傅在集成徒弟完成后 `git worktree remove <path>` 清理所有 part worktree
+
+徒弟只负责在分配的 worktree 分支上 commit，不参与 worktree 创建/清理。
 
 **非 git 项目退化**：
 - 无 worktree，每个徒弟串行改（师傅审完一个再下一个）
