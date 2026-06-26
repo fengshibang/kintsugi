@@ -37,13 +37,13 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Agent", "Skill", "
 
 1'. **师傅输出 decomposition 计划**：JSON 格式（part 列表、依赖关系、并行组）
 
-2'. **并行 spawn 多个徒弟**：`Agent({ model:"haiku", isolation:"worktree", prompt:<徒弟模板> })`。每个徒弟只负责一个 part。
+2'. **师傅创建 worktree + 并行 spawn 多个徒弟**：师傅先手动 `git worktree add <path> -b <branch>` 创建 N 个 worktree（每个 worktree 一个命名分支），然后并行 spawn 徒弟：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<徒弟模板> })`（prompt 里传 worktree 路径 + 分支名）。每个徒弟只负责一个 part，在各自 worktree 的命名分支上 commit。
 
 3'. **师傅逐个三层审查**：每个徒弟完成后，师傅独立三层审查（静态/逻辑/运行）
 
 4'. **fail → 监督返工**：每个徒弟独立走 rework 三阶段（R1/R2/R3），互不影响
 
-5'. **审完所有 part → spawn 集成徒弟**：`Agent({ model:"haiku", isolation:"worktree", prompt:<集成徒弟模板> })`。集成徒弟负责 `git merge` 所有 part + 解决冲突 + 跑通整体。
+5'. **审完所有 part → spawn 集成徒弟**：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<集成徒弟模板> })`。集成徒弟负责按分支名 `git merge <branch-1> <branch-2> ...` 合并所有 part + 解决冲突 + 跑通整体。
 
 6'. **师傅对集成徒弟产出做最终三层审查**：三层审查（静态：合并无冲突 / 逻辑：接口对齐 / 运行：整体跑通）
 
