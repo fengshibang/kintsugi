@@ -11,6 +11,25 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 
 **模型路由**（用户 `~/.claude/settings.json` env 配置）：`opus` 槽 = 师傅（主会话/检查者），`haiku`/`sonnet` 槽 = 徒弟（子代理/产出者）。spawn 徒弟 = `Agent({ model:"haiku" })`，零额外配置。具体哪个模型占哪个槽由用户 env 决定，本协议只认这个抽象映射。
 
+## 拆分判断（默认不拆）
+
+**默认行为**：不拆分，走现有 mentor-protocol 一对一师徒循环。
+
+**什么时候拆**（满足任一即可）：
+- 任务天然跨多个独立模块/层（如"加一个前端组件 + 后端接口 + 数据库表"）
+- 任务内有明显可并行的独立子任务（如"迁移 A 模块 + 迁移 B 模块"，互不依赖）
+- 任务规模大，单徒弟容易上下文爆炸或反复失败
+
+**什么时候不拆**（护栏，防止过度拆分）：
+- 一个徒弟能在合理范围内独立完成 + 独立验证 → 不拆
+- 子任务之间耦合紧密（改 A 必须同步改 B 才能跑通）→ 不拆
+- 任务本身很小（几分钟能搞定）→ 不拆
+- 探索性/调研性任务 → 不拆（走师傅直接做）
+
+**师傅的判断输出**：
+- 决定不拆 → 直接走现有 mentor-protocol 一对一流程（零变化）
+- 决定拆 → 输出结构化 decomposition 计划（表格/JSON：part 列表、依赖关系、并行组）
+
 ## When to Use
 
 **启用**：徒弟产出的重复类任务（<你的重复任务领域>）有质量问题；用户说"带徒弟""监督返工""优化 skill"；徒弟代码出现运行崩溃 / 功能失效 / 规范违背。
@@ -22,6 +41,83 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 ① 检查（师傅三层审徒弟产出，定位根因）→ ② 监督返工（师傅喂问题+判定标准+根因给徒弟，绝不亲手改）→ ③ 错误沉淀（这错值得沉淀成 eval case 吗？崩溃级/反复犯/CHK 未覆盖 → 入 cases/）→ 循环。
 
 **灵魂动作**：徒弟每次犯错，师傅强制自问——"这错，值得沉淀成 eval case 吗？"
+
+## 多徒弟编排流程（拆分时）
+
+**不拆分时**：走现有 mentor-protocol 一对一流程（零变化）
+
+**拆分时**：
+1. 师傅判断是否拆 → 不拆走一对一，拆则继续
+2. 师傅输出结构化 decomposition 计划（JSON 格式，见下方模板）
+3. 并行 spawn 多个徒弟（各自 worktree 隔离）：`Agent({ model:"haiku", isolation:"worktree", prompt:<徒弟模板> })`
+4. 每个徒弟独立完成 part → 师傅逐个三层审查
+5. 审完所有 part → spawn 集成徒弟（worktree 合并）
+6. 集成徒弟 `git merge` 所有 part + 解决冲突 + 跑通整体
+7. 师傅对集成徒弟的产出做最终三层审查
+8. 错误沉淀：每个徒弟 + 集成徒弟各自沉淀自己的 case
+
+### decomposition 计划模板
+
+```json
+{
+  "task": "<原始任务描述>",
+  "parts": [
+    {
+      "id": "part-1",
+      "desc": "<part 1 具体目标>",
+      "files": ["<预计改动的文件/目录>"],
+      "deps": [],
+      "verify": "<独立验证方式>"
+    },
+    {
+      "id": "part-2",
+      "desc": "<part 2 具体目标>",
+      "files": ["<预计改动的文件/目录>"],
+      "deps": ["part-1"],
+      "verify": "<独立验证方式>"
+    }
+  ],
+  "parallel_groups": [["part-1"], ["part-2"]]
+}
+```
+
+### 徒弟 prompt 模板（多徒弟场景）
+
+复用现有徒弟 prompt 模板，但每个徒弟只负责一个 part：
+
+```
+【任务】<part 的具体目标 + 基线参照>
+【崩溃级硬红线】<仅极少数会导致静默失效/全局崩的硬约束，≤10 条>
+【自检】产出后跑 <你的自动检查命令>，报告一并返回
+【输出】①改动清单 ②自检报告 ③不确定处明确标出
+【worktree】你工作在独立 worktree（<worktree 路径>），改动只在本 worktree，不要动 main 分支
+```
+
+### 集成徒弟 prompt 模板
+
+集成徒弟专门负责 merge + 冲突解决 + 跑通整体：
+
+```
+【任务】将以下 part 的改动合并到 main 分支，解决冲突，确保整体跑通
+【part 列表】
+- part-1: <改动清单>，worktree: <路径>
+- part-2: <改动清单>，worktree: <路径>
+【合并策略】
+1. 逐个 git merge 各 part 的 worktree 到 main
+2. 遇到冲突：按 part 的依赖关系解决（依赖方优先）
+3. 合并后跑 <整体验证命令>，确保整体跑通
+【输出】①合并日志 ②冲突解决记录 ③整体验证结果 ④不确定处明确标出
+```
+
+### worktree 生命周期
+
+- **创建**：师傅 spawn 徒弟时，用 `Agent({ isolation: "worktree" })`，每个徒弟自动获得独立 worktree
+- **合并**：集成徒弟在 main worktree 执行 `git merge <worktree-branch>`
+- **清理**：集成徒弟合并完成后，自动清理 worktree（`git worktree remove`）
+
+**非 git 项目退化**：
+- 无 worktree，每个徒弟串行改（师傅审完一个再下一个）
+- 集成徒弟退化为"汇总徒弟"（汇总所有改动，确保不冲突）
 
 ## 三层检查（不同问题用不同手段）
 
@@ -84,6 +180,9 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 | 修了错不沉淀 | 每个错必走灵魂动作 → 沉淀成 eval case（入 cases/） |
 | 盲信徒弟注释"已验证" | 独立 grep 复核 |
 | 把运行层丢给徒弟自检 | 运行层只能用户/环境实跑，师傅主动索要报错/现象 |
+| 过度拆分（任务小/耦合紧却拆了） | 默认不拆，只有任务确实跨独立模块/可并行才拆 |
+| 集成徒弟失败不沉淀 | 集成失败必须沉淀根因（依赖判断错/文件边界错/接口不对齐） |
+| 非 git 项目用 worktree | 非 git 项目退化为串行，无 worktree |
 
 ## 毕业标准
 
@@ -93,3 +192,23 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 - 运行层：用户运行回填全 pass（无 pending）
 
 任一 case 任一层失败 → 回退协作期，补 eval case 或强化硬红线。
+
+## 多徒弟场景适配
+
+### 错误沉淀
+
+**沉淀时机**：
+- 每个徒弟 part 失败 → 沉淀该徒弟的错
+- 集成徒弟失败 → 沉淀集成失败的根因
+- 师傅拆分判断错误（如应该串行但拆成并行）→ 沉淀拆分判断的错
+
+**沉淀类型**：
+- **part 级 case**：徒弟 part 犯的错（与现有 case 一致）
+- **集成级 case**（`integrate-<seq>`）：集成徒弟犯的错（记录合并冲突/接口不对齐的模式）
+- **拆分判断 case**（`decompose-<seq>`）：师傅拆分判断的错（记录依赖判断/文件边界划错的模式）
+
+### 毕业标准
+
+- 徒弟 part 级毕业：连续通过 N=5 个同类 part 级 case（与现有标准一致）
+- 集成徒弟毕业：连续通过 N=3 个集成级 case（合并无冲突 / 整体跑通）
+- 师傅拆分判断毕业：连续通过 N=3 个任务，拆分判断无错（依赖判断正确 / 文件边界无重叠）
