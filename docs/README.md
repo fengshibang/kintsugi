@@ -61,8 +61,8 @@ EVALS_DIR=/path/to/your/evals bash "${CLAUDE_PLUGIN_ROOT}/framework/run_all.sh"
 **worktree 生命周期**（师傅拥有全生命周期）：
 - **创建**：师傅用 `git worktree add <path> -b <branch>` 创建 worktree + 命名分支
 - **分配**：师傅 spawn 徒弟时传 worktree 路径 + 分支名
-- **合并**：集成徒弟按分支名 `git merge <branch-1> <branch-2> ...` 合并到 main
-- **清理**：师傅在集成完成后 `git worktree remove <path>` 清理所有 part worktree
+- **合并**：集成徒弟逐个 `git merge <branch-N>` 到 <仓库默认分支>（明确逐个合并，不要用 octopus merge）
+- **清理**：师傅在集成完成后 `git worktree remove <path>` 清理所有 part worktree，并删除已合并的 part 分支（`git branch -d <part-N>`）
 
 ## 安装
 
