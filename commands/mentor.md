@@ -1,7 +1,7 @@
 ---
 description: 带徒弟做任务,走师徒试错循环(师傅监督不亲自改)
 argument-hint: <任务描述>
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Agent", "Skill", "Read", "Grep"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Bash(git worktree:*)", "Bash(git merge:*)", "Bash(git checkout:*)", "Bash(git branch:*)", "Agent", "Skill", "Read", "Grep"]
 ---
 
 用户要带徒弟（主会话模型=师傅，Agent model:haiku=徒弟）做任务：**$ARGUMENTS**
@@ -13,7 +13,7 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Agent", "Skill", "
 0. **拆分判断**（默认不拆）：
    - 判断任务是否需要拆分（跨独立模块/可并行/规模大）
    - 不拆 → 走步骤 1-6（现有 mentor-protocol 一对一流程）
-   - 拆 → 走步骤 1-6'（多徒弟编排流程，见下方）
+   - 拆 → 走步骤 1'-8'（多徒弟编排流程，见下方）
 
 1. **加载师傅协议**：用 Skill 工具加载 `mentor-protocol`，理解试错循环 + 三层检查 + 徒弟模板。
 
@@ -43,7 +43,7 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Agent", "Skill", "
 
 4'. **fail → 监督返工**：每个徒弟独立走 rework 三阶段（R1/R2/R3），互不影响
 
-5'. **审完所有 part → spawn 集成徒弟**：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<集成徒弟模板> })`。集成徒弟负责按分支名 `git merge <branch-1> <branch-2> ...` 合并所有 part + 解决冲突 + 跑通整体。
+5'. **审完所有 part → spawn 集成徒弟**：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<集成徒弟模板> })`。集成徒弟负责逐个 `git merge <branch-N>` 到默认分支合并所有 part + 解决冲突 + 跑通整体。
 
 6'. **师傅对集成徒弟产出做最终三层审查**：三层审查（静态：合并无冲突 / 逻辑：接口对齐 / 运行：整体跑通）
 
@@ -53,6 +53,8 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Agent", "Skill", "
    - 师傅拆分判断错误 → 沉淀拆分判断 case（`decompose-<seq>`）
 
 8'. **集成徒弟失败 → 师傅接手**：师傅必须沉淀"为何集成失败"（依赖判断错/文件边界错/接口不对齐）
+
+9'. **清理**：师傅清理所有 part worktree（`git worktree remove <path>`）+ 删除已合并的 part 分支（`git branch -d <part-N>`）
 
 汇报格式：徒弟改了什么 / 三层审查结果（静态过没、逻辑对照结论、运行层待验证项）/ 是否沉淀新 case / rework 轮次。
 
