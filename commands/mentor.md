@@ -10,6 +10,11 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Agent", "Skill", "
 
 执行步骤：
 
+0. **拆分判断**（默认不拆）：
+   - 判断任务是否需要拆分（跨独立模块/可并行/规模大）
+   - 不拆 → 走步骤 1-6（现有 mentor-protocol 一对一流程）
+   - 拆 → 走步骤 1-6'（多徒弟编排流程，见下方）
+
 1. **加载师傅协议**：用 Skill 工具加载 `mentor-protocol`，理解试错循环 + 三层检查 + 徒弟模板。
 
 2. **spawn 徒弟裸做**：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<徒弟模板> })`。徒弟 prompt 按 skill 的「徒弟 prompt 模板（试错版·不给答案）」组装——只给【任务】+【崩溃级硬红线】（≤10 条），**不给答案、不强制预读 CHK**，让徒弟裸做碰壁。要求徒弟返回：①改动清单 ②自检报告 ③不确定处。
@@ -28,4 +33,32 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Agent", "Skill", "
 
 6. 超 K 轮未通过 → 师傅接手完成，但**必须**把"为何反复失败"沉淀进 eval case。
 
+### 多徒弟编排流程（拆分时）
+
+1'. **师傅输出 decomposition 计划**：JSON 格式（part 列表、依赖关系、并行组）
+
+2'. **并行 spawn 多个徒弟**：`Agent({ model:"haiku", isolation:"worktree", prompt:<徒弟模板> })`。每个徒弟只负责一个 part。
+
+3'. **师傅逐个三层审查**：每个徒弟完成后，师傅独立三层审查（静态/逻辑/运行）
+
+4'. **fail → 监督返工**：每个徒弟独立走 rework 三阶段（R1/R2/R3），互不影响
+
+5'. **审完所有 part → spawn 集成徒弟**：`Agent({ model:"haiku", isolation:"worktree", prompt:<集成徒弟模板> })`。集成徒弟负责 `git merge` 所有 part + 解决冲突 + 跑通整体。
+
+6'. **师傅对集成徒弟产出做最终三层审查**：三层审查（静态：合并无冲突 / 逻辑：接口对齐 / 运行：整体跑通）
+
+7'. **错误沉淀**：
+   - 每个徒弟 part 失败 → 沉淀 part 级 case
+   - 集成徒弟失败 → 沉淀集成级 case（`integrate-<seq>`）
+   - 师傅拆分判断错误 → 沉淀拆分判断 case（`decompose-<seq>`）
+
+8'. **集成徒弟失败 → 师傅接手**：师傅必须沉淀"为何集成失败"（依赖判断错/文件边界错/接口不对齐）
+
 汇报格式：徒弟改了什么 / 三层审查结果（静态过没、逻辑对照结论、运行层待验证项）/ 是否沉淀新 case / rework 轮次。
+
+**多徒弟场景汇报格式**：
+- decomposition 计划（JSON）
+- 每个徒弟的改动清单 + 三层审查结果
+- 集成徒弟的合并日志 + 冲突解决记录 + 整体验证结果
+- 是否沉淀新 case（part 级/集成级/拆分判断级）
+- rework 轮次（每个徒弟各自统计）
