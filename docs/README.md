@@ -58,10 +58,11 @@ EVALS_DIR=/path/to/your/evals bash "${CLAUDE_PLUGIN_ROOT}/framework/run_all.sh"
 
 多徒弟编排依赖 git worktree 隔离，要求项目是 git 仓库。非 git 项目退化为串行（无 worktree，每个徒弟串行改）。
 
-**worktree 生命周期**：
-- **创建**：师傅 spawn 徒弟时，用 `Agent({ isolation: "worktree" })`，每个徒弟自动获得独立 worktree
-- **合并**：集成徒弟在 main worktree 执行 `git merge <worktree-branch>`
-- **清理**：集成徒弟合并完成后，自动清理 worktree（`git worktree remove`）
+**worktree 生命周期**（师傅拥有全生命周期）：
+- **创建**：师傅用 `git worktree add <path> -b <branch>` 创建 worktree + 命名分支
+- **分配**：师傅 spawn 徒弟时传 worktree 路径 + 分支名
+- **合并**：集成徒弟按分支名 `git merge <branch-1> <branch-2> ...` 合并到 main
+- **清理**：师傅在集成完成后 `git worktree remove <path>` 清理所有 part worktree
 
 ## 安装
 
