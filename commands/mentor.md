@@ -13,7 +13,7 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Bash(git worktree:
 0. **拆分判断**（默认不拆）：
    - 判断任务是否需要拆分（跨独立模块/可并行/规模大）
    - 不拆 → 走步骤 1-6（现有 mentor-protocol 一对一流程）
-   - 拆 → 走步骤 1'-8'（多徒弟编排流程，见下方）
+   - 拆 → 走步骤 1'-9'（多徒弟编排流程，见下方）
 
 1. **加载师傅协议**：用 Skill 工具加载 `mentor-protocol`，理解试错循环 + 三层检查 + 徒弟模板。
 
@@ -43,7 +43,7 @@ allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/framework/*:*)", "Bash(git worktree:
 
 4'. **fail → 监督返工**：每个徒弟独立走 rework 三阶段（R1/R2/R3），互不影响
 
-5'. **审完所有 part → spawn 集成徒弟**：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<集成徒弟模板> })`。集成徒弟负责逐个 `git merge <branch-N>` 到默认分支合并所有 part + 解决冲突 + 跑通整体。
+5'. **审完所有 part → spawn 集成徒弟**：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<集成徒弟模板> })`。集成徒弟负责逐个 `git merge <branch-N>` 到 `<仓库默认分支>` 合并所有 part + 解决冲突 + 跑通整体。
 
 6'. **师傅对集成徒弟产出做最终三层审查**：三层审查（静态：合并无冲突 / 逻辑：接口对齐 / 运行：整体跑通）
 

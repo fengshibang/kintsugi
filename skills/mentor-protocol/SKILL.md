@@ -48,7 +48,7 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 
 **拆分时**：
 1. 师傅判断是否拆 → 不拆走一对一，拆则继续
-2. 师傅先检测默认分支名（`git symbolic-ref refs/remotes/origin/HEAD` 或 `git remote show origin | grep 'HEAD branch'`），填入 decomposition 计划，然后输出结构化 decomposition 计划（JSON 格式，见下方模板，每个 part 含 `branch` 字段）
+2. 师傅先检测默认分支名（`git symbolic-ref refs/remotes/origin/HEAD` 或 `git remote show origin | grep 'HEAD branch'`），填入各模板的 `<仓库默认分支>` 占位符，然后输出结构化 decomposition 计划（JSON 格式，见下方模板，每个 part 含 `branch` 字段）
 3. 师傅先手动 `git worktree add <path> -b <branch>` 创建 N 个 worktree（每个 worktree 一个命名分支），然后并行 spawn 多个徒弟：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<徒弟模板> })`（prompt 里传 worktree 路径 + 分支名）
 4. 每个徒弟在各自 worktree 的命名分支上完成 part → commit → 师傅逐个三层审查
 5. 审完所有 part → spawn 集成徒弟：`Agent({ model:"haiku", subagent_type:"general-purpose", prompt:<集成徒弟模板> })`
@@ -106,7 +106,9 @@ description: Use when supervising apprentice-model-produced code (apprentice is 
 - part-1: <改动清单>，分支: part-1
 - part-2: <改动清单>，分支: part-2
 【合并前检查】
-1. 确认每个 part 的分支已 commit（在各自 worktree 检查 git status）
+1. `cd <主仓库路径>`
+2. 确认 `git branch --show-current` == `<仓库默认分支>`，否则 `git checkout <仓库默认分支>`
+3. 确认每个 part 的分支已 commit（在各自 worktree 检查 git status）
 【合并策略】
 1. 逐个 `git merge <branch-N>` 到 <仓库默认分支>（明确逐个合并，不要用 octopus merge）
 2. 遇到冲突：按 part 的依赖关系解决（依赖方优先）
