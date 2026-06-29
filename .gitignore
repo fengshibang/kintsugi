@@ -1,4 +1,19 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# mentor-kit 运行产物
 runs/
 report/*.json
 report/report.md
-__pycache__/
+
+# war3-tester 运行产物（日志、截图、测试结果）
+plugins/war3-tester/logs/
+plugins/war3-tester/server/logs/
+
+# 地图编译产物
+*.w3x
+
+# 编辑器/系统
+.DS_Store
+*.swp

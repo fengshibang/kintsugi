@@ -1,7 +1,8 @@
 {
-  "name": "mentor-kit",
-  "owner": { "name": "RougeLua" },
+  "name": "kintsugi",
+  "owner": { "name": "fengshibang" },
   "plugins": [
-    { "name": "mentor-kit", "source": "./" }
+    { "name": "mentor-kit", "source": "./plugins/mentor-kit" },
+    { "name": "war3-tester", "source": "./plugins/war3-tester" }
   ]
 }
