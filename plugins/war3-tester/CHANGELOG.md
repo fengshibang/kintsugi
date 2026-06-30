@@ -1,5 +1,20 @@
 # Changelog — war3-tester
 
+## 0.3.1 — 2026-06-30
+
+修复 **WSL 插件缓存路径导致服务无法启动**（Claude Code 把插件装进 WSL 时）。
+
+### 根因
+Claude Code 可能把插件缓存在 WSL（`\\wsl.localhost\Ubuntu\...`）。原 install.bat
+直接用插件路径装服务 → `BINARY_PATH_NAME` 指向 WSL UNC 路径 → Windows SCM 无法加载
+（"网络找不到"）→ 服务启动失败被 DISABLED。
+
+### 修复
+- **install_service.bat 改为「拷到本地再装」**：把 `nssm.exe` + `win_proxy.py` 拷到
+  `%ProgramData%\War3Tester\`（Windows 本地，LocalSystem 可访问），服务指向本地路径。
+  这样无论插件缓存在 WSL 还是本地盘，服务都能正常启动。
+- **uninstall_service.bat 用本地 nssm.exe**：即使插件缓存已删，仍可卸载（清本地目录）。
+
 ## 0.3.0 — 2026-06-30
 
 新增 **win_proxy Windows 服务一键安装**（开机自启、无 UAC、崩溃自动重启）。

@@ -92,13 +92,16 @@ python win_proxy.py stop
 ### 说明
 
 - 服务名 `War3TesterWinProxy`，启动类型「自动」，账户 LocalSystem
-- 日志：`logs/win_proxy.out.log` / `win_proxy.err.log`（1MB 轮转）
+- **文件部署**：`install_service.bat` 自动把 `nssm.exe` + `win_proxy.py` 拷到
+  `%ProgramData%\War3Tester\`（Windows 本地目录，服务可访问），服务指向本地路径。
+  这样即使 Claude Code 把插件缓存在 WSL（`\\wsl.localhost\...`），服务也能正常启动
+  （Windows SCM 不能从 WSL/UNC 路径加载 exe）
+- 日志：`%ProgramData%\War3Tester\logs\win_proxy.{out,err}.log`（1MB 轮转）
 - 崩溃自动重启（NSSM `AppExit Restart`）
 - `bin/nssm.exe` 自带（NSSM 2.24，MIT 许可可分发）
-- Python 探测顺序：`PYTHON` 环境变量 → `where python` → `py -3`
+- Python 探测顺序：`PYTHON` 环境变量 → `where python`（跳过 WindowsApps Store 别名）→ `py -3`
 
-> **首次使用**：仓库未带 `bin/nssm.exe` 时，从 https://nssm.cc/download 下载
-> `nssm-2.24.zip`，解压取 `win64\nssm.exe` 放到插件 `bin\` 目录，再运行 install。
+> **卸载会清理**：`uninstall_service.bat` 删服务 + 删 `%ProgramData%\War3Tester\` 本地目录。
 
 ## 最小契约
 
