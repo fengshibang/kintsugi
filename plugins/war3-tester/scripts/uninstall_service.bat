@@ -1,16 +1,15 @@
 @echo off
 setlocal
-chcp 65001 >nul
 
 :: ========================================
 :: War3Tester WinProxy - Windows Service Uninstaller
-:: 一键卸载 win_proxy 服务
+:: Remove the win_proxy service
 :: ========================================
 
-:: === UAC 自动提权 ===
+:: === UAC elevation ===
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [INFO] 需要管理员权限，正在提权...
+    echo [INFO] Administrator required, elevating...
     powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
@@ -23,23 +22,23 @@ set "SERVICE_NAME=War3TesterWinProxy"
 
 sc query %SERVICE_NAME% >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [INFO] 服务 %SERVICE_NAME% 不存在，无需卸载
+    echo [INFO] Service %SERVICE_NAME% does not exist, nothing to uninstall.
     pause
     exit /b 0
 )
 
-echo [INFO] 停止服务...
+echo [INFO] Stopping service...
 if exist "%NSSM%" (
     "%NSSM%" stop %SERVICE_NAME% >nul 2>&1
-    echo [INFO] 移除服务...
+    echo [INFO] Removing service...
     "%NSSM%" remove %SERVICE_NAME% confirm
 ) else (
-    :: nssm.exe 缺失，用 sc 兜底
+    :: Fallback to sc if nssm.exe is missing
     sc stop %SERVICE_NAME% >nul 2>&1
     sc delete %SERVICE_NAME%
 )
 
 echo.
-echo [OK] 服务 %SERVICE_NAME% 已卸载
+echo [OK] Service %SERVICE_NAME% uninstalled.
 echo.
 pause
