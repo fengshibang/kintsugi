@@ -72,7 +72,12 @@ if %errorlevel% equ 0 (
 
 :: === NSSM install and configure ===
 echo [INFO] Installing service %SERVICE_NAME% ...
-"%NSSM%" install %SERVICE_NAME% "%PYTHON_EXE%" "win_proxy.py start"
+:: nssm install <svc> <exe> [args...]: script name and its args must be SEPARATE
+:: args (quoted as one string "win_proxy.py start" -> python sees a single filename
+:: with a space -> file not found -> service fails to start). Split them.
+"%NSSM%" install %SERVICE_NAME% "%PYTHON_EXE%" "win_proxy.py" "start"
+:: Belt-and-suspenders: explicitly set AppParameters too
+"%NSSM%" set %SERVICE_NAME% AppParameters "win_proxy.py start"
 "%NSSM%" set %SERVICE_NAME% AppDirectory "%PLUGIN_ROOT%"
 "%NSSM%" set %SERVICE_NAME% Start SERVICE_AUTO_START
 "%NSSM%" set %SERVICE_NAME% AppStdout "%LOGS_DIR%\win_proxy.out.log"
