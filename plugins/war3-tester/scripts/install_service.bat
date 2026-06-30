@@ -40,16 +40,19 @@ if not exist "%WIN_PROXY%" (
 )
 
 :: === Detect python.exe (PYTHON env -^> where python -^> py -3) ===
+:: Skip Windows Store alias (WindowsApps\python.exe) - it's a redirect stub that
+:: does NOT work under LocalSystem service account (no user session) -> service
+:: fails to start (SERVICE_EXIT_CODE 3, empty stdout/stderr).
 set "PYTHON_EXE=%PYTHON%"
 if not defined PYTHON_EXE (
-    where python >nul 2>&1
+    for /f "delims=" %%P in ('where python 2^>nul') do (
+        echo %%P | findstr /I "WindowsApps" >nul || set "PYTHON_EXE=%%P"
+    )
+)
+if not defined PYTHON_EXE (
+    where py >nul 2>&1
     if !errorlevel! equ 0 (
-        for /f "delims=" %%P in ('where python') do set "PYTHON_EXE=%%P"
-    ) else (
-        where py >nul 2>&1
-        if !errorlevel! equ 0 (
-            for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)"') do set "PYTHON_EXE=%%P"
-        )
+        for /f "delims=" %%P in ('py -3 -c "import sys; print(sys.executable)"') do set "PYTHON_EXE=%%P"
     )
 )
 if not defined PYTHON_EXE (
