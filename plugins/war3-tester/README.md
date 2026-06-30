@@ -74,6 +74,32 @@ python win_proxy.py stop
 - 转发命令：w2l 编译、启动 KKWE/YDWE、taskkill、send_key 等
 - 原生 Windows 用户无需此步骤（直接 subprocess）
 
+## Windows 服务一键安装（开机自启）
+
+把 `win_proxy.py` 装成 Windows 服务，**开机自启、无 UAC 弹窗、崩溃自动重启**。
+适合长期使用（替代上面手动 `python win_proxy.py start`）。
+
+### 安装
+
+1. 以管理员身份双击 `scripts/install_service.bat`（脚本会自动 UAC 提权）
+2. 脚本自动：探测 Python → 用 NSSM 创建服务 `War3TesterWinProxy` → 启动
+3. 验证：`sc query War3TesterWinProxy`（STATE 应为 `RUNNING`）
+
+### 卸载
+
+以管理员身份双击 `scripts/uninstall_service.bat`。
+
+### 说明
+
+- 服务名 `War3TesterWinProxy`，启动类型「自动」，账户 LocalSystem
+- 日志：`logs/win_proxy.out.log` / `win_proxy.err.log`（1MB 轮转）
+- 崩溃自动重启（NSSM `AppExit Restart`）
+- `bin/nssm.exe` 自带（NSSM 2.24，MIT 许可可分发）
+- Python 探测顺序：`PYTHON` 环境变量 → `where python` → `py -3`
+
+> **首次使用**：仓库未带 `bin/nssm.exe` 时，从 https://nssm.cc/download 下载
+> `nssm-2.24.zip`，解压取 `win64\nssm.exe` 放到插件 `bin\` 目录，再运行 install。
+
 ## 最小契约
 
 ### 测试文件
