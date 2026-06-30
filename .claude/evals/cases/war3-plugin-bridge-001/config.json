@@ -1,0 +1,7 @@
+{
+  "target": "war3-plugin-bridge",
+  "baseline": true,
+  "isolate": true,
+  "budget_usd": 0.5,
+  "timeout_secs": 600
+}
