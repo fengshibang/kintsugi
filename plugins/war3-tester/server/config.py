@@ -158,6 +158,18 @@ class Config:
             except (json.JSONDecodeError, IOError):
                 pass
 
+        # 1.5 提前解析编译目录（供 .env 加载与 w2l 项目内查找使用）
+        compile_config = file_config.get('compile', {})
+        if compile_config:
+            self.compile_source_dir = self._resolve_path(compile_config.get('source_dir', '.'))
+            self.compile_output_path = self._resolve_path(compile_config.get('output_path', '.'))
+            # 【红线 3】默认 map.w3x
+            self.compile_output_name = compile_config.get('output_name', 'map.w3x')
+
+        # 1.6 加载 .env（项目根目录优先、插件目录兜底），注入 os.environ（不覆盖系统变量）
+        #     必须在读取 YDWE_PATH/KKWE_PATH/W2L_PATH 等环境变量之前完成
+        self._load_dotenv()
+
         # 2. 加载 KKWE/YDWE 路径
         if file_config.get('ydwe_path'):
             self.ydwe_path = Path(file_config['ydwe_path'])
@@ -180,21 +192,11 @@ class Config:
         # 5. 运行模式
         self.run_mode = file_config.get('run_mode') or os.getenv('WAR3_RUN_MODE', 'ydwe')
 
-        # 6. 编译配置
-        compile_config = file_config.get('compile', {})
-        if compile_config:
-            source_dir = compile_config.get('source_dir', '.')
-            self.compile_source_dir = self._resolve_path(source_dir)
+        # 6. 编译配置已在第 1.5 步提前解析（供 .env 加载使用）
 
-            output_path = compile_config.get('output_path', '.')
-            self.compile_output_path = self._resolve_path(output_path)
-
-            # 【红线 3】默认 map.w3x
-            self.compile_output_name = compile_config.get('output_name', 'map.w3x')
-
-        # 6.1 查找 w2l.exe（环境变量 > 固定候选路径 > 项目内递归搜索）
-        #     放在 compile_source_dir 解析之后，以便在真实项目目录内搜索
-        self.w2l_path = self._find_w2l_exe()
+        # 6.1 查找 w2l.exe（环境变量 > 项目目录相对位置 > 项目内递归搜索）
+        #     这里用 compile_source_dir 算出初始默认值；编译时会按实际 source_dir 再查一次
+        self.w2l_path = self.find_w2l_exe()
 
         # 6.5 测试配置（【红线 4】）
         test_config = file_config.get('test', {})
@@ -355,19 +357,73 @@ class Config:
                 Path('D:/KKWE'),
             ]
 
-    def _find_w2l_exe(self) -> Optional[Path]:
+    def _load_dotenv(self) -> None:
         """
-        查找 w2l.exe 工具
+        从 .env 文件加载环境变量（纯标准库，零依赖）
+
+        查找位置（都读，项目级优先；已存在的系统环境变量不被覆盖）：
+          1. compile_source_dir / .env   （项目根目录，per-project）
+          2. project_root / .env         （插件目录，全局兜底）
+
+        .env 格式：每行 KEY=VALUE，支持 # 注释、空行、值两侧单/双引号、export 前缀。
+        必须在读取 YDWE_PATH/KKWE_PATH/W2L_PATH 等环境变量之前调用。
+        """
+        candidates = [Path(self.project_root) / '.env']
+        if self.compile_source_dir and Path(self.compile_source_dir) != Path(self.project_root):
+            candidates.insert(0, Path(self.compile_source_dir) / '.env')
+
+        for env_file in candidates:
+            if env_file.exists() and env_file.is_file():
+                self._parse_and_inject_env(env_file)
+
+    def _parse_and_inject_env(self, env_file: Path) -> None:
+        """解析单个 .env 文件并注入 os.environ（已存在的 key 不覆盖）"""
+        try:
+            text = env_file.read_text(encoding='utf-8')
+        except OSError:
+            return
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith('#'):
+                continue
+            # 去 export 前缀
+            if line.startswith('export '):
+                line = line[7:].lstrip()
+            if '=' not in line:
+                continue
+            key, _, value = line.partition('=')
+            key = key.strip()
+            if not key:
+                continue
+            value = value.strip()
+            # 剥离两侧匹配的引号
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+
+    def find_w2l_exe(self, project_dir: Optional[Path] = None) -> Optional[Path]:
+        """
+        查找 w2l.exe（按项目目录的相对位置）
+
+        每个地图项目通常自带 w3x2lni/w2l.exe，故以「项目目录的相对位置」为最高优先级，
+        而不是只在插件目录下找。
+
+        Args:
+            project_dir: 项目目录（地图源码目录）。默认 compile_source_dir。
+                         支持 Windows（D:\\...）与 WSL（/mnt/d/...）两种路径格式，
+                         内部经 _resolve_path 归一化到本机可访问路径。
 
         查找顺序（命中即返回）：
           1. 环境变量 W2L_PATH（最高优先级）
-          2. 固定候选路径：project_root / 插件目录 / compile_source_dir
-             下的 tools/w3x2lni/w2l.exe、w3x2lni/w2l.exe
-          3. 在 compile_source_dir 内递归搜索 w2l.exe
-             （限深度、跳过 node_modules/.git/logs 等噪声目录）
+          2. 项目目录的相对位置：<project_dir>/w3x2lni/w2l.exe、<project_dir>/tools/w3x2lni/w2l.exe
+          3. project_root / 插件目录下的同位置（兜底）
+          4. 项目目录内递归搜索 w2l.exe（限深度 6，跳 node_modules/.git/logs 等噪声目录）
 
-        全部未命中返回 None，由 validate() 提示用户放置位置。
+        全部未命中返回 None。
         """
+        # 归一化项目目录到本机可访问路径（Windows/WSL 自适应）
+        proj = self._resolve_path(str(project_dir)) if project_dir else self.compile_source_dir
+
         plugin_root = Path(__file__).parent.parent
         candidates: List[Path] = []
 
@@ -376,19 +432,21 @@ class Config:
         if env_w2l:
             candidates.append(Path(env_w2l))
 
-        # 2. 固定候选路径（项目根目录 / 插件目录 / 编译源码目录）
-        for base in (self.project_root, plugin_root, self.compile_source_dir):
-            if base is None:
-                continue
-            candidates.append(Path(base) / 'tools' / 'w3x2lni' / 'w2l.exe')
-            candidates.append(Path(base) / 'w3x2lni' / 'w2l.exe')
+        # 2. 项目目录的相对位置（用户约定：每个项目自带 w3x2lni/）
+        for rel in ('w3x2lni', 'tools/w3x2lni'):
+            candidates.append(proj / rel / 'w2l.exe')
+
+        # 3. project_root / 插件目录的同位置兜底
+        for base in (self.project_root, plugin_root):
+            for rel in ('w3x2lni', 'tools/w3x2lni'):
+                candidates.append(Path(base) / rel / 'w2l.exe')
 
         for path in candidates:
             if path.exists():
                 return path.resolve()
 
-        # 3. 项目内递归搜索（兜底：w2l.exe 可能在项目任意子目录下）
-        return self._search_w2l_in_project(self.compile_source_dir)
+        # 4. 项目内递归搜索兜底
+        return self._search_w2l_in_project(proj)
 
     def _search_w2l_in_project(self, root: Optional[Path], max_depth: int = 6) -> Optional[Path]:
         """
@@ -582,12 +640,11 @@ class Config:
             warnings.append(f"使用平台：{platform_info[1]} @ {platform_info[0]}")
 
         if not self.w2l_path:
-            errors.append(
-                "未找到 w2l.exe 工具\n"
-                "  已搜索：环境变量 W2L_PATH；插件目录及项目源码目录下的\n"
-                "         tools/w3x2lni/、w3x2lni/；并在项目源码目录内递归搜索\n"
-                "         w2l.exe（深度≤6，跳过 node_modules/.git/logs 等）\n"
-                "  建议：将 w3x2lni 解压到项目 tools/ 下，或设置环境变量 W2L_PATH 指向 w2l.exe"
+            warnings.append(
+                "默认位置未找到 w2l.exe（不影响编译：编译时会按实际项目目录的相对位置重新查找）\n"
+                "  已搜索：环境变量 W2L_PATH；compile_source_dir、插件目录下的\n"
+                "         tools/w3x2lni/、w3x2lni/；并在 compile_source_dir 内递归搜索\n"
+                "  建议：在地图项目目录下放置 w3x2lni/w2l.exe，或设置环境变量 W2L_PATH 指向 w2l.exe"
             )
 
         return len(errors) == 0, errors, warnings

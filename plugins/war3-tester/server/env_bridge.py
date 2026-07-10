@@ -223,21 +223,25 @@ class WinProxyExecutor(ExecutorBase):
                 'error': f'❌ 编译操作必须通过 win_proxy 代理执行\n\n{proxy_check.get("error", "")}'
             }
 
-        w2l_path = str(self.config.w2l_path) if self.config.w2l_path else None
-        if not w2l_path:
-            return {
-                'success': False,
-                'error': '未找到 w2l.exe：已搜索环境变量 W2L_PATH、插件及项目目录下的 tools/w3x2lni/，'
-                         '并在项目源码目录内递归搜索（深度≤6）。请将 w3x2lni 解压到项目 tools/ 下，'
-                         '或设置环境变量 W2L_PATH 指向 w2l.exe'
-            }
-        if not w2l_path.startswith(('D:', 'C:', 'E:')):
-            w2l_path = to_windows_path(w2l_path)
-
+        # 先确定实际项目目录（地图源码目录）
         if source_dir:
             src_dir = to_windows_path(source_dir) if source_dir.startswith('/mnt/') else source_dir
         else:
             src_dir = to_windows_path(str(self.config.compile_source_dir))
+
+        # w2l.exe 按实际项目目录的相对位置查找（每个项目自带 w3x2lni/），
+        # 找不到再回退到 Config 初始化时算出的 w2l_path
+        w2l_found = self.config.find_w2l_exe(src_dir) or self.config.w2l_path
+        if not w2l_found:
+            return {
+                'success': False,
+                'error': f'未找到 w2l.exe：已按项目目录的相对位置（w3x2lni/、tools/w3x2lni/）查找\n'
+                         f'并在项目目录内递归搜索（深度≤6）。项目目录：{src_dir}\n'
+                         f'建议：在该项目目录下放置 w3x2lni/w2l.exe，或设置环境变量 W2L_PATH'
+            }
+        w2l_path = str(w2l_found)
+        if not w2l_path.startswith(('D:', 'C:', 'E:')):
+            w2l_path = to_windows_path(w2l_path)
 
         output_file = Path(to_windows_path(str(self.config.compile_output_path))) / self.config.compile_output_name
         win_output_file = str(output_file)
@@ -636,11 +640,14 @@ class LocalExecutor(ExecutorBase):
 
     def compile(self, source_dir: str = None) -> dict:
         """编译地图"""
-        w2l_path = str(self.config.w2l_path) if self.config.w2l_path else None
-        if not w2l_path:
-            return {'success': False, 'error': '未找到 w2l.exe'}
-
         src_dir = str(source_dir or self.config.compile_source_dir)
+
+        # w2l.exe 按实际项目目录的相对位置查找，找不到再回退到 Config 初始化值
+        w2l_found = self.config.find_w2l_exe(src_dir) or self.config.w2l_path
+        if not w2l_found:
+            return {'success': False, 'error': f'未找到 w2l.exe（已按项目目录 {src_dir} 的相对位置查找）'}
+
+        w2l_path = str(w2l_found)
         output_file = Path(self.config.compile_output_path) / self.config.compile_output_name
 
         result = self.execute(w2l_path, ['slk', src_dir, str(output_file)],

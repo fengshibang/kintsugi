@@ -17,3 +17,6 @@ plugins/war3-tester/server/logs/
 # 编辑器/系统
 .DS_Store
 *.swp
+
+# .env（war3-tester 可选配置，含本机路径，不应提交）
+.env

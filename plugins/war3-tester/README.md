@@ -53,7 +53,22 @@
 | `compile.source_dir` | `"."` | 源码根目录（支持 `${workspaceRoot}`） |
 | `ydwe_path` / `kkwe_path` | 自动搜索 | 游戏平台路径（环境变量 `YDWE_PATH` / `KKWE_PATH` 优先） |
 
-路径查找优先级：**环境变量 > config.json > 默认搜索路径**。
+路径查找优先级：**环境变量 > config.json > 默认搜索路径**。`w2l.exe` 额外支持按**项目目录相对位置**自动查找（`<项目>/w3x2lni/w2l.exe`、`<项目>/tools/w3x2lni/w2l.exe`），编译时按实际项目目录动态查找。
+
+### `.env` 文件（可选）
+
+不想设系统环境变量时，可在**项目根目录**放一个 `.env`，插件启动时自动加载并注入环境变量（不覆盖系统已有的）。适合配置 `W2L_PATH` / `YDWE_PATH` / `KKWE_PATH` 等：
+
+```dotenv
+# 项目根目录的 .env（含本机路径，请加入 .gitignore 不要提交）
+W2L_PATH=D:\KKWE\plugin\w3x2lni_zhCN_v2.7.3\w2l.exe
+YDWE_PATH=D:\war3\YDWE
+```
+
+- 加载位置：`compile.source_dir/.env`（项目级，优先）→ 插件目录 `.env`（全局兜底）
+- 格式：每行 `KEY=VALUE`，支持 `#` 注释、空行、值两侧单/双引号、`export` 前缀
+- ⚠️ 改完 `.env` 需**重启 MCP server**（重启 Claude Code）才生效
+- 纯标准库解析，零新增依赖
 
 ## WSL 部署 win_proxy
 
