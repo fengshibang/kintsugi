@@ -25,7 +25,7 @@ CID="$(basename "$CASE_DIR")"
 [[ -f "$CASE_DIR/prompt.md" ]] || die "缺少 prompt.md"
 [[ -f "$CASE_DIR/rubric.md" ]] || die "缺少 rubric.md"
 EXPECTED_FILE="$CASE_DIR/expected.md"
-RUBRIC_PARSED="$(python3 "$FRAMEWORK_DIR/lib/rubric.py" "$CASE_DIR/rubric.md")"
+RUBRIC_PARSED="$("$PYTHON_BIN" "$FRAMEWORK_DIR/lib/rubric.py" "$CASE_DIR/rubric.md")"
 
 REWORK_DIR="$RUNS_DIR/rework-$(date +%Y%m%d-%H%M%S)-$CID"
 mkdir -p "$REWORK_DIR"
@@ -45,8 +45,8 @@ for ((R=1; R<=MAX_ROUNDS; R++)); do
     [[ -f "$PREV" ]] && PREV_SCORE_FILE="$PREV"
   fi
 
-  # 用 python 构造 JSON 输入（heredoc 绑第一个 python3 读脚本），命令替换捕获 stdout，再 pipe 给 rework_stages.py
-  STAGE_IN="$(python3 - "$R" "$CASE_DIR/prompt.md" "$EXPECTED_FILE" "$RUBRIC_PARSED" "$PREV_SCORE_FILE" <<'PY'
+  # 用 python 构造 JSON 输入（heredoc 绑第一个 $PYTHON_BIN 读脚本），命令替换捕获 stdout，再 pipe 给 rework_stages.py
+  STAGE_IN="$("$PYTHON_BIN" - "$R" "$CASE_DIR/prompt.md" "$EXPECTED_FILE" "$RUBRIC_PARSED" "$PREV_SCORE_FILE" <<'PY'
 import json, sys, pathlib
 rnd = int(sys.argv[1])
 prompt_path = sys.argv[2]
@@ -68,7 +68,7 @@ print(json.dumps({"round": rnd, "base_prompt": base, "rubric": rubric,
                   "last_score": last, "expected": expected}))
 PY
 )"
-  printf '%s' "$STAGE_IN" | python3 "$FRAMEWORK_DIR/lib/rework_stages.py" > "$ROUND_DIR/prompt.md"
+  printf '%s' "$STAGE_IN" | "$PYTHON_BIN" "$FRAMEWORK_DIR/lib/rework_stages.py" > "$ROUND_DIR/prompt.md"
 
   # ---- 跑 runner（PROMPT_FILE 覆盖 prompt）----
   BL_ARG=""
@@ -100,7 +100,7 @@ PY
   # ---- 解析 score.json ----
   SCORE_FILE="$ROUND_DIR/score.json"
   if [[ -f "$SCORE_FILE" ]]; then
-    read -r PASSED_R SCORE_R PENDING_R < <(python3 - "$SCORE_FILE" <<'PY'
+    read -r PASSED_R SCORE_R PENDING_R < <("$PYTHON_BIN" - "$SCORE_FILE" <<'PY'
 import json, sys, pathlib
 try:
     s = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -125,7 +125,7 @@ PY
 done
 
 # ---- 写 rework-summary.json ----
-python3 - "$REWORK_DIR/rework-summary.json" "$CID" "$MAX_ROUNDS" "$PASSED_AT" \
+"$PYTHON_BIN" - "$REWORK_DIR/rework-summary.json" "$CID" "$MAX_ROUNDS" "$PASSED_AT" \
   "$FINAL_SCORE" "$PENDING_CHECKS" "${ROUND_PASSED[@]}" <<'PY'
 import json, sys, pathlib
 out, cid, mx, passed_at, final, pending = sys.argv[1:7]

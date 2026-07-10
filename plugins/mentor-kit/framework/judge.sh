@@ -35,7 +35,7 @@ JUDGE_MODEL_CFG="$(cfg_get "$CASE_DIR/config.json" judge_model "")"
 CID="$(basename "$CASE_DIR")"
 
 # 1) 解析 rubric
-CHECKS_JSON="$(python3 "$FRAMEWORK_DIR/lib/rubric.py" "$RUBRIC")"
+CHECKS_JSON="$("$PYTHON_BIN" "$FRAMEWORK_DIR/lib/rubric.py" "$RUBRIC")"
 echo "$CHECKS_JSON" > "$RUN_DIR/rubric_parsed.json"
 
 # 2) --merge-user 模式：直接读 user-verdict.json + 已有 score.json，重算
@@ -43,7 +43,7 @@ if [[ $MERGE -eq 1 ]]; then
   UV="$RUN_DIR/user-verdict.json"
   [[ -f "$UV" ]] || die "缺少 user-verdict.json: $UV"
   [[ -f "$RUN_DIR/score.json" ]] || die "缺少 score.json（先正常 judge 一次）"
-  python3 - "$RUN_DIR/score.json" "$UV" "$RUN_DIR/score.json" "$CID" "$MODE" <<'PY'
+  "$PYTHON_BIN" - "$RUN_DIR/score.json" "$UV" "$RUN_DIR/score.json" "$CID" "$MODE" <<'PY'
 import json, sys, pathlib, datetime
 score_p, uv_p, out_p, cid, mode = sys.argv[1:6]
 score = json.loads(pathlib.Path(score_p).read_text(encoding="utf-8"))
@@ -69,7 +69,7 @@ fi
 
 # 3) 静态层 auto 评判（在 product/ 下跑，注入 CHANGED_FILES）
 mkdir -p "$PRODUCT"
-CHANGED_FILES="$(python3 - "$CHANGED_JSON" <<'PY'
+CHANGED_FILES="$("$PYTHON_BIN" - "$CHANGED_JSON" <<'PY'
 import json, sys, pathlib
 p = sys.argv[1]
 try: files = json.loads(pathlib.Path(p).read_text(encoding="utf-8"))
@@ -78,7 +78,7 @@ print(" ".join(files))
 PY
 )"
 AUTO_RESULTS="$RUN_DIR/auto_results.json"
-python3 - "$CHECKS_JSON" "$PRODUCT" "$CHANGED_FILES" "$AUTO_RESULTS" <<'PY'
+"$PYTHON_BIN" - "$CHECKS_JSON" "$PRODUCT" "$CHANGED_FILES" "$AUTO_RESULTS" <<'PY'
 import json, sys, pathlib, subprocess, os
 checks, prod, changed, out = sys.argv[1:5]
 checks = json.loads(checks)
@@ -103,7 +103,7 @@ log "static(auto) 评判完成：$AUTO_RESULTS"
 
 # 4) 逻辑层 LLM 评判（只传非 auto、非 run 的 logic checks 的 rubric 片段）
 LOGIC_RUBRIC="$RUN_DIR/logic_rubric.md"
-python3 - "$CHECKS_JSON" "$RUBRIC" "$LOGIC_RUBRIC" <<'PY'
+"$PYTHON_BIN" - "$CHECKS_JSON" "$RUBRIC" "$LOGIC_RUBRIC" <<'PY'
 import json, sys, pathlib
 checks = json.loads(sys.argv[1])
 logic_ids = {c['id'] for c in checks if c['auto'] is None and c['layer'] != 'run'}
@@ -122,7 +122,7 @@ PY
 LLM_RESULTS="$RUN_DIR/llm_results.json"
 if [[ -s "$LOGIC_RUBRIC" ]]; then
   log "logic(llm) 评判 case=$CID"
-  python3 - "$PARSED" "$LOGIC_RUBRIC" "$EXPECTED" <<'PY' | timeout "$TIMEOUT_SECS" "$CLAUDE_BIN" -p \
+  "$PYTHON_BIN" - "$PARSED" "$LOGIC_RUBRIC" "$EXPECTED" <<'PY' | timeout "$TIMEOUT_SECS" "$CLAUDE_BIN" -p \
     --output-format json \
     --json-schema "$(cat "$SCHEMA")" \
     --disallowedTools "Bash" "Write" "Edit" "NotebookEdit" "Skill" \
@@ -156,7 +156,7 @@ prompt = f"""# 任务
 """
 sys.stdout.write(prompt)
 PY
-  python3 - "$RUN_DIR/judge_raw.json" "$LLM_RESULTS" <<'PY'
+  "$PYTHON_BIN" - "$RUN_DIR/judge_raw.json" "$LLM_RESULTS" <<'PY'
 import json, sys, pathlib
 raw = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace"))
 obj = raw.get("structured_output") or {}
@@ -174,7 +174,7 @@ else
 fi
 
 # 5) 合并：auto + llm + run(pending) + red 一票否决
-MERGE_IN="$(python3 - "$RUN_DIR/rubric_parsed.json" "$AUTO_RESULTS" "$LLM_RESULTS" <<'PY'
+MERGE_IN="$("$PYTHON_BIN" - "$RUN_DIR/rubric_parsed.json" "$AUTO_RESULTS" "$LLM_RESULTS" <<'PY'
 import json, sys, pathlib
 rubric = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 auto = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
@@ -182,9 +182,9 @@ llm = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 print(json.dumps({"rubric": rubric, "auto": auto, "llm": llm}, ensure_ascii=False))
 PY
 )"
-printf '%s' "$MERGE_IN" | python3 "$FRAMEWORK_DIR/lib/judge_merge.py" > "$RUN_DIR/merge.json"
+printf '%s' "$MERGE_IN" | "$PYTHON_BIN" "$FRAMEWORK_DIR/lib/judge_merge.py" > "$RUN_DIR/merge.json"
 
-python3 - "$RUN_DIR/merge.json" "$RUN_DIR/score.json" "$CID" "$MODE" <<'PY'
+"$PYTHON_BIN" - "$RUN_DIR/merge.json" "$RUN_DIR/score.json" "$CID" "$MODE" <<'PY'
 import json, sys, pathlib, datetime
 m = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 m["case_id"] = sys.argv[3]; m["mode"] = sys.argv[4]

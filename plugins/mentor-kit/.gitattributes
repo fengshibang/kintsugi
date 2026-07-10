@@ -1,0 +1,9 @@
+# 强制 LF 行尾：Windows 上 git autocrlf 会把 .sh/.py 转成 CRLF，
+# 导致 bash 报 'set -euo pipefail\r: command not found' 之类错误。
+# 作用域仅限 mentor-kit（kintsugi 是多插件市场仓，避免波及其他插件）。
+* text=auto eol=lf
+
+# 二进制不转换
+*.png binary
+*.jpg binary
+*.lock binary

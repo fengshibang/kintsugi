@@ -1,12 +1,43 @@
 # shellcheck shell=bash
 # evals 共享库 —— 被 runner.sh / judge.sh / run_all.sh source
-# 依赖：claude CLI、bash、python3、GNU timeout（刻意不依赖 jq/lua）
+# 依赖：claude CLI、bash、Python 解释器（python3 / python / py 启动器）、GNU timeout（刻意不依赖 jq/lua）
 #
 # FRAMEWORK_DIR 按文件位置推算（插件内只读框架目录），不调用 git，这样即使
 # runner cd 进临时 worktree 后本文件被重新 source，也不会误判框架目录。
 # EVALS_DIR 由调用方显式注入（项目数据目录），脚本不猜 $PWD，保证插件只读可复用。
 
-CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+# --- Python 解释器解析 -------------------------------------------------------
+# Windows 原生/Git Bash 下，PATH 里的 python3 常是 WindowsApps 的 Store 别名桩
+# （App Execution Alias），不同启动上下文行为不一致（可能弹 Store / 异常退出码），
+# 不可靠。与 war3-tester/scripts/install_service.bat 一致：跳过 WindowsApps 路径。
+# 顺序：python3（非Store）→ python（非Store）→ py 启动器 → 兜底 python3（让报错直观）。
+# 可用 PYTHON_BIN 环境变量强制覆盖。
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  _resolve_python() {
+    local c cand
+    for cand in python3 python; do
+      c="$(command -v "$cand" 2>/dev/null)" || continue
+      [[ "$c" == *WindowsApps* ]] && continue      # 跳过 Store 别名桩
+      printf '%s' "$c"; return 0
+    done
+    command -v py >/dev/null 2>&1 && { printf 'py'; return 0; }
+    return 1
+  }
+  if PYTHON_BIN="$(_resolve_python)"; then :; else PYTHON_BIN=python3; fi
+  unset -f _resolve_python
+fi
+export PYTHON_BIN
+
+# --- claude CLI 解析 ---------------------------------------------------------
+# Windows 下 claude 通常是 npm 全局的 claude.cmd；Git Bash 一般能直接找到 claude，
+# 这里加 claude.cmd 兜底。可用 CLAUDE_BIN 环境变量强制覆盖。
+if [[ -z "${CLAUDE_BIN:-}" ]]; then
+  if   command -v claude     >/dev/null 2>&1; then CLAUDE_BIN=claude
+  elif command -v claude.cmd >/dev/null 2>&1; then CLAUDE_BIN=claude.cmd
+  else CLAUDE_BIN=claude; fi
+fi
+export CLAUDE_BIN
+
 TIMEOUT_SECS="${TIMEOUT_SECS:-300}"
 BUDGET_USD="${BUDGET_USD:-0.25}"
 RUN_MODEL="${RUN_MODEL:-}"
@@ -35,12 +66,12 @@ resolve_case_dir() {
   CASE_DIR="$(cd "$CASE_DIR" 2>/dev/null && pwd)" || die "case 目录不存在: $arg"
 }
 
-# 从 config.json（可选）读取字段，缺失返回默认值。用 python3 解析，避免依赖 jq。
+# 从 config.json（可选）读取字段，缺失返回默认值。用 $PYTHON_BIN 解析，避免依赖 jq。
 # 用法： cfg_get "<case-dir>/config.json" "<key>" "<default>"
 cfg_get() {
   local file="$1" key="$2" default="$3"
   [[ -f "$file" ]] || { printf '%s' "$default"; return; }
-  python3 - "$file" "$key" "$default" <<'PY'
+  "$PYTHON_BIN" - "$file" "$key" "$default" <<'PY'
 import json, sys, pathlib
 f, key, default = sys.argv[1], sys.argv[2], sys.argv[3]
 try:

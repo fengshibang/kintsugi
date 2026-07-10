@@ -49,11 +49,11 @@ for c in "${CASES[@]}"; do
   fi
 done
 
-set +e; ./summarize.py; rc=$?; set -e
+set +e; "$PYTHON_BIN" ./summarize.py; rc=$?; set -e
 [[ $rc -ne 0 ]] && { warn "summarize 失败"; FAIL=1; }
 
 # ---- CI 门禁 ----
-python3 - "$EVALS_DIR/report/summary.json" "$PASS_THRESHOLD" "$FAIL" <<'PY'
+"$PYTHON_BIN" - "$EVALS_DIR/report/summary.json" "$PASS_THRESHOLD" "$FAIL" <<'PY'
 import json, sys, pathlib
 sp, thr, fail = sys.argv[1], float(sys.argv[2]), int(sys.argv[3])
 try:

@@ -1,5 +1,5 @@
 {
   "name": "mentor-kit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "师徒试错机制 + eval 框架：师傅监督徒弟改代码，把错误沉淀成 eval case，回归验证。领域中立，任何项目装上即用。"
 }

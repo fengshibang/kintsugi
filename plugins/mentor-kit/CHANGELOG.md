@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-10
+
+framework 支持 **Windows 原生 / Git Bash**（逻辑零改动；WSL / macOS / Linux 完全向后兼容）。
+
+### Added
+- `framework/lib/cli.sh` 新增 `PYTHON_BIN` 解释器解析器：按 `python3 → python → py` 顺序探测，**跳过 WindowsApps Store 别名桩**（App Execution Alias，不同启动上下文行为不一致、不可靠），可用 `PYTHON_BIN` 环境变量强制覆盖。与 `war3-tester/scripts/install_service.bat` 的 python 探测策略一致
+- `CLAUDE_BIN` 解析器加 `claude.cmd` 兜底（Windows npm 全局），可用 `CLAUDE_BIN` 环境变量覆盖
+- 新增 `plugins/mentor-kit/.gitattributes`：强制 LF 行尾，防止 git `autocrlf` 在 Windows checkout 时把 `.sh`/`.py` 转 CRLF 致 bash 报错（作用域仅限 mentor-kit，不波及其他插件）
+
+### Changed
+- `runner.sh` / `judge.sh` / `mentor-rework.sh` / `run_all.sh`：所有 `python3` 调用统一改为 `"$PYTHON_BIN"`（共 21 处）
+- `run_all.sh`：`./summarize.py` → `"$PYTHON_BIN" ./summarize.py`（摆脱 shebang 依赖）
+- `.py` 文件（含 shebang `#!/usr/bin/env python3`）零改动——统一通过 `"$PYTHON_BIN" file.py` 调用，shebang 不参与执行
+
+### 验证
+- **Windows（MINGW64）实测**：`PYTHON_BIN` 解析到 `/c/Python313/python`（真身，非 Store 桩）；`bash -n` 5 脚本全过；stdin+argv / 跑 .py / `python -c` 三种调用姿势通过；MINGW bash 5.2 对 CRLF 容忍（含 heredoc 体）
+- **跨平台解析器 mock**：Linux / WSL / 纯 py Windows / 全无 四类环境选中结果均正确；Linux/WSL 首选真实 `python3`，行为与旧版完全等价（零回归）
+
+### 已知限制
+- `--max-budget-usd` 在第三方中转 API（`ANTHROPIC_BASE_URL` 指向非官方）上可能被忽略：在 case 的 `config.json` 里调大 `budget_usd` 即可
+- 真机 Linux 端到端尚未跑（当前为 Windows 机器）：Linux 侧为静态扫描 + 解析器逻辑 mock 验证，等价性强
+
 ## [0.2.0] - 2026-06-26
 
 ### Added

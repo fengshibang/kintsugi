@@ -39,7 +39,7 @@ export_snapshot() {
     mkdir -p "$prod_dir/$(dirname "$f")"
     cp "$wt/$f" "$prod_dir/$f" 2>/dev/null || true
   done
-  python3 - "$changed_json" "${changed[@]+"${changed[@]}"}" <<'PY'
+  "$PYTHON_BIN" - "$changed_json" "${changed[@]+"${changed[@]}"}" <<'PY'
 import json, sys, pathlib
 dst = sys.argv[1]
 files = [x for x in sys.argv[2:] if x and not x.startswith('.claude/')]
@@ -111,7 +111,7 @@ DISALLOWED=()
 # config.json 的可选透传：MCP 配置 / 临时 settings / 额外目录（MCP、hook case 用）
 MCP_CONFIG="$(cfg_get "$CASE_DIR/config.json" mcp_config "")"
 SETTINGS="$(cfg_get "$CASE_DIR/config.json" settings "")"
-mapfile -t ADD_DIRS < <(python3 - "$CASE_DIR/config.json" <<'PY'
+mapfile -t ADD_DIRS < <("$PYTHON_BIN" - "$CASE_DIR/config.json" <<'PY'
 import json, pathlib, sys
 try:
     d = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -145,7 +145,7 @@ set -e
 WALL=$((SECONDS - START))
 
 # ---- 解析 stream-json（多行事件流）→ parsed.json；判断是否被截断 ----
-TRUNCATED=$(python3 - "$OUT" "$EXIT_CODE" "$RUN_DIR/parsed.json" <<'PY'
+TRUNCATED=$("$PYTHON_BIN" - "$OUT" "$EXIT_CODE" "$RUN_DIR/parsed.json" <<'PY'
 import json, sys, pathlib
 src, ec, dst = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 result_text, tool_uses, is_error, num_turns, cost, stop_reason = "", [], False, 0, 0.0, ""
@@ -183,7 +183,7 @@ PY
 )
 
 # ---- meta.json ----
-python3 - "$RUN_DIR/meta.json" "$CID" "$MODE" "$TIMEOUT_SECS" "$BUDGET_USD" "$EXIT_CODE" "$WALL" "$TRUNCATED" "$ISOLATE" "$RUN_DIR/parsed.json" <<'PY'
+"$PYTHON_BIN" - "$RUN_DIR/meta.json" "$CID" "$MODE" "$TIMEOUT_SECS" "$BUDGET_USD" "$EXIT_CODE" "$WALL" "$TRUNCATED" "$ISOLATE" "$RUN_DIR/parsed.json" <<'PY'
 import json, sys, pathlib
 (path, cid, mode, to, bud, ec, wall, trunc, iso, parsed_p) = sys.argv[1:11]
 try:
