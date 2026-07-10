@@ -1,0 +1,7 @@
+{
+  "target": "xplat-python",
+  "baseline": false,
+  "isolate": true,
+  "budget_usd": 0.5,
+  "timeout_secs": 600
+}
