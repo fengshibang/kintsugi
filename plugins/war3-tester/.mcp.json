@@ -1,7 +1,7 @@
 {
   "war3-tester": {
-    "command": "python3",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/server/mcp_server.py"],
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/start_mcp.js"],
     "env": { "PYTHONUTF8": "1" }
   }
 }

@@ -1,5 +1,29 @@
 # Changelog — war3-tester
 
+## 0.4.0 — 2026-07-10
+
+支持 **Windows 原生**下 MCP server 可靠启动（不再被 Microsoft Store 别名桩卡住）；原生 Windows 无需 win_proxy。
+
+### 根因
+`.mcp.json` 用 `"command": "python3"`。Windows 原生的 `python3` 通常是 Microsoft Store 别名桩（App Execution Alias），不同启动上下文行为不一致（可能弹 Store / 异常退出码），MCP server 起不来 = 整个插件不可用。
+
+### 修复
+- **新增跨平台启动 wrapper `scripts/start_mcp.js`**：`.mcp.json` 是静态 JSON，无法内联探测逻辑，故用 node wrapper（node 是 Claude Code 既有依赖，用户无需额外装）解析 Python 解释器
+- **`.mcp.json` 改 `command: "node"`**，args 指向 `${CLAUDE_PLUGIN_ROOT}/scripts/start_mcp.js`
+- **解释器解析顺序**：`PYTHON_BIN` 覆盖 → `python3`（跳过 WindowsApps）→ `python`（跳过 WindowsApps）→ `py` → 兜底；Linux/macOS 直接用真实 `python3`
+
+### 实施中修复的 2 个 Store 别名桩避坑 bug（师徒试错沉淀）
+- **PATH 探测只取第一行**：`where python` 第一行常是 Store 桩、真实 python 在后面 → 改为遍历全部候选行、跳过 WindowsApps，取第一个真实路径
+- **完整路径降级回命令名**：`resolvePython` 返回命令名（`'python'`）而非完整路径 → `spawn` 重新按 PATH 查找会再中 Store 桩 → 改为完整路径一路传递到 spawn（`sys.executable` 实测确认用真实解释器）
+
+### 验证
+- 静态：`py_compile` 全过、`.mcp.json` 合法、`node --version` 在 PATH（claude CLI 经 npm 装必有 node）
+- 逻辑：师傅独立复刻 resolvePython+spawn，`sys.executable = C:\Python313\python.exe`（真身，非 Store 桩）
+- 运行：wrapper→spawn→真实 python 链路通（MCP server 冒烟、8766 端口开）；完整 `/mcp` 握手待用户实跑
+
+### 已沉淀
+- eval case `xplat-python-001`（2 条 RED 硬线：遍历跳过 Store + 完整路径传递）
+
 ## 0.3.1 — 2026-06-30
 
 修复 **WSL 插件缓存路径导致服务无法启动**（Claude Code 把插件装进 WSL 时）。

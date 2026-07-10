@@ -165,14 +165,22 @@ Content-Type: application/json
 ```json
 {
   "war3-tester": {
-    "command": "python3",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/server/mcp_server.py"],
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/start_mcp.js"],
     "env": { "PYTHONUTF8": "1" }
   }
 }
 ```
 
 > 这与**项目级** `.mcp.json`（需 `mcpServers` 包裹）不同。`${CLAUDE_PLUGIN_ROOT}` 由 Claude Code 自动替换为插件安装目录，保证可移植。
+>
+> **MCP server 经 Node.js wrapper 启动**（`scripts/start_mcp.js`）。
+> **node 是 Claude Code 既有依赖**（claude CLI 经 npm 全局安装，装 claude 就有 node），用户无需额外安装。
+>
+> wrapper 负责跨平台解析 Python 解释器：
+> - Windows 原生：`python3` 常是 Microsoft Store 别名桩（不可靠），wrapper 遍历 `where` 输出的所有候选，跳过 WindowsApps 路径，选中第一个真实解释器；回退到 `python` 或 `py` 启动器
+> - Linux/macOS：`python3` 是真实解释器，直接使用
+> - 可用 `PYTHON_BIN` 环境变量强制覆盖
 >
 > ⚠️ 若格式有歧义，用 `/mcp` 命令实测确认。
 
@@ -182,6 +190,8 @@ Content-Type: application/json
 plugins/war3-tester/
 ├── .claude-plugin/plugin.json     # 插件清单
 ├── .mcp.json                      # MCP server 声明
+├── scripts/
+│   └── start_mcp.js               # 跨平台 Python 解释器解析 + 启动
 ├── server/                        # 通用 MCP 层（Python stdio JSON-RPC）
 │   ├── mcp_server.py              # 入口
 │   ├── config.py                  # 配置管理
