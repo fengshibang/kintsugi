@@ -225,7 +225,12 @@ class WinProxyExecutor(ExecutorBase):
 
         w2l_path = str(self.config.w2l_path) if self.config.w2l_path else None
         if not w2l_path:
-            return {'success': False, 'error': '未找到 w2l.exe，请配置 W2L_PATH 环境变量或在 tools/w3x2lni/ 下放置'}
+            return {
+                'success': False,
+                'error': '未找到 w2l.exe：已搜索环境变量 W2L_PATH、插件及项目目录下的 tools/w3x2lni/，'
+                         '并在项目源码目录内递归搜索（深度≤6）。请将 w3x2lni 解压到项目 tools/ 下，'
+                         '或设置环境变量 W2L_PATH 指向 w2l.exe'
+            }
         if not w2l_path.startswith(('D:', 'C:', 'E:')):
             w2l_path = to_windows_path(w2l_path)
 

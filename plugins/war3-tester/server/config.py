@@ -172,8 +172,7 @@ class Config:
         if not self.ydwe_path and not self.kkwe_path:
             self._load_default_paths()
 
-        # 3. 查找 w2l.exe（严禁框架专属 fallback）
-        self.w2l_path = self._find_w2l_exe()
+        # 3. w2l.exe 查找推迟到第 6 步之后（依赖 compile_source_dir 做项目内搜索）
 
         # 4. 日志级别
         self.log_level = file_config.get('log_level') or os.getenv('LOG_LEVEL', 'INFO')
@@ -192,6 +191,10 @@ class Config:
 
             # 【红线 3】默认 map.w3x
             self.compile_output_name = compile_config.get('output_name', 'map.w3x')
+
+        # 6.1 查找 w2l.exe（环境变量 > 固定候选路径 > 项目内递归搜索）
+        #     放在 compile_source_dir 解析之后，以便在真实项目目录内搜索
+        self.w2l_path = self._find_w2l_exe()
 
         # 6.5 测试配置（【红线 4】）
         test_config = file_config.get('test', {})
@@ -355,29 +358,79 @@ class Config:
     def _find_w2l_exe(self) -> Optional[Path]:
         """
         查找 w2l.exe 工具
-        严禁框架专属 fallback 路径
-        """
-        if self.is_wsl:
-            candidates = [
-                self.project_root / 'tools' / 'w3x2lni' / 'w2l.exe',
-                self.project_root / 'w3x2lni' / 'w2l.exe',
-                Path(__file__).parent.parent / 'tools' / 'w3x2lni' / 'w2l.exe',
-            ]
-        else:
-            candidates = [
-                self.project_root / 'tools' / 'w3x2lni' / 'w2l.exe',
-                self.project_root / 'w3x2lni' / 'w2l.exe',
-                Path(__file__).parent.parent / 'tools' / 'w3x2lni' / 'w2l.exe',
-            ]
 
-        # 也检查环境变量
+        查找顺序（命中即返回）：
+          1. 环境变量 W2L_PATH（最高优先级）
+          2. 固定候选路径：project_root / 插件目录 / compile_source_dir
+             下的 tools/w3x2lni/w2l.exe、w3x2lni/w2l.exe
+          3. 在 compile_source_dir 内递归搜索 w2l.exe
+             （限深度、跳过 node_modules/.git/logs 等噪声目录）
+
+        全部未命中返回 None，由 validate() 提示用户放置位置。
+        """
+        plugin_root = Path(__file__).parent.parent
+        candidates: List[Path] = []
+
+        # 1. 环境变量最高优先级
         env_w2l = os.getenv('W2L_PATH')
         if env_w2l:
-            candidates.insert(0, Path(env_w2l))
+            candidates.append(Path(env_w2l))
+
+        # 2. 固定候选路径（项目根目录 / 插件目录 / 编译源码目录）
+        for base in (self.project_root, plugin_root, self.compile_source_dir):
+            if base is None:
+                continue
+            candidates.append(Path(base) / 'tools' / 'w3x2lni' / 'w2l.exe')
+            candidates.append(Path(base) / 'w3x2lni' / 'w2l.exe')
 
         for path in candidates:
             if path.exists():
-                return path
+                return path.resolve()
+
+        # 3. 项目内递归搜索（兜底：w2l.exe 可能在项目任意子目录下）
+        return self._search_w2l_in_project(self.compile_source_dir)
+
+    def _search_w2l_in_project(self, root: Optional[Path], max_depth: int = 6) -> Optional[Path]:
+        """
+        在项目目录内递归搜索 w2l.exe
+
+        - 限制最大深度（默认 6 层），跳过 node_modules/.git/logs 等噪声目录，避免慢
+        - 同时匹配 w2l.exe（Windows）与 w2l（无扩展名，*nix 原生版）
+
+        Args:
+            root: 搜索根目录（通常为 compile_source_dir）
+            max_depth: 最大递归深度
+
+        Returns:
+            命中的 w2l 可执行文件路径（已 resolve），未命中返回 None
+        """
+        if not root:
+            return None
+        root = Path(root)
+        if not root.exists() or not root.is_dir():
+            return None
+
+        skip_dirs = {
+            '.git', 'node_modules', '__pycache__', '.codegraph',
+            'logs', 'archive', '.idea', '.vs', 'dist', 'build',
+        }
+        targets = {'w2l.exe', 'w2l'}
+
+        stack: List[tuple] = [(root, 0)]
+        while stack:
+            current, depth = stack.pop()
+            try:
+                for entry in current.iterdir():
+                    name_lower = entry.name.lower()
+                    if entry.is_dir():
+                        if name_lower in skip_dirs:
+                            continue
+                        if depth < max_depth:
+                            stack.append((entry, depth + 1))
+                    elif entry.is_file() and name_lower in targets:
+                        return entry.resolve()
+            except (PermissionError, OSError):
+                continue
         return None
 
     def find_kkwe_path(self) -> Optional[Path]:
@@ -531,7 +584,10 @@ class Config:
         if not self.w2l_path:
             errors.append(
                 "未找到 w2l.exe 工具\n"
-                "  建议：设置环境变量 W2L_PATH 或在 tools/w3x2lni/ 下放置 w2l.exe"
+                "  已搜索：环境变量 W2L_PATH；插件目录及项目源码目录下的\n"
+                "         tools/w3x2lni/、w3x2lni/；并在项目源码目录内递归搜索\n"
+                "         w2l.exe（深度≤6，跳过 node_modules/.git/logs 等）\n"
+                "  建议：将 w3x2lni 解压到项目 tools/ 下，或设置环境变量 W2L_PATH 指向 w2l.exe"
             )
 
         return len(errors) == 0, errors, warnings

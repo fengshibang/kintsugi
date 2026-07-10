@@ -1,5 +1,23 @@
 # Changelog — war3-tester
 
+## 0.4.1 — 2026-07-11
+
+修复 **w2l.exe 找不到导致地图编译失败**：原查找只在插件自身目录的固定路径下找，但 w2l.exe 实际在用户的地图项目目录里。
+
+### 根因
+`_find_w2l_exe` 只检查 `<插件目录>/tools/w3x2lni/w2l.exe` 等固定路径——插件目录里根本没有，用户的 w3x2lni 通常解压在地图项目内 → 永远搜不到 → 编译报「未找到 w2l.exe」。
+
+### 修复
+- **`_find_w2l_exe` 改三段式查找**：① 环境变量 `W2L_PATH` ② 固定候选路径（`project_root` / 插件目录 / `compile_source_dir` 下的 `tools/w3x2lni/`、`w3x2lni/`）③ **项目内递归搜索兜底**
+- **新增 `_search_w2l_in_project`**：DFS 限深 6 层，跳过 `node_modules`/`.git`/`logs`/`__pycache__` 等噪声目录，匹配 `w2l.exe` 与 `w2l`
+- **调用时机后移**：`_find_w2l_exe()` 从 `_load_config` 第 3 步挪到 `compile_source_dir` 解析之后，确保递归搜的是真实项目目录
+- 同步更新 `validate()` 与 `env_bridge.py` 编译失败提示，告知已搜范围与放置建议
+- 顺手清理 `_find_w2l_exe` 里 `is_wsl`/非 WSL 两分支完全相同的冗余
+
+### 验证
+- 静态：`py_compile` config.py / env_bridge.py 全过
+- 行为（临时目录）：浅层命中 ✅、跳过 `node_modules` ✅、深度 7 超 `max_depth=6` 不命中而放宽到 8 命中 ✅、非约定子目录靠递归兜底命中 ✅、`W2L_PATH` 最高优先级 ✅
+
 ## 0.4.0 — 2026-07-10
 
 支持 **Windows 原生**下 MCP server 可靠启动（不再被 Microsoft Store 别名桩卡住）；原生 Windows 无需 win_proxy。
