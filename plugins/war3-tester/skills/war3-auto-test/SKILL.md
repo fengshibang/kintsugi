@@ -235,6 +235,7 @@ WSL 用户需在 Windows 侧 `python win_proxy.py start`（监听 8767）。
 | `/log` 高频 POST 对游戏性能 | ⚠️ 未验证 | 游戏侧节流（同类 0.2s 合并）+ MCP 侧上限防爆；实测后调参 |
 | 崩溃日志读取（`Errors\`） | P1 | P0 已做进程消失检测（`failure_type=crash`）；`crash_log` 字段 P1 填充 |
 | War3 根目录定位 | ✅ 已验证 | 注册表 `InstallPath` = `D:\war3`（设计文档 4.6） |
+| `name 'os' is not defined` 等 os 相关错误 | ℹ️ 已知不修 | war3 对 os 库做了改造适配（见目标项目 CLAUDE.md「内部定制版 Lua 运行时，对 os 库进行了改造适配」），take_screenshot/analyze_screenshot 等路径偶发；不影响核心测试链路（编译→启动→结果回传），无需修复 |
 
 ---
 

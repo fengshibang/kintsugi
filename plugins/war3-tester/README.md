@@ -172,6 +172,7 @@ Content-Type: application/json
 | 模块加载机制（`require` 路径）因项目而异 | `test_module_prefix` 可配置 + `examples/` 范例 |
 | [issue #41137](https://github.com/anthropics/claude-code/issues/41137) plugin install/update 偶发擦除 mcpServers | 若工具消失，检查 `.mcp.json` 是否被改写，`/mcp` 重连或重启 Claude Code |
 | w2l.exe / KKWE / YDWE 路径因机器而异 | 全部走 config（环境变量 > 配置文件 > 搜索），无硬编码 |
+| `name 'os' is not defined` 等 os 相关错误 | war3 对 os 库做了改造适配（定制 Lua 运行时），take_screenshot/analyze_screenshot 等路径偶发；不影响核心测试链路，**无需修复**（已知现象） |
 
 ## 插件级 .mcp.json 格式备注
 
