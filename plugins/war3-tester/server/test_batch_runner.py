@@ -271,77 +271,94 @@ class TestBatchRunner:
         self.executor.stop_game()
         time.sleep(3)
 
-        # 0.5 准备测试入口（写 _target_test.lua + run_auto_test.lua）
         try:
-            self.mcp_server._prepare_test_entry(test_name, test_file, source_dir)
-        except Exception as e:
-            return self._build_result(test_name, success=False, failure_type='env_error',
-                                      error=f'准备测试入口失败：{e}', elapsed=0)
+            # 0.5 准备测试入口（写 _target_test.lua + run_auto_test.lua）
+            try:
+                self.mcp_server._prepare_test_entry(test_name, test_file, source_dir)
+            except Exception as e:
+                return self._build_result(test_name, success=False, failure_type='env_error',
+                                          error=f'准备测试入口失败：{e}', elapsed=0)
 
-        # 1. 编译
-        compile_result = self.executor.compile(source_dir)
-        if not compile_result.get('success'):
-            return self._build_result(test_name, success=False, failure_type='compile_error',
-                                      error=f'编译失败：{compile_result.get("error", "unknown")}',
-                                      elapsed=0)
+            # 1. 编译
+            compile_result = self.executor.compile(source_dir)
+            if not compile_result.get('success'):
+                return self._build_result(test_name, success=False, failure_type='compile_error',
+                                          error=f'编译失败：{compile_result.get("error", "unknown")}',
+                                          elapsed=0)
 
-        # 2. 启动游戏
-        run_result = self.executor.run_game(platform=platform)
-        if not run_result.get('success'):
-            return self._build_result(test_name, success=False, failure_type='env_error',
-                                      error=f'启动游戏失败：{run_result.get("error", "unknown")}',
-                                      elapsed=0)
+            # 2. 启动游戏
+            run_result = self.executor.run_game(platform=platform)
+            if not run_result.get('success'):
+                return self._build_result(test_name, success=False, failure_type='env_error',
+                                          error=f'启动游戏失败：{run_result.get("error", "unknown")}',
+                                          elapsed=0)
 
-        # 3. 轮询结果 + 进程存活监控
-        self.http_receiver.delete_old_result(test_name)
-        result_file = self.http_receiver.get_result_file(test_name)
+            # 3. 轮询结果 + 进程存活监控
+            self.http_receiver.delete_old_result(test_name)
+            result_file = self.http_receiver.get_result_file(test_name)
 
-        self.logger.info(f"[{test_name}] 等待测试结果 (超时 {timeout}s)...")
-        elapsed = 0
-        poll_interval = 3
-        game_seen_alive = False
-        result_data = None
-        outcome: Optional[str] = None  # 'result' | 'crash' | 'timeout' | 'env_error'
+            self.logger.info(f"[{test_name}] 等待测试结果 (超时 {timeout}s)...")
+            elapsed = 0
+            poll_interval = 3
+            game_seen_alive = False
+            result_data = None
+            outcome: Optional[str] = None  # 'result' | 'crash' | 'timeout' | 'env_error'
 
-        while elapsed < timeout:
-            time.sleep(poll_interval)
-            elapsed += poll_interval
+            while elapsed < timeout:
+                time.sleep(poll_interval)
+                elapsed += poll_interval
 
-            if result_file.exists():
-                try:
-                    with open(result_file, 'r', encoding='utf-8') as f:
-                        result_data = json.load(f)
-                    outcome = 'result'
+                if result_file.exists():
+                    try:
+                        with open(result_file, 'r', encoding='utf-8') as f:
+                            result_data = json.load(f)
+                        outcome = 'result'
+                        break
+                    except (json.JSONDecodeError, IOError) as e:
+                        self.logger.warning(f"[{test_name}] 结果文件读取失败：{e}")
+                        continue
+
+                # 进程存活监控（设计文档 4.1/4.5：进程曾存活后消失 → crash）
+                alive = self._is_game_alive()
+                if alive:
+                    game_seen_alive = True
+                elif game_seen_alive:
+                    outcome = 'crash'
+                    self.logger.warning(f"[{test_name}] 游戏进程消失（曾存活），判定崩溃")
                     break
-                except (json.JSONDecodeError, IOError) as e:
-                    self.logger.warning(f"[{test_name}] 结果文件读取失败：{e}")
-                    continue
+                # 未曾存活则继续等（游戏可能仍在启动）
 
-            # 进程存活监控（设计文档 4.1/4.5：进程曾存活后消失 → crash）
-            alive = self._is_game_alive()
-            if alive:
-                game_seen_alive = True
-            elif game_seen_alive:
-                outcome = 'crash'
-                self.logger.warning(f"[{test_name}] 游戏进程消失（曾存活），判定崩溃")
-                break
-            # 未曾存活则继续等（游戏可能仍在启动）
+                self.logger.info(f"[{test_name}] 等待中... ({elapsed}/{timeout}s)")
 
-            self.logger.info(f"[{test_name}] 等待中... ({elapsed}/{timeout}s)")
+            # 超时
+            if outcome is None:
+                outcome = 'env_error' if not game_seen_alive else 'timeout'
 
-        # 超时
-        if outcome is None:
-            outcome = 'env_error' if not game_seen_alive else 'timeout'
+            # 4. 停止游戏
+            self.executor.stop_game()
+            time.sleep(1)
 
-        # 4. 停止游戏
-        self.executor.stop_game()
-        time.sleep(1)
+            # 5. 分类 + 组装结果
+            game_errors = self.http_receiver.get_game_errors()
+            return self._finalize_result(
+                test_name, outcome, result_data, game_errors, elapsed,
+                auto_screenshot_on_failure, result_file)
+        finally:
+            # 需求1：测试完成后（成功/失败/超时/早返回——所有路径）自动写 _test_off.lua，
+            # 让手动游戏时 auto-test 模块不加载（零干扰）；下次 _prepare_test_entry 自动删除它
+            self._write_test_off(source_dir)
 
-        # 5. 分类 + 组装结果
-        game_errors = self.http_receiver.get_game_errors()
-        return self._finalize_result(
-            test_name, outcome, result_data, game_errors, elapsed,
-            auto_screenshot_on_failure, result_file)
+    def _write_test_off(self, source_dir: str) -> None:
+        """测试完成后写 _test_off.lua，让手动游戏时 auto-test 模块不加载（零干扰）。"""
+        try:
+            test_dir = self.config.get_test_dir_path(self.config._resolve_path(source_dir))
+            off_path = test_dir / '_test_off.lua'
+            off_path.write_text(
+                '-- _run_single_test 完成后自动生成：手动游戏时 auto-test 模块不加载（init.lua early-return）\nreturn true\n',
+                encoding='utf-8')
+            self.logger.info(f"[toggle] 测试完成，已写 _test_off.lua（手动游戏零干扰）")
+        except Exception as e:
+            self.logger.warning(f"[toggle] 写 _test_off 失败：{e}")
 
     def _finalize_result(self, test_name: str, outcome: str, result_data: Optional[dict],
                          game_errors: list, elapsed: int,

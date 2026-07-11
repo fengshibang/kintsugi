@@ -7,8 +7,14 @@
 --
 -- 与通用引导（server/lua_bootstrap.lua）的区别：
 --   - 通用引导：测试文件自带全局 RunAutoTest()，引导加载后立即调用
---   - 本框架引导：测试文件用 TestRunner:register 注册用例，本引导把 TestRunner
---     包装成 RunAutoTest，由框架 init.lua 在 BattleInitCompleted 事件触发执行
+--   - 本框架引导：由 init.lua 在 BattleInitCompleted 事件触发执行 RunAutoTest
+--
+-- 支持两种测试形态（加载测试模块后自动判定）：
+--   - 异步测试：测试文件自带全局 RunAutoTest()（TestScenario 协程式，需真实游戏
+--     环境）。本引导检测到后采用「异步模式」：不定义自己的 RunAutoTest，交由
+--     init.lua 在 BattleInitCompleted 调用测试文件自己的 RunAutoTest。
+--   - 同步测试：测试文件用 TestRunner:register 注册用例（不定义 RunAutoTest）。
+--     本引导采用「同步模式」：把 TestRunner 包装成 RunAutoTest。
 --
 -- 来源：提取自原 wzns 项目 scripts/mcp_war3_tester.py 的 RUN_AUTO_TEST_TEMPLATE
 -- ============================================================================
@@ -39,8 +45,9 @@ if type(config) ~= 'table' or not config.test_name or not config.test_file then
     return
 end
 
--- 构建模块名（优先使用 test_module，fallback 到 test_file 去后缀）
-local module_name = config.test_module or config.test_file:gsub('%.lua$', '')
+-- 构建模块名：优先使用 test_name（mcp_server.py 推断 test_module/test_file 时，
+-- 对已含 'test_' 前缀的 test_name 会多加前缀 → test_test_xinfa_faction，require 失败）
+local module_name = config.test_name or config.test_module or config.test_file:gsub('%.lua$', '')
 if config.test_module_prefix and config.test_module_prefix ~= '' then
     module_name = config.test_module_prefix .. module_name
 end
@@ -61,9 +68,35 @@ print('========================================')
 print('')
 
 -- ============================================================================
+-- 加载测试模块，自动判定同步/异步模式
+-- ============================================================================
+print(string.format('[run_auto_test] 加载测试模块: %s', module_name))
+package.loaded[module_name] = nil
+local loadOk, loadErr = pcall(function()
+    require(module_name)
+end)
+
+if not loadOk then
+    print(string.format('[run_auto_test] ✗ 模块加载失败: %s', tostring(loadErr)))
+    _G.__auto_test_mode = false
+    return
+end
+print(string.format('[run_auto_test] ✓ 模块加载成功'))
+
+-- 异步模式：测试文件自带 RunAutoTest，由 init.lua 在 BattleInitCompleted 调用
+if type(_G.RunAutoTest) == 'function' then
+    print('[run_auto_test] 异步模式：测试文件自带 RunAutoTest，等待 BattleInitCompleted')
+    -- 设置 current_test_name，使 /error、/log 上报能被 MCP 按 test_name 归类（否则 'unknown' 被 /result 过滤掉）
+    if type(set_current_test_name) == 'function' then
+        set_current_test_name(config.test_name)
+    end
+    return
+end
+
+-- ============================================================================
 -- 同步模式：使用 TestRunner 框架
 -- ============================================================================
--- 定义 RunAutoTest 函数，由 init.lua 在 BattleInitCompleted 后调用
+print('[run_auto_test] 同步模式：本文件定义 RunAutoTest（TestRunner）')
 function RunAutoTest()
     print('')
     print('========================================')
@@ -78,22 +111,6 @@ function RunAutoTest()
     local TestRunner = require('script.src.auto-test.TestRunner')
     local runner = TestRunner:create(config.test_name)
     TestRunner._current = runner
-
-    print(string.format('[RunAutoTest] 加载测试模块: %s', module_name))
-    package.loaded[module_name] = nil
-    local loadOk, loadErr = pcall(function()
-        require(module_name)
-    end)
-
-    if not loadOk then
-        print(string.format('[RunAutoTest] ✗ 模块加载失败: %s', tostring(loadErr)))
-        runner:record(module_name .. ' (加载)', false, tostring(loadErr))
-        runner:exportResults()
-        TestRunner._current = nil
-        return
-    end
-
-    print(string.format('[RunAutoTest] ✓ 模块加载成功'))
 
     require('script.src.auto-test.run_unit_tests')
 
@@ -114,17 +131,3 @@ function RunAutoTest()
     print('========================================')
     print('')
 end
-
-print('[run_auto_test] 同步模式：RunAutoTest 函数已定义，等待 BattleInitCompleted')
-
--- ============================================================================
--- 异步模式说明（注释保留）
--- ============================================================================
--- 若测试文件自带全局 RunAutoTest（异步场景），可改为：
---
--- package.loaded[module_name] = nil
--- require(module_name)
--- print('[run_auto_test] 异步模式：目标模块已加载，等待 BattleInitCompleted 调用 RunAutoTest')
---
--- 此时不需要本文件定义 RunAutoTest，由测试文件自行提供。
--- ============================================================================

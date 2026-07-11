@@ -1,5 +1,14 @@
 # Changelog — war3-tester
 
+## 0.6.1 — 2026-07-11
+
+### 新增 / 修复（基于 0.6.0 增量）
+
+- **测试完成后自动关闭测试**：`_run_single_test` 用 try/finally 在所有完成路径（成功/失败/超时/早返回）后自动写 `_test_off.lua`，让用户手动进游戏时 auto-test 模块不加载（零干扰）。下次 `test_commit` 的 `_prepare_test_entry` 自动删除它。
+- **修复 `test_commit` 误报 env_error**：`_prepare_test_entry` 推断 test_file 时，对已含 `test_` 前缀的 test_name（如 `test_xinfa_faction`）不再追加，避免生成 `test_test_xinfa_faction.lua` 致 require 失败、test_commit 报 env_error"游戏进程从未启动"。
+- **framework.lua 异步修复**：原 0.6.0 framework 为同步版（定义全局 RunAutoTest 覆盖异步测试自带的 → 异步测试被同步引导吞掉、空跑假通过）。改为先 require 测试模块后检测 `_G.RunAutoTest`：自带则异步模式（交 init.lua 在 BattleInitCompleted 调用测试的 RunAutoTest），否则同步模式（TestRunner 包装）。
+- **framework.lua module_name 优先 test_name + 异步分支 set_current_test_name**：绕过 _target_test 拼写 bug（双保险）；异步分支补 `set_current_test_name`，使 /error、/log 上报能被 MCP 按 test_name 归类（否则 `unknown` 被 /result 过滤掉，game_errors 丢失）。
+
 ## 0.6.0 — 2026-07-11
 
 ### 新增（v2 无人值守测试循环）

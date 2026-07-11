@@ -375,7 +375,12 @@ class War3TesterMCP:
                     f"test_name='{test_name}' 包含中文，无法推断文件名，"
                     f"请显式传入 test_file 参数"
                 )
-            test_file = f'test_{test_name}.lua'
+            # 修复：test_name 可能已含 'test_' 前缀（如 'test_xinfa_faction'），
+            # 此时不再追加，避免生成 'test_test_xinfa_faction.lua' 致 require 失败、test_commit 报 env_error
+            if test_name.startswith('test_'):
+                test_file = f'{test_name}.lua'
+            else:
+                test_file = f'test_{test_name}.lua'
 
         if not test_file.endswith('.lua'):
             test_file = test_file + '.lua'
