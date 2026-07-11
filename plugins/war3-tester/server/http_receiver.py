@@ -69,6 +69,12 @@ class HTTPReceiver:
         self._logs = {}      # test_name -> list[log_entry]
         self._max_logs_per_test = 2000  # 单测试日志缓冲上限（防爆内存）
 
+        # inspect_game 运行时查询队列与结果缓存（v0.9.0 新增）
+        # _inspect_pending: list[dict]，每项 {id, expr}，游戏端 GET /inspect/pending 取走执行
+        # _inspect_results: dict[id -> dict]，游戏端 POST /inspect/result 回传，MCP 轮询取出
+        self._inspect_pending = []   # FIFO 队列（append 入，pop(0) 出）
+        self._inspect_results = {}   # id → {"id","value"} 或 {"id","error"}
+
     def start(self) -> bool:
         """启动 HTTP 服务器（后台线程）
 
@@ -337,6 +343,52 @@ class HTTPReceiver:
                 return jsonify({'success': True, 'message': '进度已接收'})
             except Exception as e:
                 self.logger.error(f"处理进度上报失败：{e}", exc_info=True)
+                return jsonify({'success': False, 'error': str(e)}), 500
+
+        @app.route('/inspect/pending', methods=['GET'])
+        def get_inspect_pending():
+            """游戏端轮询拉取待执行的查询（v0.9.0 新增）
+
+            返回 FIFO 队列中最旧的一条 {id, expr}，取出即移除。
+            队列为空时返回 {}（200），绝不阻塞——游戏每 200ms 轮询一次。
+            """
+            try:
+                if not self._inspect_pending:
+                    return jsonify({})
+                # 取出最旧的一条（FIFO），同时从队列移除
+                entry = self._inspect_pending.pop(0)
+                return jsonify(entry)
+            except Exception as e:
+                self.logger.error(f"处理 /inspect/pending 失败：{e}", exc_info=True)
+                # graceful：出错时返回空，不阻塞游戏轮询
+                return jsonify({})
+
+        @app.route('/inspect/result', methods=['POST'])
+        def receive_inspect_result():
+            """接收游戏端回传的查询结果（v0.9.0 新增）
+
+            body: {"id":"<id>","value":"<结果文本>"} 或 {"id":"<id>","error":"<错误文本>"}
+            存入 _inspect_results 缓存，MCP 侧 inspect_game 轮询取出。
+            """
+            try:
+                data = request.get_json(force=True, silent=True)
+                if not data:
+                    raw_data = request.get_data(as_text=True)
+                    try:
+                        data = json.loads(raw_data)
+                    except (json.JSONDecodeError, ValueError):
+                        return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
+
+                req_id = data.get('id')
+                if not req_id:
+                    return jsonify({'success': False, 'error': '缺少 id 字段'}), 400
+
+                # 存入结果缓存（整个 body，含 id+value 或 id+error）
+                self._inspect_results[req_id] = data
+                self.logger.info(f"[inspect] 收到结果：{req_id}")
+                return jsonify({'success': True, 'message': '结果已接收'})
+            except Exception as e:
+                self.logger.error(f"处理 /inspect/result 失败：{e}", exc_info=True)
                 return jsonify({'success': False, 'error': str(e)}), 500
 
         @app.route('/log', methods=['POST'])

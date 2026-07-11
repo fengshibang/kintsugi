@@ -341,6 +341,25 @@ class War3TesterMCP:
                     }
                 },
                 {
+                    "name": "inspect_game",
+                    "description": "运行时对象检查 - 在游戏内执行一段 Lua 表达式并返回结果。AI 调用后，MCP 将查询放入 pending 队列，游戏端轮询拉取执行并回传结果。用于运行时调试、查看单位属性、检查游戏状态等。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "expr": {
+                                "type": "string",
+                                "description": "要在游戏内执行的 Lua 表达式（如 'UnitObj.all_count()' 或 'Player(1):getGold()'）"
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "等待游戏端回传结果的超时时间（秒），默认 5",
+                                "default": 5
+                            }
+                        },
+                        "required": ["expr"]
+                    }
+                },
+                {
                     "name": "get_debug_output",
                     "description": "调试输出捕获 - 聚合游戏的调试输出：① War3 游戏日志（按 config.war3_log_dir 定位）② HTTP /error 端点缓存的运行时错误（http_receiver 内存缓冲）。按 error/warning 分级返回最近 N 条。纯读取，不启动游戏。",
                     "inputSchema": {
@@ -1176,6 +1195,55 @@ class War3TesterMCP:
                     "content": [{"type": "text", "text": f"[FAIL] get_project_info 失败：{e}"}],
                     "isError": True
                 }
+
+        elif tool_name == "inspect_game":
+            expr = arguments.get("expr")
+            timeout = arguments.get("timeout", 5)
+
+            if not expr:
+                return {
+                    "content": [{"type": "text", "text": "[FAIL] 缺少 expr 参数"}],
+                    "isError": True
+                }
+
+            # 生成唯一 id（毫秒时间戳 + 随机后缀防爆）
+            query_id = f"q_{int(time.time() * 1000)}_{os.getpid()}"
+
+            # 加入 pending 队列
+            try:
+                self.http_receiver._inspect_pending.append({
+                    "id": query_id,
+                    "expr": expr
+                })
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] 加入查询队列失败：{e}"}],
+                    "isError": True
+                }
+
+            # 轮询等待结果（每 0.2s 查一次，直到 timeout）
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                time.sleep(0.2)
+                result = self.http_receiver._inspect_results.pop(query_id, None)
+                if result:
+                    # 命中，返回结果
+                    if "error" in result:
+                        return {
+                            "content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}],
+                            "isError": True
+                        }
+                    else:
+                        value = result.get("value", "")
+                        return {
+                            "content": [{"type": "text", "text": f"[OK] 查询结果：\n{value}"}]
+                        }
+
+            # 超时
+            return {
+                "content": [{"type": "text", "text": f"[FAIL] 超时（{timeout}秒）：游戏端未回传结果"}],
+                "isError": True
+            }
 
         elif tool_name == "get_debug_output":
             try:
