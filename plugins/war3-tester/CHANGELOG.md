@@ -1,5 +1,22 @@
 # Changelog — war3-tester
 
+## 0.6.0 — 2026-07-11
+
+### 新增（v2 无人值守测试循环）
+
+- **`run_test_batch`**：顺序运行多个测试（每测试独立游戏会话，天然隔离），一条指令跑完全部，返回结构化汇总（summary/results/failed + failure_type 分类）。入参：test_filter(all/failed/列表/子串)、stop_on_first_failure、max_retries、timeout_per_test、auto_screenshot_on_failure
+- **`discover_tests`**：扫描测试目录，返回测试列表 + 分类(sync/async) + 估算耗时
+- **`failure_type` 诊断**：compile_error/crash/timeout/assertion/runtime_error/env_error/unknown，配合进程存活监控（游戏崩溃检测）
+- **反馈通道分层**：游戏侧 POST `/progress`（逐步骤进度）、`/log`（拦截 log.info+log.error 的分级日志）、`/error`、`/result`；MCP 侧缓冲回填进结果 JSON（新增 `test_batch_runner.py`）
+- **`toggle_test`**：一键开关自动测试模式。关闭时写 `_test_off.lua` + 清测试残留 + 重编译，项目侧 `auto-test/init.lua` 顶部 early-return，手动游戏零干扰（无横幅/无 log 拦截/无自动选难度）；`test_commit` 自动删除 `_test_off.lua` 强制开启
+- **`analyze_screenshot`**：多模态视觉模型（VLM）分析游戏截图，返回画面判读文本。模型/URL/key 从环境变量 `VLM_MODEL`/`VLM_BASE_URL`/`VLM_API_KEY` 读（普通文本模型看不了图，必须多模态）
+- **`SKILL.md` v2**：无人值守循环（发现→批量跑→分析→修复→重验）+ 诊断决策树 + 结果格式 v2
+
+### 验证
+- `run_test_batch`：wzns 项目批量测试全流程跑通
+- `toggle_test`：手动游戏 SelectState 选难度间隔 71s（原 auto_select 600ms 抢选），auto-test 模块零加载（框架日志无 AutoTest 输出）
+- `analyze_screenshot`：实测多模态 VLM 返回正确画面判读（画面状态/UI 元素/数值）
+
 ## 0.5.0 — 2026-07-11
 
 ### 修复 / 新增

@@ -23,6 +23,10 @@ import sys
 import time
 import re
 import os
+import base64
+import mimetypes
+import urllib.request
+import urllib.error
 from pathlib import Path
 from datetime import datetime
 
@@ -33,6 +37,7 @@ sys.path.insert(0, str(SERVER_DIR))
 from config import Config
 from env_bridge import create_executor
 from http_receiver import HTTPReceiver
+from test_batch_runner import TestBatchRunner
 from logger import setup_logger
 
 # 初始化配置
@@ -53,6 +58,8 @@ class War3TesterMCP:
         self.logger = setup_logger('war3-mcp')
         self.executor = executor
         self.http_receiver = http_receiver
+        # v2: 批量测试编排器（复用 _prepare_test_entry，与 test_commit 共享单测执行核心）
+        self.batch_runner = TestBatchRunner(config, executor, http_receiver, self)
 
         # MCP 能力声明
         self.capabilities = {
@@ -97,9 +104,69 @@ class War3TesterMCP:
                             "source_dir": {
                                 "type": "string",
                                 "description": "源码目录路径（支持 ${workspaceRoot} 变量）"
+                            },
+                            "auto_screenshot_on_failure": {
+                                "type": "boolean",
+                                "default": True,
+                                "description": "失败时自动截图（仅 crash/timeout/unknown 触发，v2 增强）"
                             }
                         },
                         "required": ["test_name"]
+                    }
+                },
+                {
+                    "name": "run_test_batch",
+                    "description": "批量运行测试 - 顺序运行多个测试（每个独立游戏会话），返回结构化汇总。支持 filter=all/failed/列表、重试、超时、失败截图、failure_type 分类（v2 新增）",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "test_filter": {
+                                "type": ["string", "array"],
+                                "description": "'all'(默认) | 'failed'(复用上次失败列表) | 测试名/文件名列表 | glob 子串",
+                                "default": "all"
+                            },
+                            "stop_on_first_failure": {
+                                "type": "boolean", "default": False,
+                                "description": "首个失败即停止后续测试"
+                            },
+                            "max_retries": {
+                                "type": "integer", "default": 1,
+                                "description": "单测失败最大重试次数"
+                            },
+                            "timeout_per_test": {
+                                "type": "integer", "default": 90,
+                                "description": "单测超时秒数"
+                            },
+                            "auto_screenshot_on_failure": {
+                                "type": "boolean", "default": True,
+                                "description": "失败时自动截图（仅 crash/timeout/unknown 触发）"
+                            },
+                            "platform": {
+                                "type": "string", "enum": ["ydwe", "kkwe"],
+                                "description": "游戏平台，默认自动选择"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径"
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "discover_tests",
+                    "description": "发现测试 - 扫描测试目录，返回测试列表 + 分类(sync/async) + 估算耗时（v2 新增）",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "filter": {
+                                "type": "string",
+                                "description": "过滤子串（匹配 test_name），可选"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径"
+                            }
+                        }
                     }
                 },
                 {
@@ -206,6 +273,24 @@ class War3TesterMCP:
                     }
                 },
                 {
+                    "name": "analyze_screenshot",
+                    "description": "用多模态视觉模型（VLM）分析游戏截图，返回画面判读文本。需要环境变量 VLM_MODEL/VLM_BASE_URL/VLM_API_KEY",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "png_path": {
+                                "type": "string",
+                                "description": "截图 PNG 文件路径（Windows 绝对路径或相对路径）"
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": "自定义分析提示词（可选，默认判读画面状态/UI元素/是否卡对话框/可见数值）"
+                            }
+                        },
+                        "required": ["png_path"]
+                    }
+                },
+                {
                     "name": "send_key",
                     "description": "向 War3 游戏窗口发送键盘事件",
                     "inputSchema": {
@@ -218,6 +303,24 @@ class War3TesterMCP:
                             }
                         },
                         "required": ["key"]
+                    }
+                },
+                {
+                    "name": "toggle_test",
+                    "description": "一键开关自动测试模式。关闭时 auto-test 模块不加载（手动游戏零干扰：无横幅/无 log 拦截/无自动选难度/无自动跑测试）；开启时恢复默认加载。变更后自动重编译地图。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "true=开启(恢复 auto-test 加载，跑测试仍需 test_commit)；false=关闭(模块不加载，手动游戏零干扰)"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径，默认 config.compile_source_dir"
+                            }
+                        },
+                        "required": ["enabled"]
                     }
                 },
             ],
@@ -258,6 +361,12 @@ class War3TesterMCP:
         resolved_source = config._resolve_path(source_dir) if source_dir else self.project_root
         test_dir = config.get_test_dir_path(resolved_source)
         test_dir.mkdir(parents=True, exist_ok=True)
+
+        # 测试时强制开启：删除 toggle_test 写入的关闭标志，确保 test_commit 能跑测试
+        off_path = test_dir / '_test_off.lua'
+        if off_path.exists():
+            off_path.unlink()
+            self.logger.info("[test_commit] 已删除 _test_off.lua（强制开启测试模式）")
 
         # 推断 test_file
         if not test_file:
@@ -332,9 +441,16 @@ class War3TesterMCP:
         self.logger.info(f"[test_commit] 已写入 run_auto_test.lua")
 
     def test_commit(self, test_name: str, test_file: str = None,
-                    timeout: int = 60, platform: str = None, source_dir: str = None) -> dict:
-        """
-        运行测试 - 编译 + 启动游戏 + 等待 HTTP 结果
+                    timeout: int = 60, platform: str = None, source_dir: str = None,
+                    auto_screenshot_on_failure: bool = True) -> dict:
+        """运行测试 - 编译 + 启动游戏 + 等待 HTTP 结果
+
+        v2 增强（设计文档 4.1）：委托 batch_runner._run_single_test，与 run_test_batch
+        共享单测执行核心，自动获得：
+        - 进程存活监控（游戏崩溃 → failure_type='crash'）
+        - failure_type 分类（compile_error/crash/timeout/assertion/runtime_error/env_error）
+        - 失败按类型触发截图（仅 crash/timeout/unknown）
+        - 结果附加 game_errors / progress / logs / crash_log
 
         Args:
             test_name: 测试名称
@@ -342,82 +458,180 @@ class War3TesterMCP:
             timeout: 超时时间（秒）
             platform: 游戏平台
             source_dir: 源码目录
+            auto_screenshot_on_failure: 失败时自动截图
         """
-        # 0. 预清理
-        self.logger.info(f"[test_commit] 预清理...")
-        self.executor.stop_game()
-        time.sleep(3)
+        single = self.batch_runner._run_single_test(
+            test_name, test_file, timeout, platform, source_dir, auto_screenshot_on_failure)
 
-        # 0.5 准备测试入口
-        try:
-            self._prepare_test_entry(test_name, test_file, source_dir)
-        except Exception as e:
-            return {
-                'success': False,
-                'error': f'准备测试入口失败：{e}',
-                'message': '测试入口准备失败'
-            }
+        success = single.get('success', False)
+        message_lines = [f'测试完成：{test_name}', f'结果：{"通过" if success else "失败"}',
+                         f'耗时：{single.get("elapsed", 0)}s']
+        if single.get('failure_type'):
+            message_lines.append(f'failure_type: {single.get("failure_type")}')
+        if single.get('error'):
+            message_lines.append(f'错误：{single.get("error")}')
+        if single.get('screenshots'):
+            message_lines.append(f'截图：{single.get("screenshots")}')
 
-        # 1. 编译
-        compile_result = self.executor.compile(source_dir)
-        if not compile_result.get('success'):
-            return {
-                'success': False,
-                'error': f'编译失败：{compile_result.get("error", "unknown")}',
-                'message': '地图编译失败'
-            }
-
-        # 2. 启动游戏
-        run_result = self.executor.run_game(platform=platform)
-        if not run_result.get('success'):
-            return {
-                'success': False,
-                'error': f'启动游戏失败：{run_result.get("error", "unknown")}',
-                'message': '游戏启动失败'
-            }
-
-        # 3. 等待测试结果
-        self.http_receiver.delete_old_result(test_name)
-        result_file = self.http_receiver.get_result_file(test_name)
-
-        self.logger.info(f"[test_commit] 等待测试结果 (超时 {timeout}s)...")
-        elapsed = 0
-        poll_interval = 3
-        while elapsed < timeout:
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-
-            if result_file.exists():
-                try:
-                    with open(result_file, 'r', encoding='utf-8') as f:
-                        test_data = json.load(f)
-                    self.logger.info(f"[test_commit] 测试结果已接收: {test_name}")
-                    self.executor.stop_game()
-                    time.sleep(1)
-                    test_success = test_data.get('success', False)
-                    return {
-                        'success': True,
-                        'message': f'测试完成：{test_name}\n测试结果：{"通过" if test_success else "失败"}\n耗时：{elapsed}s',
-                        'test_name': test_name,
-                        'result': test_data,
-                        'result_file': str(result_file),
-                        'elapsed': elapsed,
-                    }
-                except (json.JSONDecodeError, IOError) as e:
-                    self.logger.warning(f"[test_commit] 结果文件读取失败: {e}")
-                    continue
-
-            self.logger.info(f"[test_commit] 等待中... ({elapsed}/{timeout}s)")
-
-        # 超时
-        self.logger.warning(f"[test_commit] 等待超时 ({timeout}s)")
-        self.executor.stop_game()
         return {
-            'success': False,
-            'error': f'测试超时 ({timeout}s)',
-            'message': f'测试超时：{test_name}',
+            'success': success,
+            'message': '\n'.join(message_lines),
             'test_name': test_name,
+            'result': single.get('result'),
+            'result_file': single.get('result_file'),
+            'elapsed': single.get('elapsed', 0),
+            # v2 字段
+            'failure_type': single.get('failure_type'),
+            'game_errors': single.get('game_errors'),
+            'crash_log': single.get('crash_log'),
+            'screenshots': single.get('screenshots'),
+            'progress': single.get('progress'),
+            'logs': single.get('logs'),
         }
+
+    def toggle_test(self, enabled: bool, source_dir: str) -> dict:
+        """一键开关自动测试模式（写/删 _test_off.lua + 清测试残留 + 重编译）。
+
+        关闭(false)：写入 _test_off.lua（内容 return true），auto-test/init.lua 顶部
+            pcall(require) 命中后整个模块 early-return → 手动游戏零干扰。
+            同时删除 _target_test.lua / run_auto_test.lua 残留，避免旧测试入口意外激活。
+        开启(true)：删除 _test_off.lua，恢复 auto-test 模块默认加载。
+        注：跑测试本身仍需 test_commit（它写入 _target_test.lua，并会自动删除 _test_off.lua）。
+        """
+        test_dir = config.get_test_dir_path(config._resolve_path(source_dir))
+        test_dir.mkdir(parents=True, exist_ok=True)
+        off_path = test_dir / '_test_off.lua'
+        target_path = test_dir / '_target_test.lua'
+        run_auto_path = test_dir / 'run_auto_test.lua'
+
+        if enabled:
+            if off_path.exists():
+                off_path.unlink()
+            action = '已开启：auto-test 模块恢复加载（跑测试请用 test_commit）'
+            self.logger.info('[toggle_test] 开启：删除 _test_off.lua')
+        else:
+            # 写关闭标志 + 清测试残留，确保手动游戏零干扰
+            off_path.write_text(
+                '-- toggle_test 生成：本文件存在则 auto-test 模块不加载（手动游戏模式）\n'
+                'return true\n',
+                encoding='utf-8')
+            for p in (target_path, run_auto_path):
+                if p.exists():
+                    p.unlink()
+            action = '已关闭：auto-test 模块不加载，手动游戏零干扰'
+            self.logger.info('[toggle_test] 关闭：写入 _test_off.lua，清理 _target_test.lua/run_auto_test.lua 残留')
+
+        # 重编译让 .w3x 反映标志文件变更
+        compile_result = self.executor.compile(source_dir)
+        return {
+            'success': compile_result.get('success', False),
+            'enabled': enabled,
+            'action': action,
+            'compile_error': compile_result.get('error') if not compile_result.get('success') else None,
+        }
+
+    def _read_image_b64(self, path: str):
+        """读取图片，返回 (base64 数据, media_type)。"""
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"截图文件不存在: {path}")
+        mime = mimetypes.guess_type(path)[0] or "image/png"
+        # Anthropic 兼容接口只接受 image/png、image/jpeg、image/gif、image/webp
+        if mime not in ("image/png", "image/jpeg", "image/gif", "image/webp"):
+            mime = "image/png"
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode(), mime
+
+    def analyze_screenshot(self, png_path: str, prompt: str = "") -> str:
+        """调用多模态视觉模型（VLM）分析截图，返回文本结果。
+
+        逻辑照搬 scripts/analyze_screenshot.py 的 analyze() 函数：
+        - 读图 → base64 → 调 Anthropic 兼容接口 POST {VLM_BASE_URL}/v1/messages
+        - 模型/URL/key 从环境变量读：VLM_MODEL、VLM_BASE_URL、VLM_API_KEY
+        - 缺任一项都明确报错（不静默用默认值）
+        """
+        if not prompt:
+            prompt = (
+                "你是 War3 自动化测试的视觉判读助手。请分析这张游戏截图，输出：\n"
+                "1. 画面状态（主菜单/选难度/对战中/结算 等）\n"
+                "2. UI 元素（对话框、按钮、血条、技能栏是否可见）\n"
+                "3. 是否卡在需要用户输入的对话框（是/否 + 依据）\n"
+                "4. 单位/血量等可见数值\n"
+                "简洁分条作答。"
+            )
+
+        b64, mime = self._read_image_b64(png_path)
+
+        # 环境变量读取（缺任一项报错，不静默用默认值）
+        base_url = os.environ.get("VLM_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL")
+        if not base_url:
+            raise RuntimeError(
+                "未配置 VLM_BASE_URL（或 ANTHROPIC_BASE_URL）。"
+                "请在 ~/.claude/settings.json 的 env 中设置 VLM_BASE_URL，"
+                "然后 /mcp 重连 war3-tester。"
+            )
+        model = os.environ.get("VLM_MODEL")
+        if not model:
+            raise RuntimeError(
+                "未配置 VLM_MODEL（视觉多模态模型名）。"
+                "请在 ~/.claude/settings.json 的 env 中设置 VLM_MODEL"
+                "（当前视觉模型，例如 qwen3.7-plus），然后 /mcp 重连 war3-tester。"
+            )
+        api_key = os.environ.get("VLM_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        if not api_key:
+            raise RuntimeError(
+                "未配置 VLM_API_KEY（或 ANTHROPIC_AUTH_TOKEN）。"
+                "请在 ~/.claude/settings.json 的 env 中设置 API token，"
+                "然后 /mcp 重连 war3-tester。"
+            )
+
+        payload = {
+            "model": model,
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime,
+                                "data": b64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        }
+
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/v1/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"代理返回 HTTP {e.code}:\n{body}") from None
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"无法连接代理 {base_url}: {e.reason}") from None
+
+        # Anthropic 兼容响应：content 是 block 数组
+        blocks = data.get("content", [])
+        texts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+        result = "\n".join(t for t in texts if t).strip()
+        if not result:
+            raise RuntimeError(f"模型未返回文本。原始响应:\n{json.dumps(data, ensure_ascii=False)}")
+        return result
 
     async def handle_tool_call(self, tool_name: str, arguments: dict) -> dict:
         """处理工具调用"""
@@ -444,6 +658,7 @@ class War3TesterMCP:
             timeout = arguments.get("timeout", 60)
             platform = arguments.get("platform")
             source_dir = arguments.get("source_dir")
+            auto_screenshot_on_failure = arguments.get("auto_screenshot_on_failure", True)
 
             if not source_dir:
                 source_dir = str(config.compile_source_dir)
@@ -454,7 +669,8 @@ class War3TesterMCP:
                 run_mode, _ = config.get_run_mode_with_source()
                 platform = run_mode
 
-            result = self.test_commit(test_name, test_file, timeout, platform, source_dir)
+            result = self.test_commit(test_name, test_file, timeout, platform, source_dir,
+                                      auto_screenshot_on_failure)
 
             messages = [f"## 测试代码变更\n\n时间：{timestamp}"]
             if result.get("message"):
@@ -463,6 +679,53 @@ class War3TesterMCP:
                 messages.append(f"\n[ERROR] {result.get('error', 'unknown')}")
 
             return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+
+        elif tool_name == "run_test_batch":
+            test_filter = arguments.get("test_filter", "all")
+            stop_on_first_failure = arguments.get("stop_on_first_failure", False)
+            max_retries = arguments.get("max_retries", 1)
+            timeout_per_test = arguments.get("timeout_per_test", 90)
+            auto_ss = arguments.get("auto_screenshot_on_failure", True)
+            platform = arguments.get("platform")
+            source_dir = arguments.get("source_dir")
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            if not platform:
+                run_mode, _ = config.get_run_mode_with_source()
+                platform = run_mode
+
+            batch_result = self.batch_runner.run_test_batch(
+                test_filter=test_filter, stop_on_first_failure=stop_on_first_failure,
+                max_retries=max_retries, timeout_per_test=timeout_per_test,
+                auto_screenshot_on_failure=auto_ss, source_dir=source_dir, platform=platform)
+
+            messages = [f"## 批量测试\n\n时间：{timestamp}", batch_result.get("message", "")]
+            if not batch_result.get("success") and batch_result.get("error"):
+                messages.append(f"\n[ERROR] {batch_result['error']}")
+            summary = batch_result.get("summary", {})
+            if summary:
+                messages.append(f"\n汇总：{summary.get('passed')}/{summary.get('total')} 通过，"
+                                f"failure_types={summary.get('failure_types', {})}")
+            failed = batch_result.get("failed", [])
+            if failed:
+                messages.append(f"失败列表：{failed}")
+            return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+
+        elif tool_name == "discover_tests":
+            flt = arguments.get("filter")
+            source_dir = arguments.get("source_dir")
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            discovery = self.batch_runner.discover_tests(source_dir, filter_pattern=flt)
+            if discovery.get("success"):
+                tests = discovery.get("tests", [])
+                lines = [f"发现 {len(tests)} 个测试（估算 {discovery.get('total_est_seconds')}s）："]
+                for t in tests:
+                    lines.append(f"  - {t['test_name']} ({t['type']}, ~{t['est_seconds']}s)")
+                return {"content": [{"type": "text",
+                                     "text": f"## 测试发现\n\n时间：{timestamp}\n\n" + "\n".join(lines)}]}
+            return {"content": [{"type": "text", "text": f"[FAIL] {discovery.get('error', '未知错误')}"}],
+                    "isError": True}
 
         elif tool_name in ("launch_only", "run_game"):
             map_path = arguments.get("map_path", str(config.compile_output_path / config.compile_output_name))
@@ -529,6 +792,25 @@ class War3TesterMCP:
                     "isError": True
                 }
 
+        elif tool_name == "analyze_screenshot":
+            png_path = arguments.get("png_path")
+            prompt = arguments.get("prompt", "")
+            if not png_path:
+                return {
+                    "content": [{"type": "text", "text": "[FAIL] 缺少 png_path 参数"}],
+                    "isError": True
+                }
+            try:
+                analysis_text = self.analyze_screenshot(png_path, prompt)
+                return {
+                    "content": [{"type": "text", "text": f"[OK] 截图分析完成\n\n时间：{timestamp}\n\n{analysis_text}"}]
+                }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] 截图分析失败\n\n{e}"}],
+                    "isError": True
+                }
+
         elif tool_name == "stop_http_server":
             self.http_receiver.stop()
             return {
@@ -540,6 +822,26 @@ class War3TesterMCP:
             return {
                 "content": [{"type": "text", "text": f"[OK] 清理完成\n\n{stop_result.get('message', '')}"}]
             }
+
+        elif tool_name == "toggle_test":
+            enabled = arguments.get("enabled", True)
+            source_dir = arguments.get("source_dir")
+            if not source_dir:
+                source_dir = str(config.compile_source_dir)
+            else:
+                source_dir = str(config._resolve_path(source_dir))
+
+            result = self.toggle_test(enabled, source_dir)
+            if result.get("success"):
+                return {
+                    "content": [{"type": "text",
+                                 "text": f"[OK] 测试模式{result.get('action', '')}\n\n时间：{timestamp}"}]
+                }
+            else:
+                msg = f"[FAIL] toggle_test 未完成\n\n时间：{timestamp}\n"
+                if result.get("compile_error"):
+                    msg += f"编译失败：{result['compile_error']}"
+                return {"content": [{"type": "text", "text": msg}], "isError": True}
 
         else:
             return {

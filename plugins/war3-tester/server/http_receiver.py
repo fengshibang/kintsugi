@@ -62,7 +62,12 @@ class HTTPReceiver:
 
         self.http_server = None
         self.http_thread = None
-        self._game_errors = []  # 存储游戏内错误上报
+        self._game_errors = []  # 存储游戏内错误上报（/error 端点写入）
+        # 【v2】按 test_name 缓冲的进度时间线与结构化日志（/progress、/log 端点写入）
+        # /result 到达时合并进 result.json（游戏侧只管 POST，MCP 汇总，见设计文档 4.2/4.3）
+        self._progress = {}  # test_name -> list[progress_entry]
+        self._logs = {}      # test_name -> list[log_entry]
+        self._max_logs_per_test = 2000  # 单测试日志缓冲上限（防爆内存）
 
     def start(self) -> bool:
         """启动 HTTP 服务器（后台线程）
@@ -160,9 +165,9 @@ class HTTPReceiver:
         def receive_test_result():
             """接收测试结果"""
             try:
-                # 容错解析（对齐旧 wzns MCP /result）：
+                # 容错解析（通用 JSON 接收）：
                 # force+silent 优先，失败则 get_data + json.loads 兜底。
-                # 修复：wzns HttpClient 的标准 JSON POST 在 Flask strict request.json 下被判 400
+                # 修复：部分 War3 Lua HTTP 客户端的 JSON POST 在 Flask strict request.json 下被判 400
                 # （Content-Type/mimetype 识别差异），改用容错链路保证兼容。
                 data = request.get_json(force=True, silent=True)
                 if not data:
@@ -184,6 +189,22 @@ class HTTPReceiver:
                 saved_screenshots = save_screenshots(test_name, screenshots)
                 if saved_screenshots:
                     data['screenshots'] = saved_screenshots
+
+                # 【v2】合并 MCP 侧缓冲的 progress / logs / game_errors
+                # 游戏侧只管 POST，MCP 按 test_name 汇总回填（设计文档 4.2/4.3）
+                buffered_progress = self._progress.get(test_name)
+                if buffered_progress:
+                    existing = data.get('progress') or []
+                    data['progress'] = (existing + buffered_progress) if existing else list(buffered_progress)
+                buffered_logs = self._logs.get(test_name)
+                if buffered_logs:
+                    existing = data.get('logs') or []
+                    data['logs'] = (existing + buffered_logs) if existing else list(buffered_logs)
+                # game_errors：本次测试相关的错误上报（按 test_name 过滤；未带 test_name 的归 unknown）
+                related_errors = [e for e in self._game_errors
+                                  if e.get('test_name', 'unknown') == test_name]
+                if related_errors and not data.get('game_errors'):
+                    data['game_errors'] = related_errors
 
                 # 写入结果文件
                 with open(result_file, 'w', encoding='utf-8') as f:
@@ -282,6 +303,82 @@ class HTTPReceiver:
             else:
                 return jsonify({'status': 'not_found', 'message': f'测试结果 {test_name} 尚未生成'}), 404
 
+        @app.route('/progress', methods=['POST'])
+        def receive_progress():
+            """接收测试逐步骤进度（v2 新增）
+
+            游戏侧 TestScenario:step() 与 assert 失败时 POST。
+            MCP 按 test_name 缓冲为时间线，/result 到达时并入 result.json。
+            """
+            try:
+                data = request.get_json(force=True, silent=True)
+                if not data:
+                    raw_data = request.get_data(as_text=True)
+                    try:
+                        data = json.loads(raw_data)
+                    except (json.JSONDecodeError, ValueError):
+                        return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
+                if not data:
+                    return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
+
+                test_name = data.get('test_name', 'unknown')
+                entry = {
+                    'test_name': test_name,
+                    'step': data.get('step', ''),
+                    'phase': data.get('phase', 'done'),  # start | done | failed
+                    'detail': data.get('detail', {}),
+                    'timestamp': data.get('timestamp') or datetime.now().isoformat(),
+                }
+                if 'elapsed_ms' in data:
+                    entry['elapsed_ms'] = data['elapsed_ms']
+
+                self._progress.setdefault(test_name, []).append(entry)
+                self.logger.info(f"[进度] {test_name}: {entry['step']} ({entry['phase']})")
+                return jsonify({'success': True, 'message': '进度已接收'})
+            except Exception as e:
+                self.logger.error(f"处理进度上报失败：{e}", exc_info=True)
+                return jsonify({'success': False, 'error': str(e)}), 500
+
+        @app.route('/log', methods=['POST'])
+        def receive_log():
+            """接收结构化分级日志（v2 新增）
+
+            游戏侧 init.lua 拦截 log.info / log.error 后 POST。
+            MCP 按 test_name 缓冲（设上限防爆），/result 到达时并入 result.json。
+            高频上报由游戏侧节流（同类 message 0.2s 合并，见 init.lua）。
+            """
+            try:
+                data = request.get_json(force=True, silent=True)
+                if not data:
+                    raw_data = request.get_data(as_text=True)
+                    try:
+                        data = json.loads(raw_data)
+                    except (json.JSONDecodeError, ValueError):
+                        return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
+                if not data:
+                    return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
+
+                test_name = data.get('test_name', 'unknown')
+                entry = {
+                    'test_name': test_name,
+                    'level': data.get('level', 'info'),  # info | warn | error
+                    'category': data.get('category', ''),
+                    'message': data.get('message', ''),
+                    'context': data.get('context', {}),
+                    'timestamp': data.get('timestamp') or datetime.now().isoformat(),
+                }
+
+                bucket = self._logs.setdefault(test_name, [])
+                bucket.append(entry)
+                # 上限防爆：超出则丢弃最旧的一半
+                if len(bucket) > self._max_logs_per_test:
+                    del bucket[:len(bucket) // 2]
+
+                return jsonify({'success': True, 'message': '日志已接收'})
+            except Exception as e:
+                self.logger.error(f"处理日志上报失败：{e}", exc_info=True)
+                return jsonify({'success': False, 'error': str(e)}), 500
+
         return app
 
     def get_result_file(self, test_name: str) -> Optional[Path]:
@@ -298,3 +395,30 @@ class HTTPReceiver:
     def get_game_errors(self) -> list:
         """获取游戏内错误上报列表"""
         return self._game_errors
+
+    def get_progress(self, test_name: str) -> list:
+        """获取指定测试的进度时间线（v2）"""
+        return self._progress.get(test_name, [])
+
+    def get_logs(self, test_name: str) -> list:
+        """获取指定测试的结构化日志（v2）"""
+        return self._logs.get(test_name, [])
+
+    def clear_test_buffers(self, test_name: str = None) -> None:
+        """清除测试缓冲（progress / logs）
+
+        每个 test_commit / batch 单测开始前调用，避免上一个测试的缓冲污染。
+
+        Args:
+            test_name: 指定测试名则只清该测试的 progress/logs；None 则清空全部。
+        """
+        if test_name is None:
+            self._progress.clear()
+            self._logs.clear()
+            return
+        self._progress.pop(test_name, None)
+        self._logs.pop(test_name, None)
+
+    def clear_game_errors(self) -> None:
+        """清空游戏内错误上报列表（batch 开始前重置）"""
+        self._game_errors.clear()
