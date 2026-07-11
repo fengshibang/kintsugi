@@ -323,6 +323,47 @@ class War3TesterMCP:
                         "required": ["enabled"]
                     }
                 },
+                {
+                    "name": "get_project_info",
+                    "description": "地图/脚本结构分析 - 扫描项目地图脚本目录，返回结构化分析：目录树概要、各模块文件计数（技能/Buff/物品/任务/副本/系统/entities/components 等子目录）、代码行数统计、关键入口文件（init.lua 等）。纯静态分析，只读文件系统，不启动游戏。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径，默认 config.compile_source_dir"
+                            },
+                            "max_depth": {
+                                "type": "integer",
+                                "description": "目录树扫描最大深度，默认 3",
+                                "default": 3
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "get_debug_output",
+                    "description": "调试输出捕获 - 聚合游戏的调试输出：① War3 游戏日志（按 config.war3_log_dir 定位）② HTTP /error 端点缓存的运行时错误（http_receiver 内存缓冲）。按 error/warning 分级返回最近 N 条。纯读取，不启动游戏。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "每级最多返回条数，默认 50",
+                                "default": 50
+                            },
+                            "level": {
+                                "type": "string",
+                                "description": "过滤级别：'all'(默认) | 'error' | 'warning'",
+                                "enum": ["all", "error", "warning"]
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径（仅用于日志上下文，可选）"
+                            }
+                        }
+                    }
+                },
             ],
             "resources": [
                 {
@@ -638,6 +679,279 @@ class War3TesterMCP:
             raise RuntimeError(f"模型未返回文本。原始响应:\n{json.dumps(data, ensure_ascii=False)}")
         return result
 
+    def _get_project_info(self, source_dir: str, max_depth: int = 3) -> str:
+        """
+        扫描项目地图脚本目录，返回结构化分析（纯静态，只读）。
+
+        分析内容：
+        1. 目录树概要（限 max_depth 层）
+        2. 各模块子目录文件计数（按约定子目录名识别）
+        3. 代码行数统计（按文件扩展名分组）
+        4. 关键入口文件列表（init.lua 等）
+
+        Args:
+            source_dir: 源码根目录（通常为 config.compile_source_dir）
+            max_depth: 目录树扫描最大深度
+
+        Returns:
+            格式化的分析文本
+        """
+        root = Path(source_dir)
+        if not root.exists() or not root.is_dir():
+            return f"[WARN] 源码目录不存在或不是目录：{source_dir}"
+
+        # 跳过的噪声目录
+        skip_dirs = {
+            '.git', 'node_modules', '__pycache__', '.codegraph',
+            'logs', 'archive', '.idea', '.vs', 'dist', 'build',
+            '.claude', 'w3x2lni',
+        }
+
+        # 关注的模块子目录（War3 ECS 项目约定）
+        module_dirs = {
+            '技能', 'Buffs', '物品', '任务', '副本', 'systems', 'entities',
+            'components', 'model', 'data', 'NPC', '单位', '进攻波', 'AI',
+            'states', 'logic', 'types', 'core', '界面',
+        }
+
+        # 关键入口文件名
+        entry_files = {'init.lua', 'main.lua', 'app.lua', 'config.lua', 'bootstrap.lua'}
+
+        # === 1. 目录树 + 2. 模块计数 + 3. 行数统计 + 4. 入口文件 ===
+        dir_tree_lines = []
+        module_counts = {}  # module_name -> file_count
+        ext_line_counts = {}  # ext -> total_lines
+        ext_file_counts = {}  # ext -> file_count
+        entry_file_list = []  # list of relative paths
+        total_files = 0
+        total_lines = 0
+
+        def scan_dir(current: Path, depth: int, prefix: str):
+            """递归扫描目录"""
+            nonlocal total_files, total_lines
+            if depth > max_depth:
+                return
+
+            try:
+                entries = sorted(current.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+            except (PermissionError, OSError):
+                return
+
+            for entry in entries:
+                if entry.name.startswith('.'):
+                    continue
+                if entry.is_dir():
+                    if entry.name in skip_dirs:
+                        continue
+                    if depth < max_depth:
+                        dir_tree_lines.append(f"{prefix}📁 {entry.name}/")
+                        scan_dir(entry, depth + 1, prefix + "  ")
+                    else:
+                        # 最深层只列目录名，不递归
+                        dir_tree_lines.append(f"{prefix}📁 {entry.name}/")
+                elif entry.is_file():
+                    total_files += 1
+                    rel = str(entry.relative_to(root))
+                    ext = entry.suffix.lower()
+                    if ext:
+                        ext_file_counts[ext] = ext_file_counts.get(ext, 0) + 1
+                        try:
+                            line_count = sum(1 for _ in entry.open('r', encoding='utf-8', errors='ignore'))
+                        except (OSError, PermissionError):
+                            line_count = 0
+                        ext_line_counts[ext] = ext_line_counts.get(ext, 0) + line_count
+                        total_lines += line_count
+
+                    # 模块目录归属统计（只看直接子目录）
+                    parts = entry.relative_to(root).parts
+                    if len(parts) >= 2 and parts[0] in module_dirs:
+                        mod = parts[0]
+                        module_counts[mod] = module_counts.get(mod, 0) + 1
+
+                    # 入口文件
+                    if entry.name in entry_files:
+                        entry_file_list.append(rel)
+
+        dir_tree_lines.append(f"📁 {root.name}/")
+        scan_dir(root, 1, "  ")
+
+        # === 组装输出 ===
+        out = []
+        out.append(f"## 项目结构分析")
+        out.append(f"扫描目录：{root}")
+        out.append(f"扫描时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        out.append(f"总文件数：{total_files}  总代码行数：{total_lines}")
+        out.append("")
+
+        # 模块计数
+        out.append("### 模块文件计数")
+        if module_counts:
+            for mod in sorted(module_counts.keys()):
+                out.append(f"  {mod}: {module_counts[mod]} 个文件")
+        else:
+            out.append("  （未发现约定的模块子目录）")
+        out.append("")
+
+        # 行数按扩展名
+        out.append("### 代码行数统计（按扩展名）")
+        if ext_line_counts:
+            for ext in sorted(ext_line_counts.keys(), key=lambda e: -ext_line_counts.get(e, 0)):
+                out.append(f"  {ext}: {ext_file_counts.get(ext, 0)} 个文件, {ext_line_counts[ext]} 行")
+        else:
+            out.append("  （无代码文件）")
+        out.append("")
+
+        # 入口文件
+        out.append("### 关键入口文件")
+        if entry_file_list:
+            for ef in sorted(entry_file_list):
+                out.append(f"  {ef}")
+        else:
+            out.append("  （未发现 init.lua / main.lua 等入口文件）")
+        out.append("")
+
+        # 目录树（截断防爆）
+        out.append(f"### 目录树（max_depth={max_depth}）")
+        max_tree_lines = 200
+        if len(dir_tree_lines) > max_tree_lines:
+            out.extend(dir_tree_lines[:max_tree_lines])
+            out.append(f"  ... 已截断（共 {len(dir_tree_lines)} 行，显示前 {max_tree_lines} 行）")
+        else:
+            out.extend(dir_tree_lines)
+
+        return "\n".join(out)
+
+    def _get_debug_output(self, limit: int = 50, level: str = "all", source_dir: str = None) -> str:
+        """
+        聚合游戏调试输出（纯读取，不启动游戏）。
+
+        聚合来源：
+        1. War3 游戏日志文件（config.war3_log_dir → get_war3_log_file_path）
+        2. HTTP /error 端点缓存的运行时错误（http_receiver._game_errors）
+        3. HTTP /log 端点缓存的分级日志（http_receiver._logs，按 test_name 分组）
+
+        Args:
+            limit: 每级最多返回条数
+            level: 过滤级别 'all' | 'error' | 'warning'
+            source_dir: 源码目录（可选，仅用于上下文展示）
+
+        Returns:
+            格式化的调试输出文本
+        """
+        out = []
+        out.append("## 调试输出")
+        out.append(f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        out.append(f"过滤级别：{level}  每级上限：{limit}")
+        out.append("")
+
+        # === 1. War3 游戏日志 ===
+        out.append("### War3 游戏日志")
+        try:
+            log_path = config.get_war3_log_file_path(player_id=1)
+            if log_path and log_path.exists():
+                out.append(f"日志文件：{log_path}")
+                try:
+                    raw_lines = log_path.read_text(encoding='utf-8', errors='ignore').splitlines()
+                except (OSError, IOError) as e:
+                    raw_lines = []
+                    out.append(f"读取失败：{e}")
+
+                # 按级别过滤（War3 日志通常无标准级别标记，按关键字猜测）
+                error_keywords = ('error', '错误', 'fail', '失败', 'exception', '异常', 'FATAL', 'fatal')
+                warning_keywords = ('warn', 'warning', '警告', 'deprecated')
+
+                error_lines = []
+                warning_lines = []
+                other_lines = []
+                for line in raw_lines:
+                    line_lower = line.lower()
+                    if any(kw in line_lower for kw in error_keywords):
+                        error_lines.append(line)
+                    elif any(kw in line_lower for kw in warning_keywords):
+                        warning_lines.append(line)
+                    else:
+                        other_lines.append(line)
+
+                out.append(f"总行数：{len(raw_lines)}  错误关键字：{len(error_lines)}  警告关键字：{len(warning_lines)}")
+
+                if level in ('all', 'error') and error_lines:
+                    out.append(f"\n#### 错误行（最近 {min(limit, len(error_lines))} 条）")
+                    for l in error_lines[-limit:]:
+                        out.append(f"  [ERROR] {l}")
+                if level in ('all', 'warning') and warning_lines:
+                    out.append(f"\n#### 警告行（最近 {min(limit, len(warning_lines))} 条）")
+                    for l in warning_lines[-limit:]:
+                        out.append(f"  [WARN] {l}")
+                if level == 'all' and not error_lines and not warning_lines:
+                    out.append("\n（日志中未发现错误/警告关键字，显示最后 10 行）")
+                    for l in raw_lines[-10:]:
+                        out.append(f"  {l}")
+            else:
+                out.append("（游戏日志文件不存在或 war3_log_dir 未配置）")
+        except Exception as e:
+            out.append(f"（读取游戏日志出错：{e}）")
+        out.append("")
+
+        # === 2. HTTP /error 缓存的游戏内错误 ===
+        out.append("### HTTP /error 缓存的运行时错误")
+        try:
+            game_errors = self.http_receiver.get_game_errors()
+            if game_errors:
+                out.append(f"缓存错误总数：{len(game_errors)}")
+                # 按时间倒序取最近 limit 条
+                recent = game_errors[-limit:] if len(game_errors) > limit else game_errors
+                for err in reversed(recent):
+                    test_name = err.get('test_name', 'unknown')
+                    error_msg = err.get('error', '')
+                    tb = err.get('traceback', '')
+                    ts = err.get('timestamp', '')
+                    if level in ('all', 'error'):
+                        out.append(f"  [ERROR] [{ts}] {test_name}: {error_msg}")
+                        if tb:
+                            # 截断 traceback
+                            tb_short = tb[:300] + '...' if len(tb) > 300 else tb
+                            for tb_line in tb_short.splitlines()[:5]:
+                                out.append(f"    {tb_line}")
+            else:
+                out.append("（无缓存错误）")
+        except Exception as e:
+            out.append(f"（读取 HTTP 错误缓存出错：{e}）")
+        out.append("")
+
+        # === 3. HTTP /log 缓存的分级日志 ===
+        out.append("### HTTP /log 缓存的分级日志")
+        try:
+            all_logs = self.http_receiver._logs  # test_name -> list[log_entry]
+            if all_logs:
+                total_entries = sum(len(v) for v in all_logs.values())
+                out.append(f"缓存日志测试数：{len(all_logs)}  总条目：{total_entries}")
+
+                for test_name, entries in all_logs.items():
+                    errors = [e for e in entries if e.get('level') == 'error']
+                    warnings = [e for e in entries if e.get('level') == 'warn']
+
+                    if level in ('all', 'error') and errors:
+                        out.append(f"\n#### [{test_name}] 错误日志（最近 {min(limit, len(errors))} 条）")
+                        for e in errors[-limit:]:
+                            msg = e.get('message', '')
+                            cat = e.get('category', '')
+                            ts = e.get('timestamp', '')
+                            out.append(f"  [ERROR] [{ts}] {cat}: {msg}")
+
+                    if level in ('all', 'warning') and warnings:
+                        out.append(f"\n#### [{test_name}] 警告日志（最近 {min(limit, len(warnings))} 条）")
+                        for w in warnings[-limit:]:
+                            msg = w.get('message', '')
+                            cat = w.get('category', '')
+                            ts = w.get('timestamp', '')
+                            out.append(f"  [WARN] [{ts}] {cat}: {msg}")
+            else:
+                out.append("（无缓存分级日志）")
+        except Exception as e:
+            out.append(f"（读取 HTTP 分级日志缓存出错：{e}）")
+
+        return "\n".join(out)
+
     async def handle_tool_call(self, tool_name: str, arguments: dict) -> dict:
         """处理工具调用"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -847,6 +1161,35 @@ class War3TesterMCP:
                 if result.get("compile_error"):
                     msg += f"编译失败：{result['compile_error']}"
                 return {"content": [{"type": "text", "text": msg}], "isError": True}
+
+        elif tool_name == "get_project_info":
+            try:
+                source_dir = arguments.get("source_dir")
+                if not source_dir:
+                    source_dir = str(config.compile_source_dir)
+                else:
+                    source_dir = str(config._resolve_path(source_dir))
+                max_depth = arguments.get("max_depth", 3)
+                result = self._get_project_info(source_dir, max_depth)
+                return {"content": [{"type": "text", "text": result}]}
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] get_project_info 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "get_debug_output":
+            try:
+                limit = arguments.get("limit", 50)
+                level = arguments.get("level", "all")
+                source_dir = arguments.get("source_dir")
+                result = self._get_debug_output(limit, level, source_dir)
+                return {"content": [{"type": "text", "text": result}]}
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] get_debug_output 失败：{e}"}],
+                    "isError": True
+                }
 
         else:
             return {
