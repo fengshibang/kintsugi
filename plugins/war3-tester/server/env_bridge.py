@@ -344,8 +344,62 @@ class WinProxyExecutor(ExecutorBase):
             }
         return {'success': True, 'message': '游戏进程已全部清除'}
 
+    # 完整 VK 映射表（Win32 Virtual-Key Codes）
+    VK_MAP = {
+        # 原有 10 键（向后兼容）
+        'enter': 0x0D, 'space': 0x20, 'escape': 0x1B,
+        '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34, '5': 0x35,
+        '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39, '0': 0x30,
+        # 字母 A-Z
+        'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44, 'e': 0x45,
+        'f': 0x46, 'g': 0x47, 'h': 0x48, 'i': 0x49, 'j': 0x4A,
+        'k': 0x4B, 'l': 0x4C, 'm': 0x4D, 'n': 0x4E, 'o': 0x4F,
+        'p': 0x50, 'q': 0x51, 'r': 0x52, 's': 0x53, 't': 0x54,
+        'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58, 'y': 0x59,
+        'z': 0x5A,
+        # 功能键 F1-F12
+        'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
+        'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
+        'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+        # 方向键
+        'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27,
+        # 修饰键
+        'shift': 0x10, 'ctrl': 0x11, 'alt': 0x12,
+        'lshift': 0xA0, 'rshift': 0xA1,
+        'lctrl': 0xA2, 'rctrl': 0xA3,
+        'lalt': 0xA4, 'ralt': 0xA5,
+        # 控制键
+        'tab': 0x09, 'backspace': 0x08, 'delete': 0x2E,
+        'insert': 0x2D, 'home': 0x24, 'end': 0x23,
+        'pageup': 0x21, 'pagedown': 0x22,
+        'capslock': 0x14, 'numlock': 0x90, 'scrolllock': 0x91,
+        'printscreen': 0x2C, 'pause': 0x13,
+        # 小键盘 0-9 及运算符
+        'numpad0': 0x60, 'numpad1': 0x61, 'numpad2': 0x62,
+        'numpad3': 0x63, 'numpad4': 0x64, 'numpad5': 0x65,
+        'numpad6': 0x66, 'numpad7': 0x67, 'numpad8': 0x68,
+        'numpad9': 0x69,
+        'multiply': 0x6A, 'add': 0x6B, 'separator': 0x6C,
+        'subtract': 0x6D, 'decimal': 0x6E, 'divide': 0x6F,
+        # 其他
+        'semicolon': 0xBA, 'equal': 0xBB, 'comma': 0xBC,
+        'minus': 0xBD, 'period': 0xBE, 'slash': 0xBF,
+        'grave': 0xC0, 'lbracket': 0xDB, 'backslash': 0xDC,
+        'rbracket': 0xDD, 'apostrophe': 0xDE,
+    }
+
+    # 修饰键集合（用于组合键时序判断）
+    MODIFIER_KEYS = {'shift', 'ctrl', 'alt', 'lshift', 'rshift', 'lctrl', 'rctrl', 'lalt', 'ralt'}
+
     def send_key(self, key: str) -> dict:
-        """向 War3 窗口发送键盘事件"""
+        """
+        向 War3 窗口发送键盘事件。
+
+        支持单键和组合键：
+        - 单键: "enter", "a", "f1", "up" 等
+        - 组合键: "ctrl+c", "shift+a", "alt+f4", "ctrl+shift+s" 等
+          格式: 修饰键+主键（+ 分隔），支持多修饰键
+        """
         proxy_check = self.require_proxy()
         if not proxy_check.get('success'):
             return {
@@ -353,16 +407,48 @@ class WinProxyExecutor(ExecutorBase):
                 'error': f'❌ 键盘事件必须通过 win_proxy 代理执行\n\n{proxy_check.get("error", "")}'
             }
 
-        vk_map = {
-            'enter': 0x0D, 'space': 0x20, 'escape': 0x1B,
-            '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34, '5': 0x35,
-            '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39, '0': 0x30,
-        }
-        vk = vk_map.get(key.lower())
-        if vk is None:
-            return {'success': False, 'error': f'不支持的按键：{key}'}
+        key_lower = key.lower().strip()
 
-        return self.execute('__send_key__', [vk], kwargs={'timeout': 5})
+        # 解析组合键（+ 分隔）
+        if '+' in key_lower:
+            parts = [p.strip() for p in key_lower.split('+') if p.strip()]
+            if len(parts) < 2:
+                return {'success': False, 'error': f'组合键格式错误：{key}'}
+
+            # 分离修饰键和主键
+            modifiers = []
+            main_key = None
+            for p in parts:
+                if p in self.MODIFIER_KEYS:
+                    modifiers.append(p)
+                else:
+                    if main_key is not None:
+                        return {'success': False, 'error': f'组合键只能有一个主键：{key}'}
+                    main_key = p
+
+            if main_key is None:
+                return {'success': False, 'error': f'组合键缺少主键：{key}'}
+
+            # 解析所有 VK
+            vk_list = []
+            for m in modifiers:
+                vk = self.VK_MAP.get(m)
+                if vk is None:
+                    return {'success': False, 'error': f'不支持的修饰键：{m}'}
+                vk_list.append(vk)
+            main_vk = self.VK_MAP.get(main_key)
+            if main_vk is None:
+                return {'success': False, 'error': f'不支持的按键：{main_key}'}
+            vk_list.append(main_vk)
+
+            # 传 VK 列表给 win_proxy（组合键模式）
+            return self.execute('__send_key__', [vk_list], kwargs={'timeout': 5})
+        else:
+            # 单键模式（向后兼容）
+            vk = self.VK_MAP.get(key_lower)
+            if vk is None:
+                return {'success': False, 'error': f'不支持的按键：{key}'}
+            return self.execute('__send_key__', [vk], kwargs={'timeout': 5})
 
     def take_screenshot(self, test_name: str, filename: str = None, window_title: str = None) -> dict:
         """

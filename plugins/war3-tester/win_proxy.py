@@ -79,23 +79,20 @@ def handle_client(conn, addr):
         print(f'  timeout: {timeout}, wait: {wait}', flush=True)
 
         # 内置命令：send_key（用 ctypes 直接调用 Win32 API，不需要 PowerShell）
+        # 支持单键（args=[vk_int]）和组合键（args=[[vk1, vk2, ...]]）
+        # 组合键时序：修饰键 DOWN → 主键 DOWN → 主键 UP → 修饰键 UP（反序）
         if executable == '__send_key__':
             import ctypes
             from ctypes import wintypes
-            vk = args[0] if args else 0
+            vk_arg = args[0] if args else 0
             WM_KEYDOWN = 0x0100
             WM_KEYUP = 0x0101
             user32 = ctypes.windll.user32
-            gdi32 = ctypes.windll.gdi32
 
             # EnumWindows 回调类型
             EnumWindowsProc = ctypes.WINFUNCTYPE(
                 wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
             )
-
-            class RECT(ctypes.Structure):
-                _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
-                            ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
 
             # 关键词匹配 War3 窗口（与截图逻辑一致）
             keywords = ['魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
@@ -119,7 +116,38 @@ def handle_client(conn, addr):
 
             if found_hwnd is None:
                 response = {'success': False, 'error': '未找到 War3 窗口'}
+            elif isinstance(vk_arg, list):
+                # 组合键模式：args = [[vk_modifier1, vk_modifier2, ..., vk_main]]
+                try:
+                    vk_list = [int(v) for v in vk_arg]
+                    if len(vk_list) < 2:
+                        response = {'success': False, 'error': f'组合键至少需要 2 个 VK，实际 {len(vk_list)}'}
+                    else:
+                        user32.ShowWindow(found_hwnd, 9)
+                        user32.SetForegroundWindow(found_hwnd)
+                        time.sleep(0.1)
+                        modifiers = vk_list[:-1]
+                        main_vk = vk_list[-1]
+                        # 修饰键按下（正序）
+                        for vk in modifiers:
+                            user32.PostMessageA(found_hwnd, WM_KEYDOWN, vk, 0)
+                            time.sleep(0.02)
+                        # 主键按下
+                        user32.PostMessageA(found_hwnd, WM_KEYDOWN, main_vk, 0)
+                        time.sleep(0.02)
+                        # 主键抬起
+                        user32.PostMessageA(found_hwnd, WM_KEYUP, main_vk, 0)
+                        time.sleep(0.02)
+                        # 修饰键抬起（反序）
+                        for vk in reversed(modifiers):
+                            user32.PostMessageA(found_hwnd, WM_KEYUP, vk, 0)
+                            time.sleep(0.02)
+                        response = {'success': True, 'message': f'已发送组合键 VK={vk_list}'}
+                except Exception as e:
+                    response = {'success': False, 'error': f'组合键发送异常: {e}'}
             else:
+                # 单键模式（向后兼容，与 0.7.0 行为完全一致）
+                vk = int(vk_arg)
                 user32.ShowWindow(found_hwnd, 9)
                 user32.SetForegroundWindow(found_hwnd)
                 time.sleep(0.1)

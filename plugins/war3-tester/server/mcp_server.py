@@ -292,14 +292,13 @@ class War3TesterMCP:
                 },
                 {
                     "name": "send_key",
-                    "description": "向 War3 游戏窗口发送键盘事件",
+                    "description": "向 War3 游戏窗口发送键盘事件。支持单键（'enter', 'a', 'f1', 'up' 等）和组合键（'ctrl+c', 'shift+a', 'alt+f4', 'ctrl+shift+s' 等，+ 分隔修饰键与主键）。完整 VK 表：字母 A-Z、数字 0-9、F1-F12、方向键、修饰键(Shift/Ctrl/Alt)、Tab/Backspace/Delete/Home/End/PageUp/PageDown 等。",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "key": {
                                 "type": "string",
-                                "description": "按键名称：'enter', 'space', 'escape', 或数字 '0'-'9'",
-                                "enum": ["enter", "space", "escape", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                                "description": "按键名称。单键如 'enter', 'space', 'escape', 'a'-'z', '0'-'9', 'f1'-'f12', 'up', 'down', 'left', 'right', 'shift', 'ctrl', 'alt', 'tab', 'backspace', 'delete' 等。组合键用 + 分隔：'ctrl+c', 'shift+enter', 'alt+f4', 'ctrl+shift+a'。"
                             }
                         },
                         "required": ["key"]
