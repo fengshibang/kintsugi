@@ -805,11 +805,135 @@ class LocalExecutor(ExecutorBase):
             return {'success': False, 'error': f'停止游戏失败：{e}'}
 
     def send_key(self, key: str) -> dict:
-        """本地执行器不支持 send_key（需要 Windows API）"""
-        return {
-            'success': False,
-            'error': '本地执行器不支持 send_key（需要 Windows API + win_proxy）'
-        }
+        """
+        本地执行器 send_key（Windows 原生模式，ctypes 直接调 Win32 API）
+
+        支持单键和组合键：
+        - 单键: "enter", "a", "f1", "up" 等
+        - 组合键: "ctrl+c", "shift+a", "alt+f4", "ctrl+shift+s" 等
+
+        VK_MAP / MODIFIER_KEYS 复用 WinProxyExecutor（单一来源，不重复定义）
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except ImportError:
+            return {'success': False, 'error': 'ctypes 不可用（非 Windows 环境？）'}
+
+        # 复用 WinProxyExecutor 的 VK 表（单一来源）
+        VK_MAP = WinProxyExecutor.VK_MAP
+        MODIFIER_KEYS = WinProxyExecutor.MODIFIER_KEYS
+
+        WM_KEYDOWN = 0x0100
+        WM_KEYUP = 0x0101
+
+        key_lower = key.lower().strip()
+
+        # 解析组合键（+ 分隔）
+        if '+' in key_lower:
+            parts = [p.strip() for p in key_lower.split('+') if p.strip()]
+            if len(parts) < 2:
+                return {'success': False, 'error': f'组合键格式错误：{key}'}
+
+            # 分离修饰键和主键
+            modifiers = []
+            main_key = None
+            for p in parts:
+                if p in MODIFIER_KEYS:
+                    modifiers.append(p)
+                else:
+                    if main_key is not None:
+                        return {'success': False, 'error': f'组合键只能有一个主键：{key}'}
+                    main_key = p
+
+            if main_key is None:
+                return {'success': False, 'error': f'组合键缺少主键：{key}'}
+
+            # 解析所有 VK
+            vk_list = []
+            for m in modifiers:
+                vk = VK_MAP.get(m)
+                if vk is None:
+                    return {'success': False, 'error': f'不支持的修饰键：{m}'}
+                vk_list.append(vk)
+            main_vk = VK_MAP.get(main_key)
+            if main_vk is None:
+                return {'success': False, 'error': f'不支持的按键：{main_key}'}
+            vk_list.append(main_vk)
+        else:
+            # 单键模式
+            vk = VK_MAP.get(key_lower)
+            if vk is None:
+                return {'success': False, 'error': f'不支持的按键：{key}'}
+            vk_list = None  # 标记为单键
+            main_vk = vk
+
+        # 查找 War3 窗口
+        try:
+            user32 = ctypes.windll.user32
+        except Exception as e:
+            return {'success': False, 'error': f'无法加载 user32.dll: {e}'}
+
+        EnumWindowsProc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        keywords = ['魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
+        found_hwnd = None
+
+        def enum_callback(hwnd, lparam):
+            nonlocal found_hwnd
+            if user32.IsWindowVisible(hwnd):
+                text = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, text, 256)
+                title = text.value
+                if title:
+                    for kw in keywords:
+                        if kw.lower() in title.lower():
+                            found_hwnd = hwnd
+                            return False
+            return True
+
+        callback = EnumWindowsProc(enum_callback)
+        user32.EnumWindows(callback, 0)
+
+        if found_hwnd is None:
+            return {'success': False, 'error': '未找到 War3 窗口'}
+
+        # 激活窗口
+        try:
+            user32.ShowWindow(found_hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(found_hwnd)
+            time.sleep(0.1)
+        except Exception:
+            pass  # 窗口激活失败不致命，继续尝试发送
+
+        try:
+            if vk_list is not None:
+                # 组合键模式：修饰键 DOWN(正序) → 主键 DOWN → 主键 UP → 修饰键 UP(反序)
+                modifiers_vk = vk_list[:-1]
+                main_vk_val = vk_list[-1]
+
+                for vk in modifiers_vk:
+                    user32.PostMessageA(found_hwnd, WM_KEYDOWN, vk, 0)
+                    time.sleep(0.02)
+                user32.PostMessageA(found_hwnd, WM_KEYDOWN, main_vk_val, 0)
+                time.sleep(0.02)
+                user32.PostMessageA(found_hwnd, WM_KEYUP, main_vk_val, 0)
+                time.sleep(0.02)
+                for vk in reversed(modifiers_vk):
+                    user32.PostMessageA(found_hwnd, WM_KEYUP, vk, 0)
+                    time.sleep(0.02)
+
+                return {'success': True, 'message': f'已发送组合键 VK={vk_list}'}
+            else:
+                # 单键模式（向后兼容）
+                user32.PostMessageA(found_hwnd, WM_KEYDOWN, main_vk, 0)
+                time.sleep(0.05)
+                user32.PostMessageA(found_hwnd, WM_KEYUP, main_vk, 0)
+                return {'success': True, 'message': f'已发送按键 VK={main_vk}'}
+        except Exception as e:
+            return {'success': False, 'error': f'按键发送异常: {e}'}
 
     def take_screenshot(self, test_name: str, filename: str = None, window_title: str = None) -> dict:
         """
