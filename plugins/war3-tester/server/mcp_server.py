@@ -214,6 +214,11 @@ class War3TesterMCP:
                                 "type": "string",
                                 "description": "游戏平台：'ydwe' 或 'kkwe'",
                                 "enum": ["ydwe", "kkwe"]
+                            },
+                            "inject_inspect": {
+                                "type": "boolean",
+                                "description": "是否注入运行时查询处理器（inspect_handler）。True 时自动注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译，让 inspect_game 在 run_game 启动的游戏里可用。默认 True",
+                                "default": True
                             }
                         }
                     }
@@ -499,23 +504,10 @@ class War3TesterMCP:
                 self.logger.warning(f"[test_commit] 通用引导模板不存在: {generic_bootstrap_path}")
                 return  # 无法写入引导，直接返回
 
-        # 3. 注入 inspect_handler（plugin 自动注入，项目零集成）
-        # ① 复制 inspect_handler.lua 到 test_dir（与 _target_test.lua 同目录）
-        inspect_src = SERVER_DIR / 'inspect_handler.lua'
-        inspect_dst = test_dir / 'inspect_handler.lua'
-        if inspect_src.exists():
-            try:
-                with open(inspect_src, 'r', encoding='utf-8') as _f:
-                    _inspect_content = _f.read()
-                with open(inspect_dst, 'w', encoding='utf-8') as _f:
-                    _f.write(_inspect_content)
-                self.logger.info(f"[test_commit] 已注入 inspect_handler.lua → {inspect_dst}")
-            except (IOError, OSError) as _e:
-                self.logger.warning(f"[test_commit] inspect_handler.lua 复制失败（graceful）: {_e}")
-        else:
-            self.logger.warning(f"[test_commit] inspect_handler.lua 源文件不存在: {inspect_src}，跳过注入")
+        # 3. 注入 inspect_handler（复制 inspect_handler.lua 到 test_dir）
+        self._inject_inspect(test_dir)
 
-        # ② 在 bootstrap_content 末尾追加 pcall 包裹的 require+start
+        # 4. 在 bootstrap_content 末尾追加 pcall 包裹的 require+start
         # test_module_prefix 来自 config（wzns 为 'script.src.auto-test.'）
         _prefix = config.test_module_prefix
         bootstrap_content += (
@@ -526,7 +518,7 @@ class War3TesterMCP:
             "end)\n"
         )
 
-        # 4. 写入 run_auto_test.lua
+        # 5. 写入 run_auto_test.lua
         with open(run_auto_test_path, 'w', encoding='utf-8') as f:
             f.write(bootstrap_content)
         self.logger.info(f"[test_commit] 已写入 run_auto_test.lua")
@@ -997,6 +989,30 @@ class War3TesterMCP:
 
         return "\n".join(out)
 
+    def _inject_inspect(self, test_dir: Path) -> None:
+        """
+        注入 inspect_handler.lua 到 test_dir（复制 plugin 端的 inspect_handler.lua）。
+
+        供 _prepare_test_entry（测试引导）和 run_game（inspect-only 引导）复用。
+        失败 graceful（不抛异常，不阻断调用方）。
+
+        Args:
+            test_dir: 目标 auto-test 目录（Path 对象）
+        """
+        inspect_src = SERVER_DIR / 'inspect_handler.lua'
+        inspect_dst = test_dir / 'inspect_handler.lua'
+        if inspect_src.exists():
+            try:
+                with open(inspect_src, 'r', encoding='utf-8') as _f:
+                    _inspect_content = _f.read()
+                with open(inspect_dst, 'w', encoding='utf-8') as _f:
+                    _f.write(_inspect_content)
+                self.logger.info(f"[_inject_inspect] 已注入 inspect_handler.lua → {inspect_dst}")
+            except (IOError, OSError) as _e:
+                self.logger.warning(f"[_inject_inspect] inspect_handler.lua 复制失败（graceful）: {_e}")
+        else:
+            self.logger.warning(f"[_inject_inspect] inspect_handler.lua 源文件不存在: {inspect_src}，跳过注入")
+
     async def handle_tool_call(self, tool_name: str, arguments: dict) -> dict:
         """处理工具调用"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1095,15 +1111,67 @@ class War3TesterMCP:
             map_path = arguments.get("map_path", str(config.compile_output_path / config.compile_output_name))
             platform = arguments.get("platform")
 
+            # run_game 支持 inject_inspect 参数（默认 True），launch_only 保持原有行为
+            inject_inspect = arguments.get("inject_inspect", True) if tool_name == "run_game" else False
+
             if not platform:
                 run_mode, _ = config.get_run_mode_with_source()
                 platform = run_mode
 
+            # inject_inspect=True 时：注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译
+            if inject_inspect:
+                source_dir = str(config.compile_source_dir)
+                resolved_source = config._resolve_path(source_dir)
+                test_dir = config.get_test_dir_path(resolved_source)
+                test_dir.mkdir(parents=True, exist_ok=True)
+
+                # 1. 注入 inspect_handler.lua
+                self._inject_inspect(test_dir)
+
+                # 2. 写 inspect-only 的 run_auto_test.lua（只启动 inspect_handler，不跑测试）
+                run_auto_test_path = test_dir / 'run_auto_test.lua'
+                _prefix = config.test_module_prefix
+                inspect_only_content = (
+                    "-- inspect-only bootstrap（run_game 注入，仅启动运行时查询，不跑测试）\n"
+                    "pcall(function()\n"
+                    f"    local ih = require('{_prefix}inspect_handler')\n"
+                    "    if ih and ih.start then ih.start() end\n"
+                    "end)\n"
+                )
+                try:
+                    with open(run_auto_test_path, 'w', encoding='utf-8') as f:
+                        f.write(inspect_only_content)
+                    self.logger.info(f"[run_game] 已写入 inspect-only run_auto_test.lua → {run_auto_test_path}")
+                except (IOError, OSError) as e:
+                    self.logger.warning(f"[run_game] 写入 run_auto_test.lua 失败（graceful）: {e}")
+
+                # 3. 删 _test_off.lua（若存在），让 auto-test 模块加载 run_auto_test
+                off_path = test_dir / '_test_off.lua'
+                try:
+                    if off_path.exists():
+                        off_path.unlink()
+                        self.logger.info(f"[run_game] 已删除 _test_off.lua（启用 inspect_handler）")
+                except (IOError, OSError) as e:
+                    self.logger.warning(f"[run_game] 删除 _test_off.lua 失败（graceful）: {e}")
+
+                # 4. 编译地图（把 inspect_handler + run_auto_test 打包进 w3x）
+                compile_result = self.executor.compile(source_dir)
+                if not compile_result.get("success"):
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] 地图编译失败（inject_inspect 启用）\n\n时间：{timestamp}\n\n{compile_result.get('error', '未知错误')}"}],
+                        "isError": True
+                    }
+                self.logger.info(f"[run_game] 编译成功，准备启动游戏（inject_inspect 已注入）")
+
+            # 启动游戏（保留原有逻辑）
             result = self.executor.run_game(map_path, platform)
 
             if result.get("success"):
+                msg = f"[OK] 游戏已启动\n\n{result.get('message', '')}"
+                if inject_inspect:
+                    msg += "\n\n（inspect_handler 已注入，可使用 inspect_game 运行时查询）"
                 return {
-                    "content": [{"type": "text", "text": f"[OK] 游戏已启动\n\n{result.get('message', '')}"}]
+                    "content": [{"type": "text", "text": msg}]
                 }
             else:
                 return {
