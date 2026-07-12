@@ -353,6 +353,7 @@ class HTTPReceiver:
             队列为空时返回 {}（200），绝不阻塞——游戏每 200ms 轮询一次。
             """
             try:
+                self.logger.info(f"[get_pending] len={len(self._inspect_pending)} self_id={id(self)} list_id={id(self._inspect_pending)}")
                 if not self._inspect_pending:
                     return jsonify({})
                 # 取出最旧的一条（FIFO），同时从队列移除

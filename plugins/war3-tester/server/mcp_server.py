@@ -1314,6 +1314,7 @@ class War3TesterMCP:
                     "id": query_id,
                     "expr": expr
                 })
+                self.logger.info(f"[inspect_game] append id={query_id} len={len(self.http_receiver._inspect_pending)} recv_id={id(self.http_receiver)} list_id={id(self.http_receiver._inspect_pending)}")
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": f"[FAIL] 加入查询队列失败：{e}"}],
