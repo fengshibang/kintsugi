@@ -46,9 +46,9 @@ local function poll_once()
         return  -- HTTP 失败，graceful 跳过
     end
 
-    -- 2. 解析 JSON
-    local data, parse_ok = json.decode(response)
-    if not parse_ok then
+    -- 2. 解析 JSON（json.decode 返回 val, err）
+    local data, err = json.decode(response)
+    if err then
         return  -- JSON 解析失败，graceful 跳过
     end
 
