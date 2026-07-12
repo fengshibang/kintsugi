@@ -40,15 +40,19 @@ end
 --- 单次轮询：拉取待查询表达式 → load 求值 → 回传结果
 -- 整个函数被外层 pcall 包裹，任何异常不会崩游戏
 local function poll_once()
+    -- 【诊断 print】确认 ac.loop 回调是否触发
+    print("[InspectHandler] poll_once 触发")
     -- 1. GET /inspect/pending（超时 2s，无 callback 同步调用）
     local ok, response = HttpClient.get(PENDING_URL, nil, 2)
+    -- 【诊断 print】确认 HTTP get 结果
+    print("[InspectHandler] get ok=", tostring(ok), " resp=", tostring(response))
     if not ok or not response then
         return  -- HTTP 失败，graceful 跳过
     end
 
-    -- 2. 解析 JSON（json.decode 返回 val, err）
-    local data, err = json.decode(response)
-    if err then
+    -- 2. 解析 JSON
+    local data, parse_ok = json.decode(response)
+    if not parse_ok then
         return  -- JSON 解析失败，graceful 跳过
     end
 
