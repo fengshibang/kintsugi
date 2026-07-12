@@ -219,6 +219,10 @@ class War3TesterMCP:
                                 "type": "boolean",
                                 "description": "是否注入运行时查询处理器（inspect_handler）。True 时自动注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译，让 inspect_game 在 run_game 启动的游戏里可用。默认 True",
                                 "default": True
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "inject_inspect 启用时，地图源码目录（如 D:\\maps\\wzns），默认 config.compile_source_dir"
                             }
                         }
                     }
@@ -1120,7 +1124,7 @@ class War3TesterMCP:
 
             # inject_inspect=True 时：注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译
             if inject_inspect:
-                source_dir = str(config.compile_source_dir)
+                source_dir = arguments.get("source_dir") or str(config.compile_source_dir)
                 resolved_source = config._resolve_path(source_dir)
                 test_dir = config.get_test_dir_path(resolved_source)
                 test_dir.mkdir(parents=True, exist_ok=True)
