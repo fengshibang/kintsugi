@@ -499,7 +499,34 @@ class War3TesterMCP:
                 self.logger.warning(f"[test_commit] 通用引导模板不存在: {generic_bootstrap_path}")
                 return  # 无法写入引导，直接返回
 
-        # 3. 写入 run_auto_test.lua
+        # 3. 注入 inspect_handler（plugin 自动注入，项目零集成）
+        # ① 复制 inspect_handler.lua 到 test_dir（与 _target_test.lua 同目录）
+        inspect_src = SERVER_DIR / 'inspect_handler.lua'
+        inspect_dst = test_dir / 'inspect_handler.lua'
+        if inspect_src.exists():
+            try:
+                with open(inspect_src, 'r', encoding='utf-8') as _f:
+                    _inspect_content = _f.read()
+                with open(inspect_dst, 'w', encoding='utf-8') as _f:
+                    _f.write(_inspect_content)
+                self.logger.info(f"[test_commit] 已注入 inspect_handler.lua → {inspect_dst}")
+            except (IOError, OSError) as _e:
+                self.logger.warning(f"[test_commit] inspect_handler.lua 复制失败（graceful）: {_e}")
+        else:
+            self.logger.warning(f"[test_commit] inspect_handler.lua 源文件不存在: {inspect_src}，跳过注入")
+
+        # ② 在 bootstrap_content 末尾追加 pcall 包裹的 require+start
+        # test_module_prefix 来自 config（wzns 为 'script.src.auto-test.'）
+        _prefix = config.test_module_prefix
+        bootstrap_content += (
+            "\n\n-- === inspect_handler 自动注入（plugin 追加，auto-test on 时启动运行时查询）===\n"
+            "pcall(function()\n"
+            f"    local ih = require('{_prefix}inspect_handler')\n"
+            "    if ih and ih.start then ih.start() end\n"
+            "end)\n"
+        )
+
+        # 4. 写入 run_auto_test.lua
         with open(run_auto_test_path, 'w', encoding='utf-8') as f:
             f.write(bootstrap_content)
         self.logger.info(f"[test_commit] 已写入 run_auto_test.lua")
