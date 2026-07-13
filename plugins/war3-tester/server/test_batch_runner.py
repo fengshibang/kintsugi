@@ -62,7 +62,7 @@ class TestBatchRunner:
         """
         resolved = self.config._resolve_path(source_dir) if source_dir else self.config.compile_source_dir
         test_dir = self.config.get_test_dir_path(resolved)
-        if not test_dir.exists():
+        if test_dir is None or not test_dir.exists():
             return {
                 'success': False,
                 'error': f'测试目录不存在: {test_dir}（请检查 config.test_dir / source_dir）',
@@ -352,6 +352,9 @@ class TestBatchRunner:
         """测试完成后写 _test_off.lua，让手动游戏时 auto-test 模块不加载（零干扰）。"""
         try:
             test_dir = self.config.get_test_dir_path(self.config._resolve_path(source_dir))
+            if test_dir is None:
+                self.logger.warning('[toggle] source_dir 非有效项目根，跳过写 _test_off')
+                return
             off_path = test_dir / '_test_off.lua'
             off_path.write_text(
                 '-- _run_single_test 完成后自动生成：手动游戏时 auto-test 模块不加载（init.lua early-return）\nreturn true\n',

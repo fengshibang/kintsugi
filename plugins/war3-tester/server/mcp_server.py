@@ -428,6 +428,9 @@ class War3TesterMCP:
         # 解析 source_dir
         resolved_source = config._resolve_path(source_dir) if source_dir else self.project_root
         test_dir = config.get_test_dir_path(resolved_source)
+        if test_dir is None:
+            self.logger.error(f'[_prepare_test_entry] source_dir 非有效项目根，跳过测试引导: {resolved_source}')
+            return
         test_dir.mkdir(parents=True, exist_ok=True)
 
         # 测试时强制开启：删除 toggle_test 写入的关闭标志，确保 test_commit 能跑测试
@@ -592,6 +595,10 @@ class War3TesterMCP:
         注：跑测试本身仍需 test_commit（它写入 _target_test.lua，并会自动删除 _test_off.lua）。
         """
         test_dir = config.get_test_dir_path(config._resolve_path(source_dir))
+        if test_dir is None:
+            return {'success': False, 'enabled': enabled,
+                    'action': '失败：source_dir 非有效 w2l 项目根',
+                    'compile_error': f'source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {source_dir}'}
         test_dir.mkdir(parents=True, exist_ok=True)
         off_path = test_dir / '_test_off.lua'
         target_path = test_dir / '_target_test.lua'
@@ -1133,6 +1140,11 @@ class War3TesterMCP:
                 source_dir = arguments.get("source_dir") or str(config.compile_source_dir)
                 resolved_source = config._resolve_path(source_dir)
                 test_dir = config.get_test_dir_path(resolved_source)
+                if test_dir is None:
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {resolved_source}，可能传错（如多了子目录）"}],
+                        "isError": True
+                    }
                 test_dir.mkdir(parents=True, exist_ok=True)
 
                 # 1. 注入 inspect_handler.lua

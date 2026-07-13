@@ -610,7 +610,7 @@ class Config:
             return (env_run_mode, 'env')
         return (self.run_mode, 'default')
 
-    def get_test_dir_path(self, source_dir: Path = None) -> Path:
+    def get_test_dir_path(self, source_dir: Path = None) -> Optional[Path]:
         """
         获取测试目录的完整路径
 
@@ -618,11 +618,25 @@ class Config:
             source_dir: 源码根目录，默认为 compile_source_dir
 
         Returns:
-            测试目录的 Path 对象
+            测试目录的 Path 对象；source_dir 非有效 w2l 项目根时返回 None（拒绝生成，
+            避免 source_dir 传错如多了 /map 导致 test_dir 错位成 map/map/... 污染项目目录）
         """
         base = source_dir or self.compile_source_dir
+        # 项目根校验：source_dir 必须是有效 w2l 项目根（含 w3x2lni/ 或 tools/w3x2lni/）。
+        # 防止 source_dir 传成 D:/x/proj/map（多了 /map）等错位路径，导致
+        # test_dir = base/<test_dir> 拼出 base/map/map/script/... 的错误目录。
+        if not self._is_w2l_project_root(base):
+            self.logger.error(
+                f'get_test_dir_path: source_dir 非有效 w2l 项目根（缺 w3x2lni/ 及 tools/w3x2lni/）: {base}，'
+                f'可能 source_dir 传错（如多了子目录），拒绝生成 test_dir'
+            )
+            return None
         # 通用约定：测试目录在 <source_dir>/<test_dir>/
         return base / self.test_dir
+
+    def _is_w2l_project_root(self, base: Path) -> bool:
+        """判断 base 是否为有效 w2l 项目根（含 w3x2lni/ 或 tools/w3x2lni/ 编译工具目录）。"""
+        return (base / 'w3x2lni').is_dir() or (base / 'tools' / 'w3x2lni').is_dir()
 
     def validate(self) -> Tuple[bool, List[str], List[str]]:
         """验证配置有效性"""
