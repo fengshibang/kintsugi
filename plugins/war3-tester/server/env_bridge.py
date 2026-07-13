@@ -55,7 +55,8 @@ class ExecutorBase:
         """
         编译前把插件内置的 nopause.dll 注入到项目 map/ 目录（防失焦暂停）。
 
-        dll 随地图编译打包进 w3x，运行时由 plugin_main.lua 的 require'nopause' 加载。
+        dll 随地图编译打包进 w3x，运行时由插件注入到 run_auto_test.lua 的
+        require'nopause' 加载（参照 inspect_handler 范式；项目 plugin_main.lua 零侵入）。
         graceful 失败：源不存在或复制异常只告警，不阻断编译（参照 _inject_inspect）。
 
         Args:

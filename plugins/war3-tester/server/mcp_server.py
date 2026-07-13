@@ -522,6 +522,12 @@ class War3TesterMCP:
             "end)\n"
         )
 
+        # nopause 防失焦暂停（dll 由 _inject_nopause 编译时注入 map/，此处追加 require 加载）
+        bootstrap_content += (
+            "\n-- === nopause 自动注入（plugin 追加，防失焦暂停）===\n"
+            "pcall(require, 'nopause')\n"
+        )
+
         # 5. 写入 run_auto_test.lua
         with open(run_auto_test_path, 'w', encoding='utf-8') as f:
             f.write(bootstrap_content)
@@ -1141,6 +1147,8 @@ class War3TesterMCP:
                     f"    local ih = require('{_prefix}inspect_handler')\n"
                     "    if ih and ih.start then ih.start() end\n"
                     "end)\n"
+                    "-- nopause 防失焦暂停（plugin 追加 require）\n"
+                    "pcall(require, 'nopause')\n"
                 )
                 try:
                     with open(run_auto_test_path, 'w', encoding='utf-8') as f:
