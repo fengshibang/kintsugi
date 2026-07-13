@@ -201,6 +201,101 @@ WSL 用户需在 Windows 侧 `python win_proxy.py start`（监听 8767）。
 
 ---
 
+## TDD 工作流（M3 新增）
+
+> **目标**：秒级 Red-Green-Refactor 循环，测试驱动开发。
+
+### 测试分层（unit / integration / e2e）
+
+| 层 | 文件名约定 | 运行方式 | 反馈速度 | 适用场景 |
+|---|---|---|---|---|
+| **unit** | `test_unit_*.lua` | 桌面 lua5.3（`run_unit_test`） | 秒级（<2s） | 纯逻辑（配置校验、算法、数据处理） |
+| **integration** | `test_int_*.lua` | 游戏内（`test_commit`） | 30s+ | 依赖游戏 API（单位、技能、Buff） |
+| **e2e** | `test_e2e_*.lua` | 游戏内（`test_commit`） | 60s+ | 全流程（副本、任务链、多系统交互） |
+
+**文件命名约定**（优先级）：
+1. 文件名前缀：`test_unit_*` / `test_int_*` / `test_e2e_*`
+2. 文件首行注释标记：`-- @layer unit` / `-- @layer integration` / `-- @layer e2e`
+3. 默认：`integration`
+
+### Red-Green-Refactor 决策树
+
+```
+1. scaffold_test(module="xxx", layer="unit")
+   → 生成测试骨架（Arrange-Act-Assert 三段式）
+
+2. tdd_red(test_name="test_unit_xxx", layer="unit")
+   → 预期失败，确认测试有效
+   → 区分「预期 assertion fail」（Red 成立）vs「意外 env_error」（Red 不成立，测试写错）
+
+3. 写最少实现代码
+
+4. tdd_green(test_name="test_unit_xxx", layer="unit")
+   → 预期通过，确认 Green 成立
+
+5. refactor（重构代码）
+
+6. run_test_batch(layer="unit")
+   → 回归测试，确保不破坏
+```
+
+### 何时用哪层测试
+
+| 场景 | 推荐层 | 理由 |
+|---|---|---|
+| 配置校验（天赋、数值表） | unit | 纯数据，秒级反馈 |
+| 算法逻辑（伤害计算、属性加成） | unit | 纯函数，易 mock |
+| 技能效果（Buff 应用、CD 管理） | integration | 依赖游戏 API |
+| 副本流程（多波次、Boss 机制） | e2e | 全流程验证 |
+| 任务链（多步骤、状态机） | e2e | 跨系统交互 |
+
+### 可测性约定（纯逻辑与 jass 调用分离）
+
+**问题**：项目代码深度耦合 jass（`CreateUnit`、`GetUnitX` 等），桌面跑不了。
+
+**解决**：
+1. **纯逻辑模块**：不直接调 jass，用参数传入依赖（依赖注入）
+   ```lua
+   -- 可测：纯逻辑
+   function TalentSystem.calculate_bonus(talent_config, hero_level)
+       return talent_config.base * hero_level
+   end
+
+   -- 不可测：耦合 jass
+   function TalentSystem.apply_bonus(hero)
+       local unit = hero:getUnit()  -- jass 调用
+       SetUnitX(unit, 100)          -- jass 调用
+   end
+   ```
+
+2. **jass mock**：桌面测试时，插件内置 `jass_mock.lua` 自动 stub 高频 jass 函数
+   - `CreateUnit`、`GetUnitTypeId`、`SetUnitX` 等返回假 handle
+   - 记录调用日志供断言
+
+3. **测试隔离**：unit 层测试不启动游戏，integration/e2e 层才启动游戏
+
+### TDD 工具清单
+
+| 工具 | 说明 |
+|---|---|
+| `scaffold_test(module, layer, name?)` | 生成 TDD 三段式测试骨架 |
+| `tdd_red(test_name, layer)` | 跑测试预期失败，确认测试有效（区分 assertion fail vs env_error） |
+| `tdd_green(test_name, layer)` | 跑测试预期通过 |
+| `run_unit_test(test_name)` | 桌面秒级跑纯逻辑测试（unit 层） |
+| `test_commit(test_name)` | 游戏内跑测试（integration/e2e 层） |
+| `run_test_batch(layer="unit")` | 按层批量跑测试 |
+
+### TDD 检查清单
+
+- [ ] `scaffold_test` 生成测试骨架
+- [ ] `tdd_red` 确认 Red 成立（failure_type=assertion）
+- [ ] 写最少实现
+- [ ] `tdd_green` 确认 Green 成立
+- [ ] refactor 后 `run_test_batch(layer="unit")` 回归
+- [ ] integration/e2e 层用 `test_commit` 验证
+
+---
+
 ## 错误分析与调试
 
 ### 日志来源

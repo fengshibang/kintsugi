@@ -53,12 +53,17 @@ class TestBatchRunner:
     # 测试发现
     # ------------------------------------------------------------------
 
-    def discover_tests(self, source_dir: str = None, filter_pattern: str = None) -> dict:
-        """扫描测试目录，返回测试列表 + 分类 + 估算耗时（设计文档 4.1 discover_tests）
+    def discover_tests(self, source_dir: str = None, filter_pattern: str = None, layer: str = None) -> dict:
+        """扫描测试目录，返回测试列表 + 分类 + 分层 + 估算耗时（设计文档 4.1 discover_tests）
+
+        Args:
+            source_dir: 源码目录
+            filter_pattern: 过滤子串（匹配 test_name）
+            layer: 按层过滤 'all' | 'unit' | 'integration' | 'e2e'（默认 None 不过滤）
 
         Returns:
             {'success': bool, 'test_dir': str, 'count': int, 'total_est_seconds': int,
-             'tests': [{test_name, file, type(sync/async), est_seconds}], ...}
+             'tests': [{test_name, file, type(sync/async), layer(unit/integration/e2e), est_seconds}], ...}
         """
         resolved = self.config._resolve_path(source_dir) if source_dir else self.config.compile_source_dir
         test_dir = self.config.get_test_dir_path(resolved)
@@ -74,11 +79,13 @@ class TestBatchRunner:
         for f in sorted(test_dir.glob('test_*.lua')):
             test_name = f.stem  # 去 .lua
             ttype = self._infer_test_type(f)
-            est = 45 if ttype == 'async' else 30
+            tlayer = self._infer_test_layer(f)
+            est = self._estimate_test_time(ttype, tlayer)
             tests.append({
                 'test_name': test_name,
                 'file': f.name,
                 'type': ttype,
+                'layer': tlayer,
                 'est_seconds': est,
             })
 
@@ -86,8 +93,12 @@ class TestBatchRunner:
         if filter_pattern and filter_pattern != 'all':
             tests = [t for t in tests if filter_pattern in t['test_name']]
 
+        # 按 layer 过滤
+        if layer and layer != 'all':
+            tests = [t for t in tests if t['layer'] == layer]
+
         total_est = sum(t['est_seconds'] for t in tests)
-        self.logger.info(f"[discover] 发现 {len(tests)} 个测试（目录 {test_dir}），估算 {total_est}s")
+        self.logger.info(f"[discover] 发现 {len(tests)} 个测试（目录 {test_dir}, layer={layer or 'all'}），估算 {total_est}s")
         return {
             'success': True,
             'test_dir': str(test_dir),
@@ -104,6 +115,49 @@ class TestBatchRunner:
             return 'sync'
         return 'async' if 'TestScenario' in text else 'sync'
 
+    def _infer_test_layer(self, filepath: Path) -> str:
+        """
+        推断测试层（unit/integration/e2e）。
+
+        优先级：
+        1. 文件名前缀：test_unit_* → unit, test_int_* → integration, test_e2e_* → e2e
+        2. 文件首行注释标记：-- @layer unit/integration/e2e
+        3. 默认：integration（游戏内测试）
+        """
+        fname = filepath.name
+
+        # 1. 文件名前缀
+        if fname.startswith('test_unit_'):
+            return 'unit'
+        elif fname.startswith('test_int_'):
+            return 'integration'
+        elif fname.startswith('test_e2e_'):
+            return 'e2e'
+
+        # 2. 文件首行注释标记
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                first_line = f.readline().strip()
+            if first_line.startswith('--'):
+                import re
+                m = re.search(r'@layer\s+(unit|integration|e2e)', first_line, re.IGNORECASE)
+                if m:
+                    return m.group(1).lower()
+        except Exception:
+            pass
+
+        # 3. 默认
+        return 'integration'
+
+    def _estimate_test_time(self, ttype: str, tlayer: str) -> int:
+        """根据测试类型和层估算耗时（秒）"""
+        if tlayer == 'unit':
+            return 2  # 桌面秒级
+        elif tlayer == 'e2e':
+            return 60  # 全流程较长
+        else:  # integration
+            return 45 if ttype == 'async' else 30
+
     # ------------------------------------------------------------------
     # 批量执行
     # ------------------------------------------------------------------
@@ -111,7 +165,8 @@ class TestBatchRunner:
     def run_test_batch(self, test_filter: Any = "all", stop_on_first_failure: bool = False,
                        max_retries: int = 1, timeout_per_test: int = 90,
                        auto_screenshot_on_failure: bool = True,
-                       source_dir: str = None, platform: str = None) -> dict:
+                       source_dir: str = None, platform: str = None,
+                       layer: str = None) -> dict:
         """顺序运行多个测试，每个独立游戏会话，返回汇总报告（设计文档 4.1 run_test_batch）
 
         Args:
@@ -122,6 +177,7 @@ class TestBatchRunner:
             auto_screenshot_on_failure: 失败时是否自动截图（仅 crash/timeout/unknown 触发）
             source_dir: 源码目录
             platform: 游戏平台
+            layer: 按层过滤 'all' | 'unit' | 'integration' | 'e2e'（默认 None 不过滤）
         """
         # ① 环境检查
         if not self.executor.check_connectivity():
@@ -133,7 +189,7 @@ class TestBatchRunner:
             }
 
         # ② 测试发现 / 选择
-        selected = self._select_tests(test_filter, source_dir)
+        selected = self._select_tests(test_filter, source_dir, layer)
         if isinstance(selected, dict):  # 发现失败
             return selected
         if not selected:
@@ -206,7 +262,7 @@ class TestBatchRunner:
             'failed': failed_list,
         }
 
-    def _select_tests(self, test_filter: Any, source_dir: str = None):
+    def _select_tests(self, test_filter: Any, source_dir: str = None, layer: str = None):
         """根据 filter 选择测试列表。返回 list；发现失败时返回 dict（错误响应）。"""
         if isinstance(test_filter, list):
             return [self._normalize_test(t) for t in test_filter]
@@ -216,7 +272,7 @@ class TestBatchRunner:
             return list(self._failed_cache)
         # 'all' 或 glob 子串
         pattern = None if (not test_filter or test_filter == 'all') else test_filter
-        discovery = self.discover_tests(source_dir, filter_pattern=pattern)
+        discovery = self.discover_tests(source_dir, filter_pattern=pattern, layer=layer)
         if not discovery.get('success'):
             return {
                 'success': False,

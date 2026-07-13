@@ -151,6 +151,11 @@ class War3TesterMCP:
                             "source_dir": {
                                 "type": "string",
                                 "description": "源码目录路径"
+                            },
+                            "layer": {
+                                "type": "string",
+                                "description": "按测试层过滤：'all'(默认) | 'unit' | 'integration' | 'e2e'（M3 新增）",
+                                "enum": ["all", "unit", "integration", "e2e"]
                             }
                         }
                     }
@@ -412,6 +417,91 @@ class War3TesterMCP:
                                 "type": "integer",
                                 "description": "超时时间（秒），默认 10",
                                 "default": 10
+                            }
+                        },
+                        "required": ["test_name"]
+                    }
+                },
+                {
+                    "name": "scaffold_test",
+                    "description": "生成 TDD 测试骨架 - 按模块名+层生成 Arrange-Act-Assert 三段式测试文件，自动注册进测试列表。unit 层用桌面跑（秒级），integration/e2e 用游戏内跑。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "module": {
+                                "type": "string",
+                                "description": "模块名（如 'talent'、'skill_a00d'）"
+                            },
+                            "layer": {
+                                "type": "string",
+                                "description": "测试层：'unit'（桌面秒级）| 'integration'（游戏内）| 'e2e'（全流程）",
+                                "enum": ["unit", "integration", "e2e"]
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "测试名（可选，默认 test_<layer>_<module>）"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径（默认 config.compile_source_dir）"
+                            }
+                        },
+                        "required": ["module", "layer"]
+                    }
+                },
+                {
+                    "name": "tdd_red",
+                    "description": "TDD Red 阶段 - 跑测试预期失败，确认测试有效。区分「预期 assertion fail」（测试有效，Red 成立）vs「意外 env_error/compile_error」（测试写错，Red 不成立）。unit 层用 run_unit_test，integration/e2e 用 test_commit。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "test_name": {
+                                "type": "string",
+                                "description": "测试名称"
+                            },
+                            "layer": {
+                                "type": "string",
+                                "description": "测试层（决定用 run_unit_test 还是 test_commit）",
+                                "enum": ["unit", "integration", "e2e"],
+                                "default": "unit"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径"
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "超时时间（秒），默认 60",
+                                "default": 60
+                            }
+                        },
+                        "required": ["test_name"]
+                    }
+                },
+                {
+                    "name": "tdd_green",
+                    "description": "TDD Green 阶段 - 跑测试预期通过。unit 层用 run_unit_test，integration/e2e 用 test_commit。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "test_name": {
+                                "type": "string",
+                                "description": "测试名称"
+                            },
+                            "layer": {
+                                "type": "string",
+                                "description": "测试层",
+                                "enum": ["unit", "integration", "e2e"],
+                                "default": "unit"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径"
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "超时时间（秒），默认 60",
+                                "default": 60
                             }
                         },
                         "required": ["test_name"]
@@ -1089,6 +1179,254 @@ class War3TesterMCP:
 
         return "\n".join(out)
 
+    def _scaffold_test(self, module: str, layer: str, name: str = None, source_dir: str = None) -> dict:
+        """
+        生成 TDD 测试骨架（M3 方向 D）
+
+        Args:
+            module: 模块名（如 'talent'、'skill_a00d'）
+            layer: 测试层 'unit' | 'integration' | 'e2e'
+            name: 测试名（可选，默认 test_<layer>_<module>）
+            source_dir: 源码目录
+
+        Returns:
+            {'success': bool, 'file': str, 'message': str, 'error': str | None}
+        """
+        resolved = config._resolve_path(source_dir) if source_dir else config.compile_source_dir
+        test_dir = config.get_test_dir_path(resolved)
+        if test_dir is None:
+            return {
+                'success': False,
+                'file': None,
+                'message': '',
+                'error': f'source_dir 非有效 w2l 项目根: {resolved}',
+            }
+
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        # 生成测试文件名
+        if name:
+            test_name = name if name.startswith('test_') else f'test_{name}'
+        else:
+            test_name = f'test_{layer}_{module}'
+
+        test_file = f'{test_name}.lua'
+        test_file_path = test_dir / test_file
+
+        # 检查文件是否已存在
+        if test_file_path.exists():
+            return {
+                'success': False,
+                'file': str(test_file_path),
+                'message': '',
+                'error': f'测试文件已存在: {test_file_path}',
+            }
+
+        # 生成骨架内容
+        content = self._generate_test_skeleton(module, layer, test_name)
+
+        try:
+            with open(test_file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return {
+                'success': True,
+                'file': str(test_file_path),
+                'message': f'已生成测试骨架: {test_file}\n\n'
+                           f'下一步:\n'
+                           f'1. 编辑 {test_file} 填充测试逻辑\n'
+                           f'2. 运行 tdd_red(test_name="{test_name}", layer="{layer}") 确认 Red\n'
+                           f'3. 实现功能代码\n'
+                           f'4. 运行 tdd_green(test_name="{test_name}", layer="{layer}") 确认 Green',
+                'error': None,
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'file': str(test_file_path),
+                'message': '',
+                'error': f'写入文件失败: {e}',
+            }
+
+    def _generate_test_skeleton(self, module: str, layer: str, test_name: str) -> str:
+        """生成测试骨架内容（通用，不硬编码项目路径）"""
+
+        # 根据 layer 选择不同的引导方式
+        if layer == 'unit':
+            # 桌面单测：使用 jass_mock + assertions
+            header = f'-- @layer unit\n'
+            header += f'-- TDD 测试骨架: {test_name}\n'
+            header += f'-- 桌面纯逻辑单测（秒级反馈）\n\n'
+            header += f'-- 加载插件内置断言库（由 desktop_bootstrap 注入到 _G.__war3_tester_assertions）\n'
+            header += f'local assert = _G.__war3_tester_assertions or {{}}\n'
+            header += f'local assertEquals = assert.assertEquals or function(a, b, msg) error(msg or "assertion failed") end\n'
+            header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
+            header += f'-- 加载 jass mock（由 desktop_bootstrap 注入到 _G.__war3_tester_jass_mock）\n'
+            header += f'-- local jass_mock = _G.__war3_tester_jass_mock\n\n'
+        else:
+            # integration/e2e: 游戏内测试
+            header = f'-- @layer {layer}\n'
+            header += f'-- TDD 测试骨架: {test_name}\n'
+            header += f'-- 游戏内测试（需编译+启动游戏）\n\n'
+            header += f'-- 加载插件内置断言库（由 lua_bootstrap 注入到 _G.__war3_tester_assertions）\n'
+            header += f'local assert = _G.__war3_tester_assertions or {{}}\n'
+            header += f'local assertEquals = assert.assertEquals or function(a, b, msg) error(msg or "assertion failed") end\n'
+            header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
+
+        # TDD 三段式骨架
+        skeleton = f'''
+-- ============================================================================
+-- 测试模块: {module}
+-- 测试层: {layer}
+-- ============================================================================
+
+-- Arrange: 准备测试数据和环境
+local function setup()
+    -- TODO: 初始化测试数据
+    -- 例如: local data = {{id = 1, name = "test"}}
+    return {{}}
+end
+
+-- Act: 执行被测功能
+local function execute(data)
+    -- TODO: 调用被测函数
+    -- 例如: local result = MyModule.process(data)
+    -- return result
+    return nil
+end
+
+-- Assert: 验证结果
+local function verify(result)
+    -- TODO: 断言检查结果
+    -- 例如: assertEquals(result.id, 1, "ID 应该为 1")
+    -- 例如: assertTrue(result.success, "应该成功")
+end
+
+-- ============================================================================
+-- 测试用例
+-- ============================================================================
+
+local function test_case_1()
+    print("[TEST] test_case_1: 基本功能测试")
+
+    -- Arrange
+    local data = setup()
+
+    -- Act
+    local result = execute(data)
+
+    -- Assert
+    verify(result)
+
+    print("[PASS] test_case_1")
+end
+
+-- ============================================================================
+-- 测试入口（最小契约: RunAutoTest）
+-- ============================================================================
+
+function RunAutoTest()
+    print("=== 开始测试: {test_name} ===")
+
+    local success, err = pcall(test_case_1)
+    if not success then
+        print("[FAIL] test_case_1: " .. tostring(err))
+        -- 设 _G.__test_result 让 desktop_bootstrap 解析为失败（success=false -> failure_type=assertion）
+        _G.__test_result = {{success=false, test_name='{test_name}', details=tostring(err), cases={{}}}}
+        return
+    end
+
+    print("=== 测试完成: {test_name} ===")
+    -- 设 _G.__test_result 让 desktop_bootstrap 解析为成功
+    _G.__test_result = {{success=true, test_name='{test_name}', details='all passed', cases={{}}}}
+end
+'''
+
+        return header + skeleton
+
+    def _tdd_red(self, test_name: str, layer: str, source_dir: str = None, timeout: int = 60) -> dict:
+        """
+        TDD Red 阶段 - 跑测试预期失败，确认测试有效（M3 方向 E）
+
+        关键：区分「预期 assertion fail」（测试有效，Red 成立）vs「意外 env_error/compile_error」
+        （测试写错或环境问题，Red 不成立）。
+
+        Returns:
+            {
+                'status': 'red_valid' | 'red_invalid' | 'green',
+                'failure_type': str | None,
+                'reason': str | None,
+                'error': str | None,
+                'elapsed': float,
+            }
+        """
+        # 根据 layer 选择运行方式
+        if layer == 'unit':
+            # 桌面单测
+            result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
+        else:
+            # integration/e2e: 游戏内测试
+            result = self.test_commit(test_name, None, timeout, None, source_dir, False)
+
+        elapsed = result.get('elapsed', 0)
+        failure_type = result.get('failure_type')
+        success = result.get('success', False)
+
+        # 判断 Red 是否成立
+        if success:
+            # 测试通过了，但预期应该失败
+            return {
+                'status': 'green',
+                'failure_type': None,
+                'reason': '测试通过了，但 Red 阶段预期应该失败。请检查测试是否真的在验证未实现的功能',
+                'error': None,
+                'elapsed': elapsed,
+            }
+
+        # 测试失败了，判断是否是「预期失败」
+        # 预期失败 = assertion failure（测试逻辑正确，功能未实现导致断言失败）
+        # 非预期失败 = runtime_error / env_error / compile_error / module_load_error 等
+        #   runtime_error = 测试运行时错（调用 nil 函数、数组越界等），可能是测试写错，不一定是功能未实现
+        #   env_error / compile_error / module_load_error = 测试写错或环境问题
+        if failure_type == 'assertion':
+            # Red 成立：测试逻辑正确，断言失败，功能未实现
+            return {
+                'status': 'red_valid',
+                'failure_type': failure_type,
+                'reason': '测试预期失败（assertion failure），Red 成立：测试逻辑正确，功能未实现',
+                'error': result.get('error'),
+                'elapsed': elapsed,
+            }
+        else:
+            # Red 不成立：非 assertion 失败，可能是测试写错或环境问题
+            # runtime_error：可能是测试代码 bug（调用 nil 函数、数组越界等），需检查测试代码
+            # env_error/compile_error/module_load_error：环境问题或测试文件写错
+            return {
+                'status': 'red_invalid',
+                'failure_type': failure_type,
+                'reason': f'测试失败原因不是 assertion failure，而是 {failure_type}。'
+                          f'runtime_error 可能是测试写错（调用 nil 函数、数组越界等），'
+                          f'env_error/compile_error 是环境问题。请检查测试代码',
+                'error': result.get('error'),
+                'elapsed': elapsed,
+            }
+
+    def _tdd_green(self, test_name: str, layer: str, source_dir: str = None, timeout: int = 60) -> dict:
+        """
+        TDD Green 阶段 - 跑测试预期通过（M3 方向 E）
+
+        Returns:
+            与 test_commit / run_unit_test 同结构的 result
+        """
+        # 根据 layer 选择运行方式
+        if layer == 'unit':
+            # 桌面单测
+            result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
+        else:
+            # integration/e2e: 游戏内测试
+            result = self.test_commit(test_name, None, timeout, None, source_dir, True)
+
+        return result
+
     def _inject_war3_tester_assets(self, wt_dir: Path) -> None:
         """
         注入所有插件产物到 _war3_tester/ 子目录（M1 归拢）。
@@ -1168,6 +1506,7 @@ class War3TesterMCP:
             auto_ss = arguments.get("auto_screenshot_on_failure", True)
             platform = arguments.get("platform")
             source_dir = arguments.get("source_dir")
+            layer = arguments.get("layer")  # M3: 按层过滤
             if source_dir:
                 source_dir = str(config._resolve_path(source_dir))
             if not platform:
@@ -1177,7 +1516,8 @@ class War3TesterMCP:
             batch_result = self.batch_runner.run_test_batch(
                 test_filter=test_filter, stop_on_first_failure=stop_on_first_failure,
                 max_retries=max_retries, timeout_per_test=timeout_per_test,
-                auto_screenshot_on_failure=auto_ss, source_dir=source_dir, platform=platform)
+                auto_screenshot_on_failure=auto_ss, source_dir=source_dir, platform=platform,
+                layer=layer)
 
             messages = [f"## 批量测试\n\n时间：{timestamp}", batch_result.get("message", "")]
             if not batch_result.get("success") and batch_result.get("error"):
@@ -1194,14 +1534,16 @@ class War3TesterMCP:
         elif tool_name == "discover_tests":
             flt = arguments.get("filter")
             source_dir = arguments.get("source_dir")
+            layer = arguments.get("layer")  # M3: 按层过滤
             if source_dir:
                 source_dir = str(config._resolve_path(source_dir))
-            discovery = self.batch_runner.discover_tests(source_dir, filter_pattern=flt)
+            discovery = self.batch_runner.discover_tests(source_dir, filter_pattern=flt, layer=layer)
             if discovery.get("success"):
                 tests = discovery.get("tests", [])
                 lines = [f"发现 {len(tests)} 个测试（估算 {discovery.get('total_est_seconds')}s）："]
                 for t in tests:
-                    lines.append(f"  - {t['test_name']} ({t['type']}, ~{t['est_seconds']}s)")
+                    layer_info = f", layer={t.get('layer', 'integration')}"
+                    lines.append(f"  - {t['test_name']} ({t['type']}{layer_info}, ~{t['est_seconds']}s)")
                 return {"content": [{"type": "text",
                                      "text": f"## 测试发现\n\n时间：{timestamp}\n\n" + "\n".join(lines)}]}
             return {"content": [{"type": "text", "text": f"[FAIL] {discovery.get('error', '未知错误')}"}],
@@ -1502,6 +1844,117 @@ class War3TesterMCP:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": f"[FAIL] run_unit_test 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "scaffold_test":
+            # M3: 生成 TDD 测试骨架
+            module = arguments.get("module")
+            layer = arguments.get("layer", "unit")
+            name = arguments.get("name")
+            source_dir = arguments.get("source_dir")
+
+            if not module:
+                return {
+                    "content": [{"type": "text", "text": "[FAIL] 缺少 module 参数"}],
+                    "isError": True
+                }
+
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            else:
+                source_dir = str(config.compile_source_dir)
+
+            try:
+                result = self._scaffold_test(module, layer, name, source_dir)
+                if result.get("success"):
+                    messages = [f"## 测试骨架生成\n\n时间：{timestamp}"]
+                    messages.append(f"模块：{module}")
+                    messages.append(f"层：{layer}")
+                    messages.append(f"文件：{result.get('file')}")
+                    messages.append(f"\n{result.get('message')}")
+                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+                else:
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] {result.get('error', '生成失败')}"}],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] scaffold_test 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "tdd_red":
+            # M3: TDD Red 阶段 - 预期失败
+            test_name = arguments.get("test_name", "unknown")
+            layer = arguments.get("layer", "unit")
+            source_dir = arguments.get("source_dir")
+            timeout = arguments.get("timeout", 60)
+
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+
+            try:
+                result = self._tdd_red(test_name, layer, source_dir, timeout)
+
+                messages = [f"## TDD Red 阶段\n\n时间：{timestamp}"]
+                messages.append(f"测试：{test_name}")
+                messages.append(f"层：{layer}")
+                messages.append(f"状态：{result.get('status')}")
+                messages.append(f"failure_type: {result.get('failure_type')}")
+
+                if result.get('status') == 'red_valid':
+                    messages.append("\n✅ Red 成立：测试预期失败，测试有效")
+                elif result.get('status') == 'red_invalid':
+                    messages.append("\n❌ Red 不成立：测试写错或环境问题")
+                    messages.append(f"原因：{result.get('reason')}")
+                elif result.get('status') == 'green':
+                    messages.append("\n⚠️ 测试通过了，但预期应该失败")
+
+                if result.get('error'):
+                    messages.append(f"\n错误：{result.get('error')}")
+
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] tdd_red 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "tdd_green":
+            # M3: TDD Green 阶段 - 预期通过
+            test_name = arguments.get("test_name", "unknown")
+            layer = arguments.get("layer", "unit")
+            source_dir = arguments.get("source_dir")
+            timeout = arguments.get("timeout", 60)
+
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+
+            try:
+                result = self._tdd_green(test_name, layer, source_dir, timeout)
+
+                messages = [f"## TDD Green 阶段\n\n时间：{timestamp}"]
+                messages.append(f"测试：{test_name}")
+                messages.append(f"层：{layer}")
+                messages.append(f"结果：{'通过' if result.get('success') else '失败'}")
+                messages.append(f"耗时：{result.get('elapsed', 0):.2f}s")
+
+                if result.get('success'):
+                    messages.append("\n✅ Green 成立：测试通过")
+                else:
+                    messages.append("\n❌ Green 不成立：测试仍失败")
+                    messages.append(f"failure_type: {result.get('failure_type')}")
+                    if result.get('error'):
+                        messages.append(f"错误：{result.get('error')}")
+
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] tdd_green 失败：{e}"}],
                     "isError": True
                 }
 
