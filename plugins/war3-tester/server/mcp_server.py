@@ -39,6 +39,7 @@ from env_bridge import create_executor
 from http_receiver import HTTPReceiver
 from test_batch_runner import TestBatchRunner
 from desktop_runner import DesktopRunner
+from watcher import FileWatcher
 from logger import setup_logger
 
 # 初始化配置
@@ -63,6 +64,8 @@ class War3TesterMCP:
         self.batch_runner = TestBatchRunner(config, executor, http_receiver, self)
         # M2: 桌面纯逻辑单测运行器（不启动游戏，秒级反馈）
         self.desktop_runner = DesktopRunner(config, executor)
+        # M4: 文件监控器（watch 模式）
+        self.file_watcher = FileWatcher(self.desktop_runner, config)
 
         # MCP 能力声明
         self.capabilities = {
@@ -505,6 +508,50 @@ class War3TesterMCP:
                             }
                         },
                         "required": ["test_name"]
+                    }
+                },
+                {
+                    "name": "watch_unit_tests",
+                    "description": "【M4 方向 F】启动文件监控模式 - 监控测试文件和源文件改动，自动重跑相关 unit 测试。后台线程运行，不阻塞 MCP。结果累积到日志文件。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "test_name": {
+                                "type": "string",
+                                "description": "测试名称（如 'test_talent_config'）"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径（默认 config.compile_source_dir）"
+                            },
+                            "poll_interval": {
+                                "type": "number",
+                                "description": "轮询间隔（秒），默认 1.0",
+                                "default": 1.0
+                            },
+                            "debounce_delay": {
+                                "type": "number",
+                                "description": "防抖延迟（秒），默认 0.5",
+                                "default": 0.5
+                            }
+                        },
+                        "required": ["test_name"]
+                    }
+                },
+                {
+                    "name": "stop_watch",
+                    "description": "【M4 方向 F】停止文件监控模式",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "get_watch_results",
+                    "description": "【M4 方向 F】获取文件监控累积的测试结果",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
                     }
                 },
             ],
@@ -1955,6 +2002,84 @@ end
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": f"[FAIL] tdd_green 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "watch_unit_tests":
+            # M4 方向 F: 启动文件监控模式
+            test_name = arguments.get("test_name", "unknown")
+            source_dir = arguments.get("source_dir")
+            poll_interval = arguments.get("poll_interval", 1.0)
+            debounce_delay = arguments.get("debounce_delay", 0.5)
+
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+
+            try:
+                result = self.file_watcher.start_watch(
+                    test_name, source_dir, poll_interval, debounce_delay)
+
+                if result.get('success'):
+                    messages = [f"## 文件监控已启动\n\n时间：{timestamp}"]
+                    messages.append(result.get('message', ''))
+                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+                else:
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] {result.get('message', '启动失败')}"}],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] watch_unit_tests 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "stop_watch":
+            # M4 方向 F: 停止文件监控
+            try:
+                result = self.file_watcher.stop_watch()
+                if result.get('success'):
+                    messages = [f"## 文件监控已停止\n\n时间：{timestamp}"]
+                    messages.append(result.get('message', ''))
+                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+                else:
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] {result.get('message', '停止失败')}"}],
+                        "isError": True
+                    }
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] stop_watch 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "get_watch_results":
+            # M4 方向 F: 获取文件监控累积结果
+            try:
+                result = self.file_watcher.get_results()
+                messages = [f"## 文件监控结果\n\n时间：{timestamp}"]
+                messages.append(f"监控状态：{'运行中' if result.get('watching') else '已停止'}")
+                messages.append(f"测试名称：{result.get('test_name', 'N/A')}")
+                messages.append(f"总运行次数：{result.get('count', 0)}")
+                if result.get('log_file'):
+                    messages.append(f"日志文件：{result.get('log_file')}")
+
+                results = result.get('results', [])
+                if results:
+                    messages.append("\n### 最近 10 次运行：")
+                    for r in results[-10:]:
+                        status = "✅" if r.get('success') else "❌"
+                        messages.append(f"{status} {r.get('timestamp', '')} | "
+                                       f"触发：{r.get('trigger', '')} | "
+                                       f"结果：{'通过' if r.get('success') else r.get('failure_type', '失败')} | "
+                                       f"耗时：{r.get('elapsed', 0):.2f}s")
+                        if r.get('error'):
+                            messages.append(f"   错误：{r.get('error')}")
+
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] get_watch_results 失败：{e}"}],
                     "isError": True
                 }
 

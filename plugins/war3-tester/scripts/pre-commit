@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+pre-commit hook - 按改动文件选相关 unit 测试跑（M4 方向 F）
+
+功能：
+- git pre-commit 时检测改动的 .lua 文件
+- 按文件名映射选相关 unit 测试
+- 用桌面 lua5.3 秒级跑（不启动游戏）
+- 有测试失败则阻止 commit（exit 1）
+
+安装方式：
+  方式 1（推荐）：cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+  方式 2：在项目 .pre-commit-config.yaml 中引用此脚本
+
+文件名映射规则：
+  - 改 test_*.lua          -> 直接跑这个测试
+  - 改 test_unit_*.lua     -> 直接跑（unit 层测试）
+  - 改 其他.lua            -> 取文件名（不含路径和扩展名），尝试匹配：
+                               test_unit_<name>.lua
+                               test_<name>.lua
+                             找到则跑，找不到跳过
+
+配置：
+  通过环境变量或 config.json 配置：
+  - WAR3_SOURCE_DIR: 源码目录（默认自动探测 git root）
+  - WAR3_TEST_DIR: 测试目录名（默认 'auto-test'）
+  - LUA_EXE: lua 可执行文件路径（默认从 PATH 探测 lua5.3/lua53/lua）
+
+退出码：
+  - 0: 所有测试通过（或无相关测试可跑）
+  - 1: 有测试失败（阻止 commit）
+"""
+
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+# === 路径解析 ===
+SCRIPT_DIR = Path(__file__).resolve().parent
+SERVER_DIR = SCRIPT_DIR.parent / 'server'
+sys.path.insert(0, str(SERVER_DIR))
+
+
+def get_changed_lua_files():
+    """获取 git 暂存区改动的 .lua 文件列表"""
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--cached', '--name-only', '--', '*.lua'],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            print(f"[WARN] git diff 失败: {result.stderr}", file=sys.stderr)
+            return []
+        files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+        return files
+    except Exception as e:
+        print(f"[WARN] 获取改动文件失败: {e}", file=sys.stderr)
+        return []
+
+
+def map_file_to_tests(changed_file, test_dir):
+    """
+    按改动文件名映射相关测试文件
+
+    Args:
+        changed_file: 改动的文件路径（相对 git root）
+        test_dir: 测试目录 Path
+
+    Returns:
+        匹配的测试文件路径列表（已确认存在）
+    """
+    path = Path(changed_file)
+    filename = path.stem  # 不含扩展名
+
+    # 1. 如果改的就是 test_*.lua，直接跑
+    if filename.startswith('test_'):
+        test_file = test_dir / f'{filename}.lua'
+        if test_file.exists():
+            return [test_file]
+        return []
+
+    # 2. 尝试 test_unit_<name>.lua
+    candidates = [
+        test_dir / f'test_unit_{filename}.lua',
+        test_dir / f'test_{filename}.lua',
+    ]
+
+    matched = []
+    for candidate in candidates:
+        if candidate.exists():
+            matched.append(candidate)
+
+    return matched
+
+
+def run_unit_test(test_file, source_dir, test_dir, lua_exe, desktop_bootstrap_path):
+    """
+    运行单个 unit 测试（桌面 lua，不启动游戏）
+
+    Returns:
+        (success: bool, output: str)
+    """
+    test_name = test_file.stem
+    test_module = test_name  # 简化：直接用文件名作为模块名
+
+    # 构建命令：lua5.3 desktop_bootstrap.lua <test_module> <source_dir> <test_dir>
+    cmd = [lua_exe, str(desktop_bootstrap_path), test_module, str(source_dir), str(test_dir)]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(test_dir),
+            timeout=15,
+        )
+
+        # 检查 stdout 是否有 JSON 结果
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        # 简单判断成功/失败：returncode == 0 且 stdout 含 "success": true
+        if result.returncode == 0 and '"success": true' in stdout:
+            return True, stdout
+        else:
+            return False, f"stdout: {stdout[:500]}\nstderr: {stderr[:500]}"
+
+    except subprocess.TimeoutExpired:
+        return False, f"测试超时 (15s): {test_name}"
+    except Exception as e:
+        return False, f"执行失败: {e}"
+
+
+def main():
+    print("=== pre-commit: unit 测试门禁 ===")
+
+    # 1. 获取改动文件
+    changed_files = get_changed_lua_files()
+    if not changed_files:
+        print("[OK] 无 .lua 文件改动，跳过 unit 测试")
+        return 0
+
+    print(f"改动文件: {len(changed_files)} 个")
+    for f in changed_files:
+        print(f"  - {f}")
+
+    # 2. 解析路径
+    # 尝试 import Config 和 DesktopRunner
+    try:
+        from config import Config
+        from desktop_runner import DesktopRunner
+        from env_bridge import create_executor
+    except ImportError as e:
+        print(f"[WARN] 无法导入插件模块: {e}", file=sys.stderr)
+        print("[WARN] 跳过 unit 测试（插件模块不可用）", file=sys.stderr)
+        return 0
+
+    # 3. 初始化配置
+    config = Config()
+    source_dir = config.compile_source_dir
+    test_dir = config.get_test_dir_path(source_dir)
+
+    if test_dir is None or not test_dir.exists():
+        print(f"[WARN] 测试目录不存在: {test_dir}，跳过 unit 测试", file=sys.stderr)
+        return 0
+
+    # 4. 探测 lua5.3
+    runner = DesktopRunner(config, create_executor(config))
+    lua_exe = runner.find_lua_executable()
+    if not lua_exe:
+        print("[WARN] 未找到 lua5.3 可执行文件，跳过 unit 测试", file=sys.stderr)
+        print("       请安装 lua5.3 或设置环境变量 LUA_EXE", file=sys.stderr)
+        return 0
+
+    desktop_bootstrap_path = SERVER_DIR / 'desktop_bootstrap.lua'
+    if not desktop_bootstrap_path.exists():
+        print(f"[WARN] desktop_bootstrap.lua 不存在: {desktop_bootstrap_path}", file=sys.stderr)
+        return 0
+
+    # 5. 按改动文件选测试
+    test_files = set()
+    for changed_file in changed_files:
+        matched = map_file_to_tests(changed_file, test_dir)
+        for t in matched:
+            test_files.add(t)
+
+    if not test_files:
+        print("[OK] 无相关 unit 测试可跑（改动文件未匹配到测试）")
+        return 0
+
+    print(f"\n匹配到 {len(test_files)} 个 unit 测试:")
+    for t in sorted(test_files):
+        print(f"  - {t.name}")
+
+    # 6. 运行测试
+    print("\n--- 运行测试 ---")
+    passed = 0
+    failed = 0
+
+    for test_file in sorted(test_files):
+        test_name = test_file.stem
+        print(f"\n[RUN] {test_name}...")
+
+        # 确保插件产物已注入（jass_mock + assertions + desktop_bootstrap）
+        wt_dir = test_dir / '_war3_tester'
+        wt_dir.mkdir(parents=True, exist_ok=True)
+        runner._inject_desktop_assets(wt_dir)
+
+        success, output = run_unit_test(
+            test_file, source_dir, test_dir, lua_exe, desktop_bootstrap_path
+        )
+
+        if success:
+            print(f"  [PASS] {test_name}")
+            passed += 1
+        else:
+            print(f"  [FAIL] {test_name}")
+            print(f"  {output[:300]}")
+            failed += 1
+
+    # 7. 汇总
+    print(f"\n=== 汇总: {passed} 通过, {failed} 失败 ===")
+
+    if failed > 0:
+        print(f"\n[FAIL] {failed} 个 unit 测试失败，commit 被阻止", file=sys.stderr)
+        print("请修复失败的测试后重新 commit", file=sys.stderr)
+        return 1
+
+    print("[OK] 所有 unit 测试通过")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

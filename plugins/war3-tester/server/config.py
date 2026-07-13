@@ -116,6 +116,10 @@ class Config:
         # 文件不存在时 fallback 到通用模板，不 crash
         self.test_bootstrap_template: str = ""
 
+        # M4: 失败诊断时 inspect_game 查询表达式列表（项目自定义，默认空=不查 inspect）
+        # 项目通过 config.json -> test.inspect_queries 配置，如 ["Player(0):getGold()", "UnitObj.all_count()"]
+        self.inspect_queries: List[str] = []
+
         # HTTP 服务器配置
         self.http_host: str = "0.0.0.0"
         self.http_port: int = 8766
@@ -204,6 +208,8 @@ class Config:
             self.test_dir = test_config.get('test_dir', self.test_dir)
             self.test_module_prefix = test_config.get('test_module_prefix', self.test_module_prefix)
             self.test_bootstrap_template = test_config.get('test_bootstrap_template', self.test_bootstrap_template)
+            # M4: inspect 查询表达式（项目自定义，默认空=不查 inspect）
+            self.inspect_queries = test_config.get('inspect_queries', self.inspect_queries)
 
         # 7. HTTP 服务器配置
         http_config = file_config.get('http_server', {})

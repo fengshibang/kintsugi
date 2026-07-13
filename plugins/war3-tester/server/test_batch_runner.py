@@ -21,6 +21,7 @@ TestBatchRunner - 批量测试编排（v2 新增，设计文档 4.1）
 
 import json
 import time
+import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -422,40 +423,87 @@ class TestBatchRunner:
     def _finalize_result(self, test_name: str, outcome: str, result_data: Optional[dict],
                          game_errors: list, elapsed: int,
                          auto_screenshot_on_failure: bool, result_file: Optional[Path]) -> dict:
-        """根据 outcome 与结果数据，分类 failure_type 并组装最终结果"""
+        """根据 outcome 与结果数据，分类 failure_type 并组装最终结果
+
+        【M4 增强】失败时自动收集诊断信息（截图+VLM 判读+inspect_game+get_debug_output）。
+        每个诊断步骤 try/except 包裹，失败不阻塞主结果。
+        """
         screenshots: List[str] = []
+        screenshot_analysis: Optional[str] = None
+        inspect_snapshot: Optional[str] = None
+        debug_output: Optional[str] = None
+
+        # 判断是否失败（用于触发诊断）
+        is_failure = False
+        failure_type = None
 
         if outcome == 'result':
             test_success = result_data.get('success', False)
             failure_type = None if test_success else self._classify_failure(result_data, game_errors)
+            is_failure = not test_success
+
             # result 到达时通常非 crash/timeout；保留兜底（failure_type 被显式标为这些时才截）
-            if (not test_success and auto_screenshot_on_failure
+            if (is_failure and auto_screenshot_on_failure
                     and failure_type in self.SCREENSHOT_FAILURE_TYPES):
                 screenshots = self._take_failure_screenshot(test_name)
+
+            # 【M4 增强】失败时收集诊断信息
+            if is_failure and auto_screenshot_on_failure:
+                screenshot_analysis = self._collect_screenshot_analysis(screenshots)
+                inspect_snapshot = self._collect_inspect_snapshot()
+                debug_output = self._collect_debug_output()
+
             return self._build_result(
                 test_name, success=test_success, failure_type=failure_type,
                 result=result_data, result_file=str(result_file) if result_file else None,
                 game_errors=game_errors, elapsed=elapsed, screenshots=screenshots,
+                screenshot_analysis=screenshot_analysis,
+                inspect_snapshot=inspect_snapshot,
+                debug_output=debug_output,
                 error=(result_data.get('error') if not test_success else None))
 
         if outcome == 'crash':
+            is_failure = True
+            failure_type = 'crash'
             if auto_screenshot_on_failure:
                 screenshots = self._take_failure_screenshot(test_name)
             progress = self.http_receiver.get_progress(test_name)
+
+            # 【M4 增强】收集诊断
+            if auto_screenshot_on_failure:
+                screenshot_analysis = self._collect_screenshot_analysis(screenshots)
+                inspect_snapshot = self._collect_inspect_snapshot()
+                debug_output = self._collect_debug_output()
+
             return self._build_result(
                 test_name, success=False, failure_type='crash',
                 game_errors=game_errors, elapsed=elapsed, screenshots=screenshots,
+                screenshot_analysis=screenshot_analysis,
+                inspect_snapshot=inspect_snapshot,
+                debug_output=debug_output,
                 crash_log=None,  # P1：crash_log_reader 读取 Errors\<时间戳> Crash.txt
                 progress=progress,
                 logs=self.http_receiver.get_logs(test_name),
                 error=f'游戏进程崩溃（曾启动后消失），已收 {len(progress)} 条进度')
 
         if outcome == 'timeout':
+            is_failure = True
+            failure_type = 'timeout'
             if auto_screenshot_on_failure:
                 screenshots = self._take_failure_screenshot(test_name)
+
+            # 【M4 增强】收集诊断
+            if auto_screenshot_on_failure:
+                screenshot_analysis = self._collect_screenshot_analysis(screenshots)
+                inspect_snapshot = self._collect_inspect_snapshot()
+                debug_output = self._collect_debug_output()
+
             return self._build_result(
                 test_name, success=False, failure_type='timeout',
                 game_errors=game_errors, elapsed=elapsed, screenshots=screenshots,
+                screenshot_analysis=screenshot_analysis,
+                inspect_snapshot=inspect_snapshot,
+                debug_output=debug_output,
                 progress=self.http_receiver.get_progress(test_name),
                 logs=self.http_receiver.get_logs(test_name),
                 error=f'测试超时 ({elapsed}s)，最后进度：{self._last_progress_step(test_name)}')
@@ -505,6 +553,74 @@ class TestBatchRunner:
         except Exception as e:
             self.logger.warning(f"[{test_name}] 截图异常：{e}")
         return []
+
+    def _collect_screenshot_analysis(self, screenshots: List[str]) -> Optional[str]:
+        """【M4 方向 G】收集截图的 VLM 判读结果（graceful）"""
+        if not screenshots:
+            return None
+        try:
+            # 取第一张截图
+            screenshot_path = screenshots[0]
+            if not screenshot_path or not os.path.exists(screenshot_path):
+                return None
+
+            # 调用 mcp_server 的 analyze_screenshot
+            analysis = self.mcp_server.analyze_screenshot(screenshot_path)
+            return analysis
+        except Exception as e:
+            self.logger.warning(f"[{test_name}] VLM 判读失败（graceful）：{e}")
+            return f"VLM 判读失败: {e}"
+
+    def _collect_inspect_snapshot(self) -> Optional[str]:
+        """【M4 方向 G】收集运行时状态快照（graceful）
+
+        查询表达式从 config.inspect_queries 读取（项目自定义，默认空=不查 inspect）。
+        通用性：不硬编码任何项目特化 API，项目通过 config.json -> test.inspect_queries 配置。
+        """
+        try:
+            # 从 config 读取查询表达式列表（项目自定义，默认空）
+            queries = self.config.inspect_queries or []
+            if not queries:
+                # 未配置 inspect_queries，跳过（通用，不依赖项目特化 API）
+                self.logger.info("[inspect] 未配置 inspect_queries，跳过 inspect 快照")
+                return None
+
+            snapshots = []
+            for expr in queries:
+                try:
+                    # 使用 inspect_game 的机制（直接操作 _inspect_pending）
+                    query_id = f"q_{int(time.time() * 1000)}_{os.getpid()}"
+                    self.http_receiver._inspect_pending.append({
+                        "id": query_id,
+                        "expr": expr
+                    })
+                    # 等待结果（最多 2s）
+                    for _ in range(10):
+                        time.sleep(0.2)
+                        result = self.http_receiver._inspect_results.pop(query_id, None)
+                        if result:
+                            if "error" in result:
+                                snapshots.append(f"{expr}: ERROR - {result['error']}")
+                            else:
+                                snapshots.append(f"{expr}: {result.get('value', '')}")
+                            break
+                except Exception as e:
+                    snapshots.append(f"{expr}: 查询失败 - {e}")
+
+            return "\n".join(snapshots) if snapshots else None
+        except Exception as e:
+            self.logger.warning(f"inspect 快照收集失败（graceful）：{e}")
+            return f"inspect 快照收集失败: {e}"
+
+    def _collect_debug_output(self) -> Optional[str]:
+        """【M4 方向 G】收集调试输出（graceful）"""
+        try:
+            # 调用 mcp_server 的 _get_debug_output
+            debug_text = self.mcp_server._get_debug_output(limit=20, level='error')
+            return debug_text
+        except Exception as e:
+            self.logger.warning(f"debug_output 收集失败（graceful）：{e}")
+            return f"debug_output 收集失败: {e}"
 
     def _last_progress_step(self, test_name: str) -> str:
         """取最后一条进度的 step 名（timeout 诊断用）"""
