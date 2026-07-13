@@ -51,32 +51,6 @@ class ExecutorBase:
         """检查执行器是否就绪"""
         raise NotImplementedError
 
-    def _inject_nopause(self, src_dir: str) -> None:
-        """
-        编译前把插件内置的 nopause.dll 注入到项目 map/ 目录（防失焦暂停）。
-
-        dll 随地图编译打包进 w3x，运行时由插件注入到 run_auto_test.lua 的
-        require'nopause' 加载（参照 inspect_handler 范式；项目 plugin_main.lua 零侵入）。
-        graceful 失败：源不存在或复制异常只告警，不阻断编译（参照 _inject_inspect）。
-
-        Args:
-            src_dir: 地图源码目录（项目根）
-        """
-        dll_src = Path(__file__).resolve().parent.parent / 'nopause' / 'nopause.dll'
-        dll_dst = Path(src_dir) / 'map' / 'nopause.dll'
-        if not dll_src.exists():
-            self.logger.warning(f'[_inject_nopause] nopause.dll 源不存在: {dll_src}，跳过注入')
-            return
-        try:
-            dll_dst.parent.mkdir(parents=True, exist_ok=True)
-            with open(dll_src, 'rb') as _f:
-                _data = _f.read()
-            with open(dll_dst, 'wb') as _f:
-                _f.write(_data)
-            self.logger.info(f'[_inject_nopause] 已注入 nopause.dll -> {dll_dst}')
-        except (IOError, OSError) as _e:
-            self.logger.warning(f'[_inject_nopause] nopause.dll 复制失败（graceful）: {_e}')
-
 
 class WinProxyExecutor(ExecutorBase):
     """
@@ -255,9 +229,6 @@ class WinProxyExecutor(ExecutorBase):
             src_dir = to_windows_path(source_dir) if source_dir.startswith('/mnt/') else source_dir
         else:
             src_dir = to_windows_path(str(self.config.compile_source_dir))
-
-        # 编译前注入 nopause.dll 到 map/（防失焦暂停，由插件内置）
-        self._inject_nopause(src_dir)
 
         # w2l.exe 按实际项目目录的相对位置查找（每个项目自带 w3x2lni/），
         # 找不到再回退到 Config 初始化时算出的 w2l_path
@@ -757,9 +728,6 @@ class LocalExecutor(ExecutorBase):
     def compile(self, source_dir: str = None) -> dict:
         """编译地图"""
         src_dir = str(source_dir or self.config.compile_source_dir)
-
-        # 编译前注入 nopause.dll 到 map/（防失焦暂停，由插件内置）
-        self._inject_nopause(src_dir)
 
         # w2l.exe 按实际项目目录的相对位置查找，找不到再回退到 Config 初始化值
         w2l_found = self.config.find_w2l_exe(src_dir) or self.config.w2l_path
