@@ -17,6 +17,7 @@ import json
 import base64
 import threading
 import time
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -92,12 +93,32 @@ class HTTPReceiver:
 
             app = self._create_app()
 
+            # make_server 前主动清理 8766 残留进程
+            # Windows SO_REUSEADDR 允许多实例监听同一端口，make_server 不报 OSError，
+            # 必须主动清理残留 http_receiver，确保当前实例独占端口接收 /result
+            cleaned = self._cleanup_port_occupiers()
+            if cleaned:
+                self.logger.info(f"启动前清理占用端口 {self.port} 的残留进程：{cleaned}")
+                time.sleep(1)  # 等待端口释放
+
             # make_server 不打印 banner，端口占用时直接抛 OSError
             try:
                 server = make_server(self.host, self.port, app, threaded=True)
             except OSError as e:
-                self.logger.error(f"HTTP 服务器启动失败（端口 {self.port} 可能被占用）：{e}")
-                return False
+                self.logger.warning(f"HTTP 服务器启动失败（端口 {self.port} 可能被占用）：{e}，尝试清理残留进程...")
+                # 清理占用端口的残留 http_receiver 进程
+                cleaned_pids = self._cleanup_port_occupiers()
+                if cleaned_pids:
+                    self.logger.info(f"已清理占用端口 {self.port} 的进程：{cleaned_pids}，重试启动...")
+                    time.sleep(1)  # 等待端口释放
+                    try:
+                        server = make_server(self.host, self.port, app, threaded=True)
+                    except OSError as retry_e:
+                        self.logger.error(f"HTTP 服务器启动失败（端口 {self.port} 被占用且清理后重试失败）：{retry_e}")
+                        return False
+                else:
+                    self.logger.error(f"HTTP 服务器启动失败（端口 {self.port} 被占用且未找到可清理的残留进程）：{e}")
+                    return False
 
             self.http_server = server
 
@@ -130,6 +151,47 @@ class HTTPReceiver:
                 self.http_server = None
         else:
             self.logger.info("HTTP 服务器未在运行")
+
+    def _cleanup_port_occupiers(self) -> list:
+        """清理占用 self.port 的残留进程，返回清理的 PID 列表"""
+        cleaned = []
+        try:
+            result = subprocess.run(
+                ['netstat', '-ano'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode != 0:
+                self.logger.warning(f"netstat 执行失败：returncode={result.returncode}")
+                return cleaned
+
+            for line in result.stdout.splitlines():
+                # 匹配 :8766 且 LISTENING 的行
+                if f':{self.port}' in line and 'LISTENING' in line:
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    pid_str = parts[-1]
+                    if not pid_str.isdigit():
+                        continue
+                    pid = int(pid_str)
+                    try:
+                        kill_result = subprocess.run(
+                            ['taskkill', '/PID', str(pid), '/F'],
+                            capture_output=True,
+                            timeout=5
+                        )
+                        if kill_result.returncode == 0:
+                            cleaned.append(pid)
+                            self.logger.info(f"已清理占用端口 {self.port} 的进程 PID={pid}")
+                        else:
+                            self.logger.warning(f"清理 PID={pid} 失败：{kill_result.stderr.decode('utf-8', errors='ignore') if isinstance(kill_result.stderr, bytes) else kill_result.stderr}")
+                    except Exception as kill_e:
+                        self.logger.warning(f"清理 PID={pid} 异常：{kill_e}")
+        except Exception as e:
+            self.logger.warning(f"_cleanup_port_occupiers 异常：{e}")
+        return cleaned
 
     def _create_app(self):
         """创建 Flask 应用"""

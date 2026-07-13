@@ -15,10 +15,15 @@
 -- 尝试加载测试配置（正常游戏时文件不存在，必须静默降级）
 local config = nil
 local ok, result = pcall(function()
-    -- TODO: 待验证 - 此处 require 路径取决于 _target_test.lua 与引导脚本同目录
-    -- 若 war3 lua 不支持相对 require，可能需要改为 dofile 或其他方式
-    -- 当前假设：_target_test.lua 与 run_auto_test.lua 同目录，可用相对 require
-    return require('_target_test')
+    -- 通用引导模板：_target_test 的 require 路径由 mcp_server.py 注入。
+    -- 占位符 @@W3T_TARGET_TEST_MODULE@@ 在 test_commit 生成 run_auto_test.lua 时
+    -- 被替换为 {test_module_prefix}_war3_tester._target_test（通用，适用所有项目）。
+    -- 若占位符未被替换（如直接 dofile 本文件），fallback 到裸名 _target_test。
+    local _mod = '@@W3T_TARGET_TEST_MODULE@@'
+    if _mod == '@@W3T_TARGET_TEST_MODULE@@' then
+        _mod = '_target_test'  -- 未注入时的 fallback
+    end
+    return require(_mod)
 end)
 
 if not ok then

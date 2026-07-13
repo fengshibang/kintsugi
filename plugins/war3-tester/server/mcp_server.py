@@ -411,6 +411,31 @@ class War3TesterMCP:
             ]
         }
 
+    def _get_war3_tester_dir(self, test_dir: Path) -> Path:
+        """
+        返回插件产物隔离子目录（_war3_tester/），不存在则创建。
+
+        【红线 6 / M1 归拢】插件往项目写入的所有产物集中放此子文件夹，
+        不散落在测试目录根。项目自有的 test_*.lua 留在 test_dir 根。
+        """
+        wt = test_dir / '_war3_tester'
+        wt.mkdir(parents=True, exist_ok=True)
+        return wt
+
+    def _copy_file_to(self, src: Path, dst: Path, label: str) -> None:
+        """复制单个 lua 文件，失败 graceful（不抛异常，不阻断调用方）。"""
+        if not src.exists():
+            self.logger.warning(f"[_copy_file_to] 源文件不存在: {src}，跳过 {label}")
+            return
+        try:
+            with open(src, 'r', encoding='utf-8') as _f:
+                content = _f.read()
+            with open(dst, 'w', encoding='utf-8') as _f:
+                _f.write(content)
+            self.logger.info(f"[_copy_file_to] 已注入 {label} → {dst}")
+        except (IOError, OSError) as _e:
+            self.logger.warning(f"[_copy_file_to] {label} 复制失败（graceful）: {_e}")
+
     def _prepare_test_entry(self, test_name: str, test_file: str, source_dir: str) -> None:
         """
         准备测试入口文件（编译前调用）。
@@ -433,11 +458,22 @@ class War3TesterMCP:
             return
         test_dir.mkdir(parents=True, exist_ok=True)
 
+        # 【M1 归拢】插件产物集中放 _war3_tester/ 子目录
+        wt_dir = self._get_war3_tester_dir(test_dir)
+
         # 测试时强制开启：删除 toggle_test 写入的关闭标志，确保 test_commit 能跑测试
-        off_path = test_dir / '_test_off.lua'
+        # 【M1】_test_off.lua 已移入 _war3_tester/ 子目录
+        off_path = wt_dir / '_test_off.lua'
         if off_path.exists():
             off_path.unlink()
-            self.logger.info("[test_commit] 已删除 _test_off.lua（强制开启测试模式）")
+            self.logger.info("[test_commit] 已删除 _war3_tester/_test_off.lua（强制开启测试模式）")
+        # 兼容旧版：清理 test_dir 根的残留 _test_off.lua（过渡期）
+        legacy_off = test_dir / '_test_off.lua'
+        if legacy_off.exists():
+            try:
+                legacy_off.unlink()
+            except (IOError, OSError):
+                pass
 
         # 推断 test_file
         if not test_file:
@@ -465,7 +501,8 @@ class War3TesterMCP:
         self.logger.info(f"[test_commit] test_name={test_name}, test_file={test_file}, module={module_name}")
 
         # 写 _target_test.lua
-        target_test_path = test_dir / '_target_test.lua'
+        # 【M1 归拢】移入 _war3_tester/ 子目录
+        target_test_path = wt_dir / '_target_test.lua'
         # 【F4 修复】携带 http_host/http_port，让测试文件知道往哪 POST 结果
         # 游戏运行在 Windows 侧，统一 POST 到 127.0.0.1：
         # - WSL 模式：经 WSL2 localhost forwarding 到达 WSL 接收端（与旧硬编码 127.0.0.1 同机制）
@@ -479,7 +516,7 @@ class War3TesterMCP:
         )
         with open(target_test_path, 'w', encoding='utf-8') as f:
             f.write(target_test_content)
-        self.logger.info(f"[test_commit] 已写入 _target_test.lua")
+        self.logger.info(f"[test_commit] 已写入 _war3_tester/_target_test.lua")
 
         # 写 run_auto_test.lua（引导模板选择逻辑）
         # 【v0.2 增强】支持 test_bootstrap_template 自定义引导模板
@@ -511,17 +548,31 @@ class War3TesterMCP:
                 self.logger.warning(f"[test_commit] 通用引导模板不存在: {generic_bootstrap_path}")
                 return  # 无法写入引导，直接返回
 
-        # 3. 注入 inspect_handler（复制 inspect_handler.lua 到 test_dir）
-        self._inject_inspect(test_dir)
+        # 2.5 【Fail 1 修复】注入 _target_test 的 require 路径（通用，不硬编码项目路径）
+        # lua_bootstrap.lua 中使用占位符 @@W3T_TARGET_TEST_MODULE@@，此处替换为
+        # {test_module_prefix}_war3_tester._target_test，适用所有项目（空 prefix 也能工作）
+        _prefix = config.test_module_prefix
+        _target_test_module = f'{_prefix}_war3_tester._target_test'
+        bootstrap_content = bootstrap_content.replace('@@W3T_TARGET_TEST_MODULE@@', _target_test_module)
+
+        # 3. 注入插件产物到 _war3_tester/（inspect_handler + assertions + jass_mock）
+        self._inject_war3_tester_assets(wt_dir)
 
         # 4. 在 bootstrap_content 末尾追加 pcall 包裹的 require+start
-        # test_module_prefix 来自 config（wzns 为 'script.src.auto-test.'）
-        _prefix = config.test_module_prefix
+        # 【M1 归拢】inspect_handler 已移入 _war3_tester/ 子目录
         bootstrap_content += (
             "\n\n-- === inspect_handler 自动注入（plugin 追加，auto-test on 时启动运行时查询）===\n"
             "pcall(function()\n"
-            f"    local ih = require('{_prefix}inspect_handler')\n"
+            f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
             "    if ih and ih.start then ih.start() end\n"
+            "end)\n"
+            "\n"
+            "-- === 插件内置断言库 + jass mock（M1 新增，graceful 加载，缺失时静默跳过）===\n"
+            "pcall(function()\n"
+            f"    _G.__war3_tester_assertions = require('{_prefix}_war3_tester.assertions')\n"
+            "end)\n"
+            "pcall(function()\n"
+            f"    _G.__war3_tester_jass_mock = require('{_prefix}_war3_tester.jass_mock')\n"
             "end)\n"
         )
 
@@ -582,11 +633,13 @@ class War3TesterMCP:
     def toggle_test(self, enabled: bool, source_dir: str) -> dict:
         """一键开关自动测试模式（写/删 _test_off.lua + 清测试残留 + 重编译）。
 
-        关闭(false)：写入 _test_off.lua（内容 return true），auto-test/init.lua 顶部
+        【M1 归拢】_test_off.lua / _target_test.lua / run_auto_test.lua 均移入 _war3_tester/。
+
+        关闭(false)：写入 _war3_tester/_test_off.lua（内容 return true），auto-test/init.lua 顶部
             pcall(require) 命中后整个模块 early-return → 手动游戏零干扰。
-            同时删除 _target_test.lua / run_auto_test.lua 残留，避免旧测试入口意外激活。
-        开启(true)：删除 _test_off.lua，恢复 auto-test 模块默认加载。
-        注：跑测试本身仍需 test_commit（它写入 _target_test.lua，并会自动删除 _test_off.lua）。
+            同时删除 _war3_tester/_target_test.lua / run_auto_test.lua 残留，避免旧测试入口意外激活。
+        开启(true)：删除 _war3_tester/_test_off.lua，恢复 auto-test 模块默认加载。
+        注：跑测试本身仍需 test_commit（它写入 _war3_tester/_target_test.lua，并会自动删除 _test_off.lua）。
         """
         test_dir = config.get_test_dir_path(config._resolve_path(source_dir))
         if test_dir is None:
@@ -594,15 +647,25 @@ class War3TesterMCP:
                     'action': '失败：source_dir 非有效 w2l 项目根',
                     'compile_error': f'source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {source_dir}'}
         test_dir.mkdir(parents=True, exist_ok=True)
-        off_path = test_dir / '_test_off.lua'
-        target_path = test_dir / '_target_test.lua'
-        run_auto_path = test_dir / 'run_auto_test.lua'
+        # 【M1 归拢】所有插件产物移入 _war3_tester/
+        wt_dir = self._get_war3_tester_dir(test_dir)
+        off_path = wt_dir / '_test_off.lua'
+        target_path = wt_dir / '_target_test.lua'
+        run_auto_path = test_dir / 'run_auto_test.lua'  # run_auto_test.lua 仍放 test_dir 根（auto-test/init.lua 约定）
+
+        # 兼容旧版：清理 test_dir 根的残留 _test_off.lua / _target_test.lua（过渡期）
+        for legacy in (test_dir / '_test_off.lua', test_dir / '_target_test.lua'):
+            if legacy.exists():
+                try:
+                    legacy.unlink()
+                except (IOError, OSError):
+                    pass
 
         if enabled:
             if off_path.exists():
                 off_path.unlink()
             action = '已开启：auto-test 模块恢复加载（跑测试请用 test_commit）'
-            self.logger.info('[toggle_test] 开启：删除 _test_off.lua')
+            self.logger.info('[toggle_test] 开启：删除 _war3_tester/_test_off.lua')
         else:
             # 写关闭标志 + 清测试残留，确保手动游戏零干扰
             off_path.write_text(
@@ -613,7 +676,7 @@ class War3TesterMCP:
                 if p.exists():
                     p.unlink()
             action = '已关闭：auto-test 模块不加载，手动游戏零干扰'
-            self.logger.info('[toggle_test] 关闭：写入 _test_off.lua，清理 _target_test.lua/run_auto_test.lua 残留')
+            self.logger.info('[toggle_test] 关闭：写入 _war3_tester/_test_off.lua，清理 _target_test.lua/run_auto_test.lua 残留')
 
         # 重编译让 .w3x 反映标志文件变更
         compile_result = self.executor.compile(source_dir)
@@ -1000,29 +1063,29 @@ class War3TesterMCP:
 
         return "\n".join(out)
 
-    def _inject_inspect(self, test_dir: Path) -> None:
+    def _inject_war3_tester_assets(self, wt_dir: Path) -> None:
         """
-        注入 inspect_handler.lua 到 test_dir（复制 plugin 端的 inspect_handler.lua）。
+        注入所有插件产物到 _war3_tester/ 子目录（M1 归拢）。
 
-        供 _prepare_test_entry（测试引导）和 run_game（inspect-only 引导）复用。
+        注入文件：
+        - inspect_handler.lua（运行时查询处理器）
+        - assertions.lua（通用断言库）
+        - jass_mock.lua（jass mock 表）
+
         失败 graceful（不抛异常，不阻断调用方）。
 
         Args:
-            test_dir: 目标 auto-test 目录（Path 对象）
+            wt_dir: _war3_tester/ 子目录 Path 对象
         """
-        inspect_src = SERVER_DIR / 'inspect_handler.lua'
-        inspect_dst = test_dir / 'inspect_handler.lua'
-        if inspect_src.exists():
-            try:
-                with open(inspect_src, 'r', encoding='utf-8') as _f:
-                    _inspect_content = _f.read()
-                with open(inspect_dst, 'w', encoding='utf-8') as _f:
-                    _f.write(_inspect_content)
-                self.logger.info(f"[_inject_inspect] 已注入 inspect_handler.lua → {inspect_dst}")
-            except (IOError, OSError) as _e:
-                self.logger.warning(f"[_inject_inspect] inspect_handler.lua 复制失败（graceful）: {_e}")
-        else:
-            self.logger.warning(f"[_inject_inspect] inspect_handler.lua 源文件不存在: {inspect_src}，跳过注入")
+        assets = [
+            ('inspect_handler.lua', 'inspect_handler'),
+            ('assertions.lua', 'assertions'),
+            ('jass_mock.lua', 'jass_mock'),
+        ]
+        for filename, label in assets:
+            src = SERVER_DIR / filename
+            dst = wt_dir / filename
+            self._copy_file_to(src, dst, label)
 
     async def handle_tool_call(self, tool_name: str, arguments: dict) -> dict:
         """处理工具调用"""
@@ -1141,8 +1204,11 @@ class War3TesterMCP:
                     }
                 test_dir.mkdir(parents=True, exist_ok=True)
 
-                # 1. 注入 inspect_handler.lua
-                self._inject_inspect(test_dir)
+                # 【M1 归拢】插件产物集中放 _war3_tester/ 子目录
+                wt_dir = self._get_war3_tester_dir(test_dir)
+
+                # 1. 注入插件产物（inspect_handler + assertions + jass_mock）
+                self._inject_war3_tester_assets(wt_dir)
 
                 # 2. 写 inspect-only 的 run_auto_test.lua（只启动 inspect_handler，不跑测试）
                 run_auto_test_path = test_dir / 'run_auto_test.lua'
@@ -1150,7 +1216,7 @@ class War3TesterMCP:
                 inspect_only_content = (
                     "-- inspect-only bootstrap（run_game 注入，仅启动运行时查询，不跑测试）\n"
                     "pcall(function()\n"
-                    f"    local ih = require('{_prefix}inspect_handler')\n"
+                    f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
                     "    if ih and ih.start then ih.start() end\n"
                     "end)\n"
                 )
@@ -1162,13 +1228,21 @@ class War3TesterMCP:
                     self.logger.warning(f"[run_game] 写入 run_auto_test.lua 失败（graceful）: {e}")
 
                 # 3. 删 _test_off.lua（若存在），让 auto-test 模块加载 run_auto_test
-                off_path = test_dir / '_test_off.lua'
+                # 【M1 归拢】_test_off.lua 已移入 _war3_tester/
+                off_path = wt_dir / '_test_off.lua'
                 try:
                     if off_path.exists():
                         off_path.unlink()
-                        self.logger.info(f"[run_game] 已删除 _test_off.lua（启用 inspect_handler）")
+                        self.logger.info(f"[run_game] 已删除 _war3_tester/_test_off.lua（启用 inspect_handler）")
                 except (IOError, OSError) as e:
                     self.logger.warning(f"[run_game] 删除 _test_off.lua 失败（graceful）: {e}")
+                # 兼容旧版：清理 test_dir 根的残留
+                legacy_off = test_dir / '_test_off.lua'
+                if legacy_off.exists():
+                    try:
+                        legacy_off.unlink()
+                    except (IOError, OSError):
+                        pass
 
                 # 4. 编译地图（把 inspect_handler + run_auto_test 打包进 w3x）
                 compile_result = self.executor.compile(source_dir)
@@ -1267,6 +1341,7 @@ class War3TesterMCP:
 
         elif tool_name == "cleanup_all":
             stop_result = self.executor.stop_game()
+            self.http_receiver.stop()
             return {
                 "content": [{"type": "text", "text": f"[OK] 清理完成\n\n{stop_result.get('message', '')}"}]
             }
