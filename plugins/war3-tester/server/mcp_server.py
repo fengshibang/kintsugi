@@ -38,6 +38,7 @@ from config import Config
 from env_bridge import create_executor
 from http_receiver import HTTPReceiver
 from test_batch_runner import TestBatchRunner
+from desktop_runner import DesktopRunner
 from logger import setup_logger
 
 # 初始化配置
@@ -60,6 +61,8 @@ class War3TesterMCP:
         self.http_receiver = http_receiver
         # v2: 批量测试编排器（复用 _prepare_test_entry，与 test_commit 共享单测执行核心）
         self.batch_runner = TestBatchRunner(config, executor, http_receiver, self)
+        # M2: 桌面纯逻辑单测运行器（不启动游戏，秒级反馈）
+        self.desktop_runner = DesktopRunner(config, executor)
 
         # MCP 能力声明
         self.capabilities = {
@@ -389,6 +392,29 @@ class War3TesterMCP:
                                 "description": "源码目录路径（仅用于日志上下文，可选）"
                             }
                         }
+                    }
+                },
+                {
+                    "name": "run_unit_test",
+                    "description": "桌面纯逻辑单测 - 不编译地图、不启动游戏，用桌面 lua5.3 秒级跑纯逻辑测试。依赖 jass_mock 隔离游戏 API，适合 TDD 快速反馈循环。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "test_name": {
+                                "type": "string",
+                                "description": "测试名称（如 'test_talent_config'）"
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "源码目录路径（默认 config.compile_source_dir）"
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "description": "超时时间（秒），默认 10",
+                                "default": 10
+                            }
+                        },
+                        "required": ["test_name"]
                     }
                 },
             ],
@@ -1441,6 +1467,41 @@ class War3TesterMCP:
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": f"[FAIL] get_debug_output 失败：{e}"}],
+                    "isError": True
+                }
+
+        elif tool_name == "run_unit_test":
+            # M2: 桌面纯逻辑单测（不启动游戏，秒级反馈）
+            test_name = arguments.get("test_name", "unknown")
+            source_dir = arguments.get("source_dir")
+            timeout = arguments.get("timeout", 10)
+
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+
+            try:
+                result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
+
+                # 构建返回消息
+                messages = [f"## 桌面单测\n\n时间：{timestamp}"]
+                messages.append(f"测试名称：{result.get('test_name', test_name)}")
+                messages.append(f"结果：{'通过' if result.get('success') else '失败'}")
+                messages.append(f"耗时：{result.get('elapsed', 0):.2f}s")
+
+                if result.get('failure_type'):
+                    messages.append(f"failure_type: {result.get('failure_type')}")
+                if result.get('error'):
+                    messages.append(f"错误：{result.get('error')}")
+                if result.get('details'):
+                    messages.append(f"\n详情：\n{result.get('details')}")
+                if result.get('cases'):
+                    messages.append(f"\n用例：{result.get('cases')}")
+
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+
+            except Exception as e:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] run_unit_test 失败：{e}"}],
                     "isError": True
                 }
 
