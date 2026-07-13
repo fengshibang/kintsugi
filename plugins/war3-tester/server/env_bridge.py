@@ -1077,7 +1077,7 @@ gdi32.DeleteObject(hbmp)
 gdi32.DeleteDC(hdc_mem)
 user32.ReleaseDC(0, hdc_screen)
 
-print(f"截图已保存: {str(screenshot_path)}")
+print(f"截图已保存: {str(screenshot_path).replace(chr(92), '/')}")
 '''
 
         # 写入临时文件并执行
