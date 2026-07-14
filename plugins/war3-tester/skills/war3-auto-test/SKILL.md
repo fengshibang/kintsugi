@@ -296,6 +296,16 @@ TDD 开始前先规划，不要直接 scaffold 就写。规划清楚再动手，
 
 3. **测试隔离**：unit 层测试不启动游戏，integration/e2e 层才启动游戏
 
+### integration/e2e 测试规范（实机 TDD）
+
+integration/e2e 层 TDD 走 `test_commit`（实机，30s+/轮）。注意三个坑：
+
+1. **TestScenario:new 的 name 必须 = test_name**：test_commit 按 test_name 匹配 result_file（`{test_name}.json`）。若 TestScenario name ≠ test_name，POST 写错文件名，test_commit 等不到 -> timeout（red_invalid）。例如测试文件 `test_int_xxx.lua`，`tdd_red(test_name="test_int_xxx")`，则 `TestScenario:new('test_int_xxx', ...)`，name 要与 test_name 完全一致。
+
+2. **8766 端口残留**：/mcp 重连不 kill 旧 mcp_server 进程（SO_REUSEADDR 使多进程同监听 8766）。integration TDD 前若 8766 多进程 LISTENING，游戏 POST /result 到残留进程，当前 test_commit 收不到 -> timeout。**完全重启 Claude Code 清理**（/mcp 重连不够）。诊断特征：netstat 8766 多个 LISTENING + 无 result_file 生成 + 游戏日志显示 HTTP 发送成功。
+
+3. **scaffold 通用骨架不适用有测试框架的项目**：scaffold 生成的 integration 骨架用占位 http_post_result（不真 POST）。项目有自己的测试框架（如 wzns TestScenario）时，参考项目现有 integration 测试写，用项目框架的 POST 机制（结合项目规范，不用通用骨架）。
+
 ### TDD 工具清单
 
 | 工具 | 说明 |
