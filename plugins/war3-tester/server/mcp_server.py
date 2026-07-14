@@ -1343,66 +1343,43 @@ end
             header += f'local assertEquals = assert.assertEquals or function(a, b, msg) error(msg or "assertion failed") end\n'
             header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
             # integration/e2e 层必须 HTTP POST（test_commit 不读 _G.__test_result）
+            # 【通用性】不硬编码任何项目专有 require 路径，由项目自身提供 HTTP 客户端
             result_reporting = '''
 -- ============================================================================
--- HTTP POST 辅助函数（通用，尝试多种方式）
+-- HTTP POST 结果上报（通用骨架 - 需项目适配）
 -- ============================================================================
 -- 【重要】integration/e2e 层必须 HTTP POST 结果到 8766，test_commit 才能接收。
 -- _G.__test_result 仅桌面层（desktop_bootstrap）使用，游戏内无效。
 -- data 必须含 assertions 字段，_classify_failure 才能判定 assertion 失败。
+--
+-- 【适配说明】
+-- War3 定制 Lua 通常无 luasocket（socket.http 不可用），需用项目/平台自身 HTTP 客户端。
+-- 下方 http_post_result 是占位实现，需项目根据自身框架适配 HTTP POST 逻辑。
+-- 参考范例：examples/wzns/run_auto_test.framework.lua（wzns 框架的 HTTP 适配器）
 -- ============================================================================
 
 local function http_post_result(test_name, success, details, assertions)
-    local data = {
+    local data = {{
         test_name = test_name,
         success = success,
         details = details or '',
         -- assertions 字段：_classify_failure 读取它判定 failure_type=assertion
         -- 格式: {{name='...', passed=true|false, message='...'}, ...}
-        assertions = assertions or {},
-    }
+        assertions = assertions or {{}},
+    }}
 
-    -- 策略 1：尝试使用项目已有的 HTTP 客户端（常见模式）
-    -- 若项目有自定义 HTTP 客户端，可在此处适配
-    local http_client = nil
-    pcall(function()
-        -- 尝试常见的 HTTP 客户端 require 路径（按优先级）
-        local paths = {
-            'script.lib.util.http_socket',  -- wzns 项目
-            'lib.http_socket',
-            'http_socket',
-            'socket.http',
-        }
-        for _, path in ipairs(paths) do
-            local ok, mod = pcall(require, path)
-            if ok and mod and (mod.post or mod.request) then
-                http_client = {path = path, mod = mod}
-                break
-            end
-        end
-    end)
+    -- TODO: 项目适配 - 使用项目自身的 HTTP 客户端 POST 结果到 8766
+    -- 常见模式（需项目实现）：
+    --   local http_client = require('<your_project>.http_client')
+    --   http_client.post('http://127.0.0.1:8766/result', data)
+    --
+    -- 参考范例：examples/wzns/run_auto_test.framework.lua 的 exportResults 函数
+    --
+    -- 占位实现：仅打印日志，实际游戏内不会上报（test_commit 会超时）
+    print(string.format('[HTTP] TODO: 需项目适配 HTTP POST 到 http://127.0.0.1:8766/result'))
+    print(string.format('[HTTP] test_name=%s, success=%s', test_name, tostring(success)))
 
-    if http_client then
-        -- 使用项目 HTTP 客户端 POST
-        local url = string.format('http://127.0.0.1:8766/result')
-        local ok, err = pcall(function()
-            if http_client.mod.post then
-                http_client.mod.post(url, data, nil, 5)
-            elseif http_client.mod.request then
-                http_client.mod.request{url = url, method = 'POST', source = data}
-            end
-        end)
-        if ok then
-            print(string.format('[HTTP] ✓ 结果已 POST 到 %s（使用 %s）', url, http_client.path))
-            return
-        else
-            print(string.format('[HTTP] ✗ POST 失败: %s，尝试 fallback', tostring(err)))
-        end
-    end
-
-    -- 策略 2：fallback 到 _G.__test_result（仅桌面层有效，游戏内 test_commit 不读）
-    -- 此处仅作为最后手段，实际游戏内应确保 HTTP 客户端可用
-    print('[HTTP] ⚠ 未找到 HTTP 客户端，fallback 到 _G.__test_result（仅桌面层有效）')
+    -- fallback 到 _G.__test_result（仅桌面层有效，游戏内 test_commit 不读）
     _G.__test_result = data
 end
 
