@@ -1312,7 +1312,7 @@ class War3TesterMCP:
             header += f'-- 加载 jass mock（由 desktop_bootstrap 注入到 _G.__war3_tester_jass_mock）\n'
             header += f'-- local jass_mock = _G.__war3_tester_jass_mock\n\n'
             # unit 层使用 _G.__test_result（desktop_bootstrap 解析它）
-            result_reporting = '''
+            result_reporting = f'''
 -- ============================================================================
 -- 测试入口（最小契约: RunAutoTest）
 -- ============================================================================
@@ -1344,7 +1344,7 @@ end
             header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
             # integration/e2e 层必须 HTTP POST（test_commit 不读 _G.__test_result）
             # 【通用性】不硬编码任何项目专有 require 路径，由项目自身提供 HTTP 客户端
-            result_reporting = '''
+            result_reporting = f'''
 -- ============================================================================
 -- HTTP POST 结果上报（通用骨架 - 需项目适配）
 -- ============================================================================
@@ -1364,7 +1364,7 @@ local function http_post_result(test_name, success, details, assertions)
         success = success,
         details = details or '',
         -- assertions 字段：_classify_failure 读取它判定 failure_type=assertion
-        -- 格式: {{name='...', passed=true|false, message='...'}, ...}
+        -- 格式: {{name='...', passed=true|false, message='...'}}, ...}}
         assertions = assertions or {{}},
     }}
 
