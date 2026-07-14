@@ -533,13 +533,24 @@ class TestBatchRunner:
         return 'unknown'
 
     def _is_game_alive(self) -> bool:
-        """检查 War3 游戏进程是否存活（复用 tasklist，跨 WinProxy/Local 执行器）"""
+        """检查 War3 游戏进程是否存活（复用 tasklist，跨 WinProxy/Local 执行器）
+
+        bug③ 修复：execute 超时/失败时返回 {'success':False,'error':...}（无 stdout 键，
+        不抛异常），原代码用 result.get('stdout','')='' -> return False 误判崩溃。
+        修复：execute 返回 success=False 时不误判，返回 True（游戏可能存活）。
+        """
         try:
             result = self.executor.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 5})
+            # execute 失败/超时时返回 {'success':False,'error':...}（无 stdout），不抛异常
+            if not result.get('success', False):
+                self.logger.info(f"[alive] tasklist execute 失败（不误判崩溃）："
+                                 f"error={result.get('error', 'unknown')}")
+                return True  # 探测失败不误判为崩溃
             stdout = (result.get('stdout', '') or '').lower()
             for name in self.config.war3_process_names:
                 if name.lower() in stdout:
                     return True
+            self.logger.info(f"[alive] tasklist 未找到 War3 进程（stdout 长度={len(stdout)}）")
             return False
         except Exception as e:
             self.logger.debug(f"[alive] 探测异常（不误判崩溃）：{e}")

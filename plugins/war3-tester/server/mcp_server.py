@@ -1347,14 +1347,17 @@ end
 -- ============================================================================
 -- 【重要】integration/e2e 层必须 HTTP POST 结果到 8766，test_commit 才能接收。
 -- _G.__test_result 仅桌面层（desktop_bootstrap）使用，游戏内无效。
+-- data 必须含 assertions 字段，_classify_failure 才能判定 assertion 失败。
 -- ============================================================================
 
-local function http_post_result(test_name, success, details, cases)
+local function http_post_result(test_name, success, details, assertions)
     local data = {
         test_name = test_name,
         success = success,
         details = details or '',
-        cases = cases or {},
+        -- assertions 字段：_classify_failure 读取它判定 failure_type=assertion
+        -- 格式: {{name='...', passed=true|false, message='...'}, ...}
+        assertions = assertions or {},
     }
 
     -- 策略 1：尝试使用项目已有的 HTTP 客户端（常见模式）
@@ -1412,13 +1415,16 @@ function RunAutoTest()
     if not success then
         print("[FAIL] test_case_1: " .. tostring(err))
         -- 游戏内：HTTP POST 结果到 8766（test_commit 依赖此机制）
-        http_post_result('{test_name}', false, tostring(err), {{}})
+        -- assertions 含 passed=false 让 _classify_failure 判定 assertion（tdd_red -> red_valid）
+        http_post_result('{test_name}', false, tostring(err),
+            {{name='test_case_1', passed=false, message=tostring(err)}})
         return
     end
 
     print("=== 测试完成: {test_name} ===")
     -- 游戏内：HTTP POST 结果到 8766（test_commit 依赖此机制）
-    http_post_result('{test_name}', true, 'all passed', {{}})
+    http_post_result('{test_name}', true, 'all passed',
+        {{name='test_case_1', passed=true}})
 end
 '''
 
