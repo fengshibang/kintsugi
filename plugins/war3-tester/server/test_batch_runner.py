@@ -412,11 +412,13 @@ class TestBatchRunner:
             if test_dir is None:
                 self.logger.warning('[toggle] source_dir 非有效项目根，跳过写 _test_off')
                 return
-            off_path = test_dir / '_test_off.lua'
+            # 【M1 归拢】与 toggle_test 一致，写入 _war3_tester/_test_off.lua
+            wt_dir = self._get_war3_tester_dir(test_dir)
+            off_path = wt_dir / '_test_off.lua'
             off_path.write_text(
                 '-- _run_single_test 完成后自动生成：手动游戏时 auto-test 模块不加载（init.lua early-return）\nreturn true\n',
                 encoding='utf-8')
-            self.logger.info(f"[toggle] 测试完成，已写 _test_off.lua（手动游戏零干扰）")
+            self.logger.info(f"[toggle] 测试完成，已写 _war3_tester/_test_off.lua（手动游戏零干扰）")
         except Exception as e:
             self.logger.warning(f"[toggle] 写 _test_off 失败：{e}")
 

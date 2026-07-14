@@ -1309,8 +1309,30 @@ class War3TesterMCP:
             header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
             header += f'-- 加载 jass mock（由 desktop_bootstrap 注入到 _G.__war3_tester_jass_mock）\n'
             header += f'-- local jass_mock = _G.__war3_tester_jass_mock\n\n'
+            # unit 层使用 _G.__test_result（desktop_bootstrap 解析它）
+            result_reporting = '''
+-- ============================================================================
+-- 测试入口（最小契约: RunAutoTest）
+-- ============================================================================
+
+function RunAutoTest()
+    print("=== 开始测试: {test_name} ===")
+
+    local success, err = pcall(test_case_1)
+    if not success then
+        print("[FAIL] test_case_1: " .. tostring(err))
+        -- 桌面层：设 _G.__test_result 让 desktop_bootstrap 解析为失败
+        _G.__test_result = {{success=false, test_name='{test_name}', details=tostring(err), cases={{}}}}
+        return
+    end
+
+    print("=== 测试完成: {test_name} ===")
+    -- 桌面层：设 _G.__test_result 让 desktop_bootstrap 解析为成功
+    _G.__test_result = {{success=true, test_name='{test_name}', details='all passed', cases={{}}}}
+end
+'''
         else:
-            # integration/e2e: 游戏内测试
+            # integration/e2e: 游戏内测试，必须 HTTP POST /result
             header = f'-- @layer {layer}\n'
             header += f'-- TDD 测试骨架: {test_name}\n'
             header += f'-- 游戏内测试（需编译+启动游戏）\n\n'
@@ -1318,8 +1340,89 @@ class War3TesterMCP:
             header += f'local assert = _G.__war3_tester_assertions or {{}}\n'
             header += f'local assertEquals = assert.assertEquals or function(a, b, msg) error(msg or "assertion failed") end\n'
             header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
+            # integration/e2e 层必须 HTTP POST（test_commit 不读 _G.__test_result）
+            result_reporting = '''
+-- ============================================================================
+-- HTTP POST 辅助函数（通用，尝试多种方式）
+-- ============================================================================
+-- 【重要】integration/e2e 层必须 HTTP POST 结果到 8766，test_commit 才能接收。
+-- _G.__test_result 仅桌面层（desktop_bootstrap）使用，游戏内无效。
+-- ============================================================================
 
-        # TDD 三段式骨架
+local function http_post_result(test_name, success, details, cases)
+    local data = {
+        test_name = test_name,
+        success = success,
+        details = details or '',
+        cases = cases or {},
+    }
+
+    -- 策略 1：尝试使用项目已有的 HTTP 客户端（常见模式）
+    -- 若项目有自定义 HTTP 客户端，可在此处适配
+    local http_client = nil
+    pcall(function()
+        -- 尝试常见的 HTTP 客户端 require 路径（按优先级）
+        local paths = {
+            'script.lib.util.http_socket',  -- wzns 项目
+            'lib.http_socket',
+            'http_socket',
+            'socket.http',
+        }
+        for _, path in ipairs(paths) do
+            local ok, mod = pcall(require, path)
+            if ok and mod and (mod.post or mod.request) then
+                http_client = {path = path, mod = mod}
+                break
+            end
+        end
+    end)
+
+    if http_client then
+        -- 使用项目 HTTP 客户端 POST
+        local url = string.format('http://127.0.0.1:8766/result')
+        local ok, err = pcall(function()
+            if http_client.mod.post then
+                http_client.mod.post(url, data, nil, 5)
+            elseif http_client.mod.request then
+                http_client.mod.request{url = url, method = 'POST', source = data}
+            end
+        end)
+        if ok then
+            print(string.format('[HTTP] ✓ 结果已 POST 到 %s（使用 %s）', url, http_client.path))
+            return
+        else
+            print(string.format('[HTTP] ✗ POST 失败: %s，尝试 fallback', tostring(err)))
+        end
+    end
+
+    -- 策略 2：fallback 到 _G.__test_result（仅桌面层有效，游戏内 test_commit 不读）
+    -- 此处仅作为最后手段，实际游戏内应确保 HTTP 客户端可用
+    print('[HTTP] ⚠ 未找到 HTTP 客户端，fallback 到 _G.__test_result（仅桌面层有效）')
+    _G.__test_result = data
+end
+
+-- ============================================================================
+-- 测试入口（最小契约: RunAutoTest）
+-- ============================================================================
+
+function RunAutoTest()
+    print("=== 开始测试: {test_name} ===")
+
+    local success, err = pcall(test_case_1)
+    if not success then
+        print("[FAIL] test_case_1: " .. tostring(err))
+        -- 游戏内：HTTP POST 结果到 8766（test_commit 依赖此机制）
+        http_post_result('{test_name}', false, tostring(err), {{}})
+        return
+    end
+
+    print("=== 测试完成: {test_name} ===")
+    -- 游戏内：HTTP POST 结果到 8766（test_commit 依赖此机制）
+    http_post_result('{test_name}', true, 'all passed', {{}})
+end
+'''
+
+        # TDD 三段式骨架（通用部分）
         skeleton = f'''
 -- ============================================================================
 -- 测试模块: {module}
@@ -1367,28 +1470,9 @@ local function test_case_1()
     print("[PASS] test_case_1")
 end
 
--- ============================================================================
--- 测试入口（最小契约: RunAutoTest）
--- ============================================================================
-
-function RunAutoTest()
-    print("=== 开始测试: {test_name} ===")
-
-    local success, err = pcall(test_case_1)
-    if not success then
-        print("[FAIL] test_case_1: " .. tostring(err))
-        -- 设 _G.__test_result 让 desktop_bootstrap 解析为失败（success=false -> failure_type=assertion）
-        _G.__test_result = {{success=false, test_name='{test_name}', details=tostring(err), cases={{}}}}
-        return
-    end
-
-    print("=== 测试完成: {test_name} ===")
-    -- 设 _G.__test_result 让 desktop_bootstrap 解析为成功
-    _G.__test_result = {{success=true, test_name='{test_name}', details='all passed', cases={{}}}}
-end
 '''
 
-        return header + skeleton
+        return header + skeleton + result_reporting
 
     def _tdd_red(self, test_name: str, layer: str, source_dir: str = None, timeout: int = 60) -> dict:
         """
