@@ -19,9 +19,16 @@ minimal/
 ├── src/
 │   └── math_utils.lua        # 纯逻辑模块（阶乘/斐波那契/GCD/素数/字符串）
 ├── tests/
-│   └── test_math_utils.lua   # 桌面单测（unit 层）
-└── README.md                  # 本文件
+│   ├── test_math_utils.lua   # 桌面单测（unit 层）
+│   └── test_fail_demo.lua    # 故意失败的测试（验证失败路径）
+├── .gitignore                # 忽略 _war3_tester/（运行时产物）
+└── README.md                 # 本文件
 ```
+
+> **注意**：`tests/_war3_tester/` 目录**不进版本控制**。
+> 它是 `run_unit_test` 运行时自动注入的产物（从插件 `server/` 拷贝
+> `jass_mock.lua`/`assertions.lua`/`desktop_bootstrap.lua` 到
+> `test_dir/_war3_tester/`）。详见下方「运行桌面单测」。
 
 ## 接入 war3-tester
 
@@ -48,12 +55,40 @@ minimal/
 ### 运行桌面单测
 
 ```bash
-# 方式 1：通过 MCP 工具
+# 方式 1：通过 MCP 工具（推荐，自动注入 _war3_tester/ 产物）
 run_unit_test(test_name="test_math_utils", source_dir="<path_to_minimal>")
 
-# 方式 2：手动命令行
-lua5.3 server/desktop_bootstrap.lua test_math_utils <source_dir> <test_dir>
+# 方式 2：手动命令行（需先注入产物，见下方说明）
+lua5.3 tests/_war3_tester/desktop_bootstrap.lua test_math_utils <source_dir> <test_dir>
 ```
+
+#### 手动运行前置步骤
+
+`run_unit_test` 会自动把插件 `server/` 下的 3 个产物注入到
+`test_dir/_war3_tester/`。若手动运行，需先执行注入：
+
+```bash
+# 1. 创建产物目录
+mkdir -p tests/_war3_tester
+
+# 2. 拷贝插件产物（server/ 路径取决于插件安装位置）
+cp <plugin>/server/jass_mock.lua       tests/_war3_tester/
+cp <plugin>/server/assertions.lua      tests/_war3_tester/
+cp <plugin>/server/desktop_bootstrap.lua tests/_war3_tester/
+
+# 3. 运行测试（注意 desktop_bootstrap.lua 在 tests/_war3_tester/ 下）
+lua5.3 tests/_war3_tester/desktop_bootstrap.lua test_math_utils <source_dir> <test_dir>
+
+# 参数说明：
+#   test_module: test_math_utils（裸名，由 package.path 相对 test_dir 解析）
+#   source_dir:  minimal/src（让 require('math_utils') 能解析）
+#   test_dir:    minimal/tests（让 require('_war3_tester.xxx') 能解析）
+```
+
+> **为什么产物在 `tests/_war3_tester/` 而非项目根？**
+> `desktop_bootstrap.lua` 的 `package.path` 配置为从 `test_dir` 查找，
+> `require('_war3_tester.assertions')` 会解析为 `test_dir/_war3_tester/assertions.lua`。
+> 产物注入位置由 `desktop_runner.py` 第 145 行 `wt_dir = test_dir / '_war3_tester'` 决定。
 
 ## 通用性验证
 
@@ -111,5 +146,6 @@ assertTrue(true, '条件应为真')
 ## 下一步
 
 1. 运行 `run_unit_test(test_name="test_math_utils")` 验证桌面单测层
-2. 修改 `math_utils.lua` 故意引入 bug，观察测试失败
-3. 添加新测试用例，验证 TDD 循环
+2. 运行 `run_unit_test(test_name="test_fail_demo")` 验证失败路径
+3. 修改 `math_utils.lua` 故意引入 bug，观察测试失败
+4. 添加新测试用例，验证 TDD 循环

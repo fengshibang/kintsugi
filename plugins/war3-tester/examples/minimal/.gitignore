@@ -1,0 +1,4 @@
+# war3-tester 插件运行时注入产物（由 run_unit_test 自动生成）
+# desktop_runner.py 运行时会把 server/ 下的 jass_mock.lua/assertions.lua/desktop_bootstrap.lua
+# 拷贝到 test_dir/_war3_tester/ 下，此处为产物，不进版本控制
+_war3_tester/
