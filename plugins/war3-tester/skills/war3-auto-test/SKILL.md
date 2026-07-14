@@ -218,6 +218,17 @@ WSL 用户需在 Windows 侧 `python win_proxy.py start`（监听 8767）。
 2. 文件首行注释标记：`-- @layer unit` / `-- @layer integration` / `-- @layer e2e`
 3. 默认：`integration`
 
+### TDD 前规划（推荐）
+
+TDD 开始前先规划，不要直接 scaffold 就写。规划清楚再动手，避免测试凭空设计、返工：
+
+1. **测什么**：确定被测模块（从项目真实需求提取纯逻辑功能，如配置校验、算法）
+2. **参考项目哪个已有模块**：找项目同类模块作规范参考（数据结构、代码风格、require 路径）
+3. **测试用例清单**：列出要测的场景（合法/非法/边界），用项目真实数据结构，不造玩具数据
+4. **测试层**：unit（纯逻辑秒级）/integration（游戏内）/e2e（全流程）
+
+规划后再进入 Red-Green-Refactor 决策树。
+
 ### Red-Green-Refactor 决策树
 
 ```
@@ -248,6 +259,17 @@ WSL 用户需在 Windows 侧 `python win_proxy.py start`（监听 8767）。
 | 技能效果（Buff 应用、CD 管理） | integration | 依赖游戏 API |
 | 副本流程（多波次、Boss 机制） | e2e | 全流程验证 |
 | 任务链（多步骤、状态机） | e2e | 跨系统交互 |
+
+### 测试设计原则（结合项目实际）
+
+**核心原则**：测试内容的写法要根据所在项目的实际情况设计，**不要凭空设计**。测试内容（数据结构、模块风格、输入数据）用项目已有代码/规范生成。
+
+1. **数据结构对齐项目**：测试用的输入/输出数据结构参考项目已有模块的真实结构，不要自己发明。例如 wzns 残卷测试用 `CanJuanData.Tags` / 残卷配置字段（`id`/`rarity`/`tags`/`waveRange`），不要凭空设计 recipe/inventory。
+2. **模块风格对齐项目**：被测模块的代码风格参考项目同类模块。例如 wzns data 模块用纯 table+函数（对齐 `CanJuanData`），system 用 `class()`（对齐 `CanJuanSystem`）。
+3. **测试数据从项目已有代码生成**：用项目真实数据配置、查询函数作为测试输入，而非构造玩具数据。例如用 `CanJuanData.getAllCanJuan()` 真实数据校验，守护项目数据完整性。
+4. **require 路径对齐项目**：用项目的 require 约定（点分/裸名），配 `extra_package_path` 让桌面解析项目模块。
+
+**反例**：凭空设计模块（如自造"残卷合成"用 recipe/inventory，不对齐项目残卷标签机制）+ 玩具数据测试，无法守护项目真实数据，且与项目风格脱节。
 
 ### 可测性约定（纯逻辑与 jass 调用分离）
 
