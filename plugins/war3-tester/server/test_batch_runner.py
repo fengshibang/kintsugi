@@ -391,7 +391,11 @@ class TestBatchRunner:
             if outcome is None:
                 outcome = 'env_error' if not game_seen_alive else 'timeout'
 
-            # 4. 预拍截图 + inspect 快照（在 stop_game 前，游戏还活着时）
+            # 4. 读取 game_errors（HTTPReceiver 内存缓存，不依赖游戏进程，stop_game 前后都能读）
+            #    必须在预拍前赋值：预拍的 _classify_failure 引用它（result 分支失败路径）
+            game_errors = self.http_receiver.get_game_errors()
+
+            # 5. 预拍截图 + inspect 快照（在 stop_game 前，游戏还活着时）
             # timeout 时游戏本还活着（_is_game_alive=True），必须此时截图；
             # crash 时游戏已崩（截图返回 [] 无害）；result 失败时按 failure_type 判断。
             # inspect_snapshot 也依赖游戏进程（http_receiver 轮询），须在 stop_game 前收集。
@@ -412,12 +416,11 @@ class TestBatchRunner:
                     pre_screenshots = self._take_failure_screenshot(test_name)
                     pre_inspect_snapshot = self._collect_inspect_snapshot()
 
-            # 5. 停止游戏
+            # 6. 停止游戏
             self.executor.stop_game()
             time.sleep(1)
 
-            # 6. 分类 + 组装结果（用预拍的 screenshots/inspect，不再自己拍）
-            game_errors = self.http_receiver.get_game_errors()
+            # 7. 分类 + 组装结果（用预拍的 screenshots/inspect，不再自己拍）
             return self._finalize_result(
                 test_name, outcome, result_data, game_errors, elapsed,
                 auto_screenshot_on_failure, result_file,
