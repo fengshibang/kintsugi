@@ -157,16 +157,23 @@ class DesktopRunner:
         source_dir_str = str(resolved_source)
         test_dir_str = str(test_dir)
 
-        # 7. 执行 lua 命令
+        # 7. 构建子进程环境变量（传递 extra_package_path 给 desktop_bootstrap）
+        # 通过 LUA_EXTRA_PATH 环境变量传递项目声明的桌面测试专属 package.path
+        # （分号分隔多 path，相对 source_dir），desktop_bootstrap.lua 读取后追加到 package.path
+        child_env = dict(os.environ)
+        if self.config.extra_package_path:
+            child_env['LUA_EXTRA_PATH'] = self.config.extra_package_path
+
+        # 8. 执行 lua 命令
         # 根据 config.is_wsl 选择执行路径
         if self.config.is_wsl:
             # WinProxyExecutor: 经 win_proxy 转发到 Windows 执行
             result = self._run_via_winproxy(lua_exe, desktop_bootstrap_path, test_module,
-                                            source_dir_str, test_dir_str, timeout)
+                                            source_dir_str, test_dir_str, timeout, child_env)
         else:
             # LocalExecutor: 直接 subprocess 执行
             result = self._run_via_subprocess(lua_exe, desktop_bootstrap_path, test_module,
-                                              source_dir_str, test_dir_str, timeout)
+                                              source_dir_str, test_dir_str, timeout, child_env)
 
         # 8. 解析结果
         elapsed = time.time() - start_time
@@ -198,7 +205,8 @@ class DesktopRunner:
                 self.logger.warning(f"[desktop_runner] 源文件不存在: {src}")
 
     def _run_via_subprocess(self, lua_exe: str, bootstrap_path: Path, test_module: str,
-                            source_dir: str, test_dir: str, timeout: int) -> Dict[str, Any]:
+                            source_dir: str, test_dir: str, timeout: int,
+                            env: dict = None) -> Dict[str, Any]:
         """
         通过 subprocess 直接执行 lua（LocalExecutor 路径）
 
@@ -209,6 +217,7 @@ class DesktopRunner:
             source_dir: 源码根目录绝对路径（传给 desktop_bootstrap.lua 配置 package.path）
             test_dir: 测试目录绝对路径（传给 desktop_bootstrap.lua 配置 package.path）
             timeout: 超时时间
+            env: 子进程环境变量（含 LUA_EXTRA_PATH 等）
 
         Returns:
             结果字典
@@ -225,6 +234,7 @@ class DesktopRunner:
                 text=True,
                 cwd=test_dir,
                 timeout=timeout,
+                env=env,
             )
 
             stdout = proc.stdout
@@ -253,7 +263,8 @@ class DesktopRunner:
             }
 
     def _run_via_winproxy(self, lua_exe: str, bootstrap_path: Path, test_module: str,
-                          source_dir: str, test_dir: str, timeout: int) -> Dict[str, Any]:
+                          source_dir: str, test_dir: str, timeout: int,
+                          env: dict = None) -> Dict[str, Any]:
         """
         通过 win_proxy 转发执行 lua（WinProxyExecutor 路径）
 
@@ -264,6 +275,7 @@ class DesktopRunner:
             source_dir: 源码根目录绝对路径（WSL 路径，需转换为 Windows 路径）
             test_dir: 测试目录绝对路径（WSL 路径，需转换为 Windows 路径）
             timeout: 超时时间
+            env: 子进程环境变量（含 LUA_EXTRA_PATH 等）
 
         Returns:
             结果字典
@@ -284,6 +296,11 @@ class DesktopRunner:
                 'timeout': timeout,
                 'wait': True,
             }
+            # 传递环境变量（含 LUA_EXTRA_PATH）给 win_proxy
+            # TODO: win_proxy 侧需支持 env 字段并传递给子进程；若不支持则 env 被忽略，
+            #       WSL 环境下 extra_package_path 暂不生效，需 win_proxy 升级后验证
+            if env:
+                request['env'] = env
 
             self.logger.info(f"[desktop_runner] 经 win_proxy 执行: {lua_exe} {win_bootstrap}")
 

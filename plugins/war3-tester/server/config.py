@@ -115,6 +115,12 @@ class Config:
         # 非空 = 用 _resolve_path 解析后读取该文件作为 run_auto_test.lua 内容
         # 文件不存在时 fallback 到通用模板，不 crash
         self.test_bootstrap_template: str = ""
+        # extra_package_path: 桌面测试专属 package.path（分号分隔多 path，相对 source_dir）
+        # 由项目在 config.json -> test.extra_package_path 声明，插件读取后通过环境变量
+        # LUA_EXTRA_PATH 传给 desktop_bootstrap 子进程，追加到 package.path。
+        # 用于让点分 require（如 'script.src.xxx'）能相对 source_dir 解析。
+        # 空串 = 不追加（兼容现有项目 + examples/minimal）
+        self.extra_package_path: str = ""
 
         # M4: 失败诊断时 inspect_game 查询表达式列表（项目自定义，默认空=不查 inspect）
         # 项目通过 config.json -> test.inspect_queries 配置，如 ["Player(0):getGold()", "UnitObj.all_count()"]
@@ -210,6 +216,8 @@ class Config:
             self.test_bootstrap_template = test_config.get('test_bootstrap_template', self.test_bootstrap_template)
             # M4: inspect 查询表达式（项目自定义，默认空=不查 inspect）
             self.inspect_queries = test_config.get('inspect_queries', self.inspect_queries)
+            # 桌面测试专属 package.path（项目声明，插件读取后通过 LUA_EXTRA_PATH 传给子进程）
+            self.extra_package_path = test_config.get('extra_package_path', self.extra_package_path)
 
         # 7. HTTP 服务器配置
         http_config = file_config.get('http_server', {})

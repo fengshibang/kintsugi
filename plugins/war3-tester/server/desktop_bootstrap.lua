@@ -44,6 +44,19 @@ package.path = test_dir .. '/?.lua;' .. test_dir .. '/?/init.lua;'
                 .. source_dir .. '/?.lua;' .. source_dir .. '/?/init.lua;'
                 .. package.path
 
+-- 追加项目声明的桌面测试专属 package.path（通过 LUA_EXTRA_PATH 环境变量传递）
+-- 由项目在 config.json -> test.extra_package_path 声明（分号分隔多 path，相对 source_dir），
+-- desktop_runner.py 读取后通过环境变量 LUA_EXTRA_PATH 传给本进程。
+-- 每段拼 source_dir/<段> 追加到 package.path 前面，让点分 require（如 'script.src.xxx'）
+-- 能相对 source_dir 解析（例如 source_dir/map/script/src/xxx.lua）。
+-- 空则跳过（兼容现有项目 + examples/minimal），不硬编码任何项目路径。
+local extra = os.getenv('LUA_EXTRA_PATH')
+if extra and extra ~= '' then
+    for p in string.gmatch(extra, '[^;]+') do
+        package.path = source_dir .. '/' .. p .. ';' .. package.path
+    end
+end
+
 -- 辅助函数：输出 JSON 格式结果
 local function output_result(success, test_name, details, cases, error_msg)
     local result = {
