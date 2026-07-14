@@ -20,3 +20,6 @@ plugins/war3-tester/server/logs/
 
 # .env（war3-tester 可选配置，含本机路径，不应提交）
 .env
+
+# war3-tester 项目配置（各项目独立维护，不应提交到插件仓库）
+plugins/war3-tester/config.json

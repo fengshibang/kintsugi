@@ -42,8 +42,10 @@ from desktop_runner import DesktopRunner
 from watcher import FileWatcher
 from logger import setup_logger
 
-# 初始化配置
-config = Config()
+# 初始化配置：project_root 优先取 start_mcp.js 注入的 WAR3_PROJECT_ROOT（项目目录），
+# 缺省传 None 回退插件目录（向后兼容）。让 config.json/.env 读取回归项目目录。
+_war3_project_root = os.getenv('WAR3_PROJECT_ROOT')
+config = Config(project_root=Path(_war3_project_root) if _war3_project_root else None)
 
 # 创建执行器（按 is_wsl() 自动选择）
 executor = create_executor(config)

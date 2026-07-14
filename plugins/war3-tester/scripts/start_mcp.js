@@ -88,7 +88,7 @@ const args = isPyLauncher
 
 const proc = spawn(pythonBin, args, {
   stdio: 'inherit',
-  env: { ...process.env, PYTHONUTF8: '1' },
+  env: { ...process.env, PYTHONUTF8: '1', WAR3_PROJECT_ROOT: process.cwd() },
 });
 
 proc.on('error', (err) => {
