@@ -413,7 +413,9 @@ class TestBatchRunner:
                 self.logger.warning('[toggle] source_dir 非有效项目根，跳过写 _test_off')
                 return
             # 【M1 归拢】与 toggle_test 一致，写入 _war3_tester/_test_off.lua
-            wt_dir = self._get_war3_tester_dir(test_dir)
+            # 直接内联路径（_get_war3_tester_dir 是 War3TesterMCP 的方法，TestBatchRunner 没有）
+            wt_dir = test_dir / '_war3_tester'
+            wt_dir.mkdir(parents=True, exist_ok=True)
             off_path = wt_dir / '_test_off.lua'
             off_path.write_text(
                 '-- _run_single_test 完成后自动生成：手动游戏时 auto-test 模块不加载（init.lua early-return）\nreturn true\n',
