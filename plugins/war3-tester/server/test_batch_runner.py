@@ -391,15 +391,37 @@ class TestBatchRunner:
             if outcome is None:
                 outcome = 'env_error' if not game_seen_alive else 'timeout'
 
-            # 4. 停止游戏
+            # 4. 预拍截图 + inspect 快照（在 stop_game 前，游戏还活着时）
+            # timeout 时游戏本还活着（_is_game_alive=True），必须此时截图；
+            # crash 时游戏已崩（截图返回 [] 无害）；result 失败时按 failure_type 判断。
+            # inspect_snapshot 也依赖游戏进程（http_receiver 轮询），须在 stop_game 前收集。
+            # debug_output 读日志文件（不依赖游戏进程），留在 _finalize_result。
+            pre_screenshots: List[str] = []
+            pre_inspect_snapshot: Optional[str] = None
+            if auto_screenshot_on_failure:
+                need_screenshot = False
+                if outcome in ('timeout', 'crash'):
+                    need_screenshot = True
+                elif outcome == 'result' and result_data:
+                    test_success = result_data.get('success', False)
+                    if not test_success:
+                        ft = self._classify_failure(result_data, game_errors)
+                        if ft in self.SCREENSHOT_FAILURE_TYPES:
+                            need_screenshot = True
+                if need_screenshot:
+                    pre_screenshots = self._take_failure_screenshot(test_name)
+                    pre_inspect_snapshot = self._collect_inspect_snapshot()
+
+            # 5. 停止游戏
             self.executor.stop_game()
             time.sleep(1)
 
-            # 5. 分类 + 组装结果
+            # 6. 分类 + 组装结果（用预拍的 screenshots/inspect，不再自己拍）
             game_errors = self.http_receiver.get_game_errors()
             return self._finalize_result(
                 test_name, outcome, result_data, game_errors, elapsed,
-                auto_screenshot_on_failure, result_file)
+                auto_screenshot_on_failure, result_file,
+                pre_screenshots, pre_inspect_snapshot)
         finally:
             # 需求1：测试完成后（成功/失败/超时/早返回——所有路径）自动写 _test_off.lua，
             # 让手动游戏时 auto-test 模块不加载（零干扰）；下次 _prepare_test_entry 自动删除它
@@ -426,15 +448,23 @@ class TestBatchRunner:
 
     def _finalize_result(self, test_name: str, outcome: str, result_data: Optional[dict],
                          game_errors: list, elapsed: int,
-                         auto_screenshot_on_failure: bool, result_file: Optional[Path]) -> dict:
+                         auto_screenshot_on_failure: bool, result_file: Optional[Path],
+                         pre_screenshots: List[str] = None,
+                         pre_inspect_snapshot: Optional[str] = None) -> dict:
         """根据 outcome 与结果数据，分类 failure_type 并组装最终结果
 
         【M4 增强】失败时自动收集诊断信息（截图+VLM 判读+inspect_game+get_debug_output）。
         每个诊断步骤 try/except 包裹，失败不阻塞主结果。
+
+        【时序修复】截图和 inspect_snapshot 由 _run_single_test 在 stop_game 前预拍
+        （pre_screenshots / pre_inspect_snapshot），本方法不再自己截图/inspect。
+        screenshot_analysis（依赖截图文件，不依赖游戏进程）和 debug_output（读日志）
+        仍在此收集。
         """
-        screenshots: List[str] = []
+        # 预拍的截图和 inspect 快照（在 stop_game 前收集，游戏还活着时）
+        screenshots: List[str] = pre_screenshots or []
         screenshot_analysis: Optional[str] = None
-        inspect_snapshot: Optional[str] = None
+        inspect_snapshot: Optional[str] = pre_inspect_snapshot
         debug_output: Optional[str] = None
 
         # 判断是否失败（用于触发诊断）
@@ -446,15 +476,10 @@ class TestBatchRunner:
             failure_type = None if test_success else self._classify_failure(result_data, game_errors)
             is_failure = not test_success
 
-            # result 到达时通常非 crash/timeout；保留兜底（failure_type 被显式标为这些时才截）
-            if (is_failure and auto_screenshot_on_failure
-                    and failure_type in self.SCREENSHOT_FAILURE_TYPES):
-                screenshots = self._take_failure_screenshot(test_name)
-
-            # 【M4 增强】失败时收集诊断信息
+            # screenshots 已由 _run_single_test 在 stop_game 前预拍（pre_screenshots）
+            # screenshot_analysis（依赖截图文件）和 debug_output（读日志）不依赖游戏进程
             if is_failure and auto_screenshot_on_failure:
                 screenshot_analysis = self._collect_screenshot_analysis(screenshots)
-                inspect_snapshot = self._collect_inspect_snapshot()
                 debug_output = self._collect_debug_output()
 
             return self._build_result(
@@ -469,14 +494,13 @@ class TestBatchRunner:
         if outcome == 'crash':
             is_failure = True
             failure_type = 'crash'
-            if auto_screenshot_on_failure:
-                screenshots = self._take_failure_screenshot(test_name)
+            # screenshots 已由 _run_single_test 在 stop_game 前预拍（pre_screenshots）
+            # crash 时游戏已崩，截图本就截不到（返回 []），预拍无害
             progress = self.http_receiver.get_progress(test_name)
 
-            # 【M4 增强】收集诊断
+            # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
             if auto_screenshot_on_failure:
                 screenshot_analysis = self._collect_screenshot_analysis(screenshots)
-                inspect_snapshot = self._collect_inspect_snapshot()
                 debug_output = self._collect_debug_output()
 
             return self._build_result(
@@ -493,13 +517,13 @@ class TestBatchRunner:
         if outcome == 'timeout':
             is_failure = True
             failure_type = 'timeout'
-            if auto_screenshot_on_failure:
-                screenshots = self._take_failure_screenshot(test_name)
+            # screenshots 已由 _run_single_test 在 stop_game 前预拍（pre_screenshots）
+            # 【时序修复】timeout 时游戏还活着，截图在 stop_game 前执行，保证窗口存在
+            # inspect_snapshot 也在 stop_game 前收集（依赖游戏进程轮询）
 
-            # 【M4 增强】收集诊断
+            # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
             if auto_screenshot_on_failure:
                 screenshot_analysis = self._collect_screenshot_analysis(screenshots)
-                inspect_snapshot = self._collect_inspect_snapshot()
                 debug_output = self._collect_debug_output()
 
             return self._build_result(
