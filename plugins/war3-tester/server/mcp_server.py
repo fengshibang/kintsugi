@@ -29,6 +29,7 @@ import urllib.request
 import urllib.error
 import subprocess
 import atexit
+import signal
 from pathlib import Path
 from datetime import datetime
 
@@ -2237,6 +2238,14 @@ async def run_server():
 
     # 兜底：atexit 保证任何退出路径都执行清理
     atexit.register(_cleanup_on_exit)
+
+    # SIGTERM handler：Claude Code /exit 给 MCP 发 SIGTERM 时触发清理
+    # Windows 下 SIGTERM 可注册，但实际是否触发取决于退出方式（TerminateProcess 等价 SIGKILL 不跑 handler）
+    def _on_sigterm(signum, frame):
+        server.logger.info("收到 SIGTERM，执行退出清理")
+        _cleanup_on_exit()
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     # stdio JSON-RPC 主循环
     try:
