@@ -87,8 +87,23 @@ const args = isPyLauncher
   : [serverScript];
 
 const proc = spawn(pythonBin, args, {
-  stdio: 'inherit',
+  stdio: ['pipe', 'pipe', 'pipe'],
   env: { ...process.env, PYTHONUTF8: '1', WAR3_PROJECT_ROOT: process.cwd() },
+});
+
+// 双向转发泵：node <-> python，保证 MCP 协议完整 + node 死亡时 python 收 EOF
+// 使用 stream.pipe 自动处理背压（大响应不截断）
+process.stdin.pipe(proc.stdin);
+proc.stdout.pipe(process.stdout);
+proc.stderr.pipe(process.stderr);
+
+// 流 end/error 处理：父进程 stdin 关闭时关闭 python stdin，触发 python readline EOF
+process.stdin.on('end', () => {
+  try { proc.stdin.end(); } catch (_) {}
+});
+process.stdin.on('error', (err) => {
+  console.error(`[war3-tester] stdin error: ${err.message}`);
+  try { proc.stdin.end(); } catch (_) {}
 });
 
 proc.on('error', (err) => {

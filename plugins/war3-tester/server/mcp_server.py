@@ -27,6 +27,8 @@ import base64
 import mimetypes
 import urllib.request
 import urllib.error
+import subprocess
+import atexit
 from pathlib import Path
 from datetime import datetime
 
@@ -2214,103 +2216,128 @@ async def run_server():
     server.logger.info("服务器已初始化")
     print("[OK] War3 Tester MCP Server 已启动", file=sys.stderr)
 
-    # stdio JSON-RPC 主循环
-    while True:
+    def _cleanup_on_exit():
+        """退出清理：停 HTTP 接收端 + 杀 war3 进程（仅 Windows）"""
         try:
-            line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
-            if not line:
-                break
+            server.http_receiver.stop()
+        except Exception as e:
+            server.logger.warning(f"退出清理 http_receiver.stop 异常：{e}")
 
-            line = line.strip()
-            if not line:
-                continue
+        # war3 是 Windows 游戏，仅 Windows 执行 taskkill；Linux/macOS 跳过
+        if config.is_windows or config.is_wsl:
+            for proc_name in config.war3_process_names:
+                try:
+                    subprocess.run(
+                        ['taskkill', '/IM', proc_name, '/F'],
+                        capture_output=True,
+                        timeout=5
+                    )
+                except Exception:
+                    pass
 
-            request = json.loads(line)
-            method = request.get("method")
-            params = request.get("params", {})
-            request_id = request.get("id")
+    # 兜底：atexit 保证任何退出路径都执行清理
+    atexit.register(_cleanup_on_exit)
 
-            if method == "initialize":
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {
-                            "tools": {"listChanged": False},
-                            "resources": {"subscribe": False, "listChanged": False}
-                        },
-                        "serverInfo": {
-                            "name": "war3-tester",
-                            "version": "1.0.0"
+    # stdio JSON-RPC 主循环
+    try:
+        while True:
+            try:
+                line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+                if not line:
+                    break
+
+                line = line.strip()
+                if not line:
+                    continue
+
+                request = json.loads(line)
+                method = request.get("method")
+                params = request.get("params", {})
+                request_id = request.get("id")
+
+                if method == "initialize":
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": {
+                                "tools": {"listChanged": False},
+                                "resources": {"subscribe": False, "listChanged": False}
+                            },
+                            "serverInfo": {
+                                "name": "war3-tester",
+                                "version": "1.0.0"
+                            }
                         }
                     }
-                }
 
-            elif method == "tools/list":
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {"tools": server.capabilities["tools"]}
-                }
-
-            elif method == "tools/call":
-                tool_name = params.get("name")
-                arguments = params.get("arguments", {})
-                result = await server.handle_tool_call(tool_name, arguments)
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": result
-                }
-
-            elif method == "resources/list":
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {"resources": server.capabilities["resources"]}
-                }
-
-            elif method == "resources/read":
-                uri = params.get("uri")
-                result = await server.handle_resource_read(uri)
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": result
-                }
-
-            elif method == "notifications/initialized":
-                continue
-
-            else:
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {method}"
+                elif method == "tools/list":
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {"tools": server.capabilities["tools"]}
                     }
+
+                elif method == "tools/call":
+                    tool_name = params.get("name")
+                    arguments = params.get("arguments", {})
+                    result = await server.handle_tool_call(tool_name, arguments)
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": result
+                    }
+
+                elif method == "resources/list":
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {"resources": server.capabilities["resources"]}
+                    }
+
+                elif method == "resources/read":
+                    uri = params.get("uri")
+                    result = await server.handle_resource_read(uri)
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": result
+                    }
+
+                elif method == "notifications/initialized":
+                    continue
+
+                else:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Method not found: {method}"
+                        }
+                    }
+
+                print(json.dumps(response, ensure_ascii=False), flush=True)
+
+            except json.JSONDecodeError as e:
+                server.logger.error(f"JSON 解析错误：{str(e)}")
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
                 }
-
-            print(json.dumps(response, ensure_ascii=False), flush=True)
-
-        except json.JSONDecodeError as e:
-            server.logger.error(f"JSON 解析错误：{str(e)}")
-            error_response = {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
-            }
-            print(json.dumps(error_response, ensure_ascii=False), flush=True)
-        except Exception as e:
-            server.logger.error(f"内部错误：{str(e)}", exc_info=True)
-            error_response = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
-            }
-            print(json.dumps(error_response, ensure_ascii=False), flush=True)
+                print(json.dumps(error_response, ensure_ascii=False), flush=True)
+            except Exception as e:
+                server.logger.error(f"内部错误：{str(e)}", exc_info=True)
+                error_response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
+                }
+                print(json.dumps(error_response, ensure_ascii=False), flush=True)
+    finally:
+        _cleanup_on_exit()
 
 
 if __name__ == "__main__":

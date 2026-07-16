@@ -482,7 +482,7 @@ class TestBatchRunner:
             # screenshots 已由 _run_single_test 在 stop_game 前预拍（pre_screenshots）
             # screenshot_analysis（依赖截图文件）和 debug_output（读日志）不依赖游戏进程
             if is_failure and auto_screenshot_on_failure:
-                screenshot_analysis = self._collect_screenshot_analysis(screenshots)
+                screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
 
             return self._build_result(
@@ -503,7 +503,7 @@ class TestBatchRunner:
 
             # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
             if auto_screenshot_on_failure:
-                screenshot_analysis = self._collect_screenshot_analysis(screenshots)
+                screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
 
             return self._build_result(
@@ -526,7 +526,7 @@ class TestBatchRunner:
 
             # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
             if auto_screenshot_on_failure:
-                screenshot_analysis = self._collect_screenshot_analysis(screenshots)
+                screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
 
             return self._build_result(
@@ -613,7 +613,7 @@ class TestBatchRunner:
             self.logger.warning(f"[{test_name}] 截图异常：{e}")
         return []
 
-    def _collect_screenshot_analysis(self, screenshots: List[str]) -> Optional[str]:
+    def _collect_screenshot_analysis(self, screenshots: List[str], test_name: str = 'unknown') -> Optional[str]:
         """【M4 方向 G】收集截图的 VLM 判读结果（graceful）"""
         if not screenshots:
             return None
