@@ -15,6 +15,7 @@ HTTP 接收端模块
 
 import json
 import base64
+import sys
 import threading
 import time
 import subprocess
@@ -134,6 +135,11 @@ class HTTPReceiver:
 
         except ImportError:
             self.logger.error("Flask 未安装，HTTP 服务器无法启动")
+            print("[war3-tester] ============================================================", file=sys.stderr)
+            print("[war3-tester] 错误：缺少依赖 Flask/werkzeug，HTTP 结果回传服务无法启动", file=sys.stderr)
+            print("[war3-tester] 影响：所有 test_commit 将因无进度上报而超时失败", file=sys.stderr)
+            print("[war3-tester] 解决：请执行 pip install flask werkzeug（或调用 setup_environment 工具）", file=sys.stderr)
+            print("[war3-tester] ============================================================", file=sys.stderr)
             return False
         except Exception as e:
             self.logger.error(f"HTTP 服务器启动失败：{e}")

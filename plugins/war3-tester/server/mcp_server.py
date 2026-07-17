@@ -25,6 +25,7 @@ import re
 import os
 import base64
 import mimetypes
+import shutil
 import urllib.request
 import urllib.error
 import subprocess
@@ -32,6 +33,7 @@ import atexit
 import signal
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 # 自解析路径（【红线 6】严禁依赖 cwd 或硬编码绝对路径）
 SERVER_DIR = Path(__file__).parent
@@ -557,6 +559,32 @@ class War3TesterMCP:
                     "inputSchema": {
                         "type": "object",
                         "properties": {}
+                    }
+                },
+                {
+                    "name": "setup_environment",
+                    "description": "一键部署测试环境组件（socket.dll/nopause.asi/Flask 依赖）。游戏端靠 socket.dll 发 HTTP 回传测试结果，靠 nopause.asi 防失焦暂停，MCP 端靠 Flask 接收。缺装任一组件会导致 test_commit 静默超时。",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "source_dir": {
+                                "type": "string",
+                                "description": "目标项目根目录，默认取环境变量 WAR3_PROJECT_ROOT"
+                            },
+                            "components": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "enum": ["socket", "http", "nopause"]
+                                },
+                                "description": "要安装的组件列表，默认三个全装：socket（拷 socket.dll 到项目 map/）、http（pip install flask werkzeug）、nopause（拷 nopause.asi 到 war3 安装目录）",
+                                "default": ["socket", "http", "nopause"]
+                            },
+                            "war3_dir": {
+                                "type": "string",
+                                "description": "war3 安装目录（war3.exe 同目录，用于 nopause 部署）。默认从 config.war3_log_dir 反推；反推不到则跳过 nopause 并提示传参"
+                            }
+                        }
                     }
                 },
             ],
@@ -2154,6 +2182,182 @@ end
                     "content": [{"type": "text", "text": f"[FAIL] get_watch_results 失败：{e}"}],
                     "isError": True
                 }
+
+        elif tool_name == "setup_environment":
+            # 一键部署测试环境组件
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            source_dir = arguments.get("source_dir")
+            components = arguments.get("components", ["socket", "http", "nopause"])
+            war3_dir = arguments.get("war3_dir")
+
+            # 确定项目根目录
+            if source_dir:
+                project_root = Path(source_dir)
+            elif config.project_root:
+                project_root = config.project_root
+            else:
+                project_root = None
+
+            # 确定 war3 安装目录（从 config.war3_log_dir 反推）
+            if not war3_dir and config.war3_log_dir:
+                # war3_log_dir 通常是 "D:/war3/logs" 形式，parent 是 "D:/war3"
+                try:
+                    inferred_war3_dir = Path(config.war3_log_dir).parent
+                    if inferred_war3_dir.exists():
+                        war3_dir = str(inferred_war3_dir)
+                except Exception:
+                    pass
+
+            # 插件根目录（bin/ 在插件根下）
+            plugin_root = SERVER_DIR.parent  # server/ → war3-tester/
+
+            results = []
+
+            # 1. socket 组件
+            if "socket" in components:
+                try:
+                    if not project_root:
+                        results.append({
+                            "component": "socket",
+                            "status": "failed",
+                            "message": "未指定 source_dir 且 WAR3_PROJECT_ROOT 未设置"
+                        })
+                    else:
+                        socket_src_dir = plugin_root / "bin" / "socket"
+                        socket_dst_dir = project_root / "map"
+
+                        if not socket_src_dir.exists():
+                            results.append({
+                                "component": "socket",
+                                "status": "failed",
+                                "message": f"插件 bin/socket 目录不存在：{socket_src_dir}"
+                            })
+                        else:
+                            socket_dst_dir.mkdir(parents=True, exist_ok=True)
+
+                            copied_files = []
+                            for dll_name in ["socket.dll", "libwinpthread-1.dll"]:
+                                src = socket_src_dir / dll_name
+                                dst = socket_dst_dir / dll_name
+                                if src.exists():
+                                    shutil.copy2(src, dst)
+                                    copied_files.append(str(dst))
+
+                            if copied_files:
+                                results.append({
+                                    "component": "socket",
+                                    "status": "success",
+                                    "message": f"已拷贝 {len(copied_files)} 个文件到 {socket_dst_dir}",
+                                    "files": copied_files
+                                })
+                            else:
+                                results.append({
+                                    "component": "socket",
+                                    "status": "failed",
+                                    "message": "未找到 socket.dll 或 libwinpthread-1.dll"
+                                })
+                except Exception as e:
+                    results.append({
+                        "component": "socket",
+                        "status": "failed",
+                        "message": f"部署失败：{e}"
+                    })
+
+            # 2. http 组件（pip install）
+            if "http" in components:
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "flask", "werkzeug"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+                    if proc.returncode == 0:
+                        results.append({
+                            "component": "http",
+                            "status": "success",
+                            "message": "flask + werkzeug 已安装（或已是最新）"
+                        })
+                    else:
+                        results.append({
+                            "component": "http",
+                            "status": "failed",
+                            "message": f"pip install 失败：{proc.stderr}"
+                        })
+                except subprocess.TimeoutExpired:
+                    results.append({
+                        "component": "http",
+                        "status": "failed",
+                        "message": "pip install 超时（120秒）"
+                    })
+                except Exception as e:
+                    results.append({
+                        "component": "http",
+                        "status": "failed",
+                        "message": f"pip install 异常：{e}"
+                    })
+
+            # 3. nopause 组件
+            if "nopause" in components:
+                try:
+                    if not war3_dir:
+                        results.append({
+                            "component": "nopause",
+                            "status": "skipped",
+                            "message": "未指定 war3_dir 且无法从 config.war3_log_dir 反推，请传参 war3_dir"
+                        })
+                    else:
+                        nopause_src = plugin_root / "bin" / "nopause.asi"
+                        nopause_dst = Path(war3_dir) / "nopause.asi"
+
+                        if not nopause_src.exists():
+                            results.append({
+                                "component": "nopause",
+                                "status": "failed",
+                                "message": f"插件 bin/nopause.asi 不存在：{nopause_src}"
+                            })
+                        else:
+                            shutil.copy2(nopause_src, nopause_dst)
+                            results.append({
+                                "component": "nopause",
+                                "status": "success",
+                                "message": f"已拷贝 nopause.asi 到 {nopause_dst}"
+                            })
+                except Exception as e:
+                    results.append({
+                        "component": "nopause",
+                        "status": "failed",
+                        "message": f"部署失败：{e}"
+                    })
+
+            # 汇总结果
+            messages = [f"## 环境部署结果\n\n时间：{timestamp}"]
+            if project_root:
+                messages.append(f"项目根目录：{project_root}")
+            if war3_dir:
+                messages.append(f"War3 安装目录：{war3_dir}")
+            messages.append("")
+
+            success_count = sum(1 for r in results if r.get("status") == "success")
+            failed_count = sum(1 for r in results if r.get("status") == "failed")
+            skipped_count = sum(1 for r in results if r.get("status") == "skipped")
+
+            messages.append(f"总计：{len(results)} 个组件（成功 {success_count} / 失败 {failed_count} / 跳过 {skipped_count}）\n")
+
+            for r in results:
+                status_icon = "✅" if r.get("status") == "success" else ("❌" if r.get("status") == "failed" else "⚠️")
+                messages.append(f"{status_icon} {r.get('component')}: {r.get('status')}")
+                messages.append(f"   {r.get('message')}")
+                if r.get("files"):
+                    for f in r["files"]:
+                        messages.append(f"   - {f}")
+                messages.append("")
+
+            is_error = failed_count > 0
+            return {
+                "content": [{"type": "text", "text": "\n".join(messages)}],
+                "isError": is_error
+            }
 
         else:
             return {
