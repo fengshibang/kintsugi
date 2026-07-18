@@ -1,28 +1,13 @@
 # War3 MCP Server - Python Dependencies
 # ======================================
-# 本项目仅使用 Python 标准库，无需安装第三方包
+# HTTP 结果回传服务（server/http_receiver.py）依赖 Flask：
+#   pip install -r requirements.txt
+# 缺 Flask/werkzeug 时 8766 端口不监听，所有 test_commit 会因无进度上报而静默超时。
 # Python 版本要求：3.7+
 
-# 标准库模块清单（已内置，无需安装）：
-# - asyncio      (异步 IO)
-# - json         (JSON 处理)
-# - socket       (TCP 通信)
-# - struct       (二进制数据打包)
-# - subprocess   (进程执行)
-# - threading    (多线程)
-# - signal       (信号处理)
-# - logging      (日志)
-# - pathlib      (路径处理)
-# - datetime     (日期时间)
-# - platform     (平台检测)
-# - typing       (类型注解)
+flask>=2.0
+werkzeug>=2.0
 
-# 使用方法：
-#   1. 确保 Python 3.7+ 已安装
-#   2. 无需执行 pip install，直接使用即可
-#
-#   # 启动 Windows 服务（在 Windows 下）
-#   python scripts/windows_service_native.py start
-#
-#   # 启动 MCP Server（在 WSL 下）
-#   python3 scripts/mcp_war3_tester.py
+# 其余功能仅使用 Python 标准库（已内置，无需安装）：
+# asyncio / json / socket / struct / subprocess / threading
+# signal / logging / pathlib / datetime / platform / typing
