@@ -1,5 +1,13 @@
 # Changelog — war3-tester
 
+## 0.13.19 — 2026-07-19
+
+### 文档
+
+- **SKILL.md 强制截图后调用 VLM 判读**：四处改动明确「截图（`take_screenshot` / 失败自动截图）后必须调 `analyze_screenshot` 用 VLM 判读，禁止用 Read 自看」，修复「截图后不主动用视觉模型」的工作流缺口。配合 `~/.claude/settings.json` 配置 `VLM_MODEL`（`analyze_screenshot` 的 model 无兜底，此前一调必报错）。
+
+> 注：CHANGELOG 历史与 plugin.json 版本长期脱节（上一条 0.6.1，plugin.json 已至 0.13.x），既有问题，不在本次范围。
+
 ## 0.6.1 — 2026-07-11
 
 ### 新增 / 修复（基于 0.6.0 增量）
