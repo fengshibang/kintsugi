@@ -138,6 +138,10 @@ class Config:
         # War3 游戏日志目录
         self.war3_log_dir: Optional[Path] = None
 
+        # take_screenshot 成功后默认自动调 VLM 判读(画面状态/UI/卡对话框/数值)
+        # config.json 设 take_screenshot_auto_analyze=false 可关闭(个别项目关闭自动判读)
+        self.take_screenshot_auto_analyze: bool = True
+
         # 多实例配置
         self.multi_instance: bool = False
         self.service_port_min: int = 8765
@@ -259,6 +263,8 @@ class Config:
         # 9. 多实例配置
         if file_config.get('multi_instance') is not None:
             self.multi_instance = bool(file_config['multi_instance'])
+        if file_config.get('take_screenshot_auto_analyze') is not None:
+            self.take_screenshot_auto_analyze = bool(file_config['take_screenshot_auto_analyze'])
         self.service_port_min = file_config.get('service_port_min', self.service_port_min)
         self.service_port_max = file_config.get('service_port_max', self.service_port_max)
         self.http_port_min = file_config.get('http_port_min', self.http_port_min)

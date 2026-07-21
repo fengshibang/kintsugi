@@ -159,7 +159,7 @@ Content-Type: application/json
 | `run_game` / `launch_only` | 启动游戏（异步） |
 | `stop_game` | 关闭 War3 进程 |
 | `test_commit` | **核心**：预清理 → 编译 → 启动 → 等待 HTTP 结果 → 后清理 |
-| `take_screenshot` | 截取游戏窗口 |
+| `take_screenshot` | 截取游戏窗口(默认自动 VLM 判读) |
 | `send_key` | 发送键盘事件 |
 | `cleanup_all` | 关闭所有资源 |
 | `stop_http_server` | 仅关闭 HTTP 测试服务器 |

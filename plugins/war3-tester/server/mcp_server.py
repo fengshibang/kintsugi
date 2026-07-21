@@ -279,7 +279,7 @@ class War3TesterMCP:
                 },
                 {
                     "name": "take_screenshot",
-                    "description": "截取游戏窗口截图",
+                    "description": "截取游戏窗口截图。成功后默认自动调 VLM(analyze_screenshot)判读画面,返回含判读文本;VLM 未配或判读失败则 graceful 仅返回路径不阻塞。config.json 的 take_screenshot_auto_analyze=false 可关闭自动判读。",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -1820,8 +1820,19 @@ end
             result = self.executor.take_screenshot(test_name, filename, window_title)
 
             if result.get("success"):
+                base_text = (f"[OK] 截图已保存\n\n{result.get('message', '')}\n\n"
+                             f"WSL 路径：{result.get('path_wsl', '')}\nWindows 路径：{result.get('path', '')}")
+                # 默认自动 VLM 判读(graceful:VLM 未配/失败不阻塞,截图仍成功)
+                if getattr(config, 'take_screenshot_auto_analyze', True):
+                    png_path = result.get('path') or result.get('path_wsl')
+                    try:
+                        analysis = self.analyze_screenshot(png_path)
+                        base_text += f"\n\n--- VLM 判读 ---\n{analysis}"
+                    except Exception as e:
+                        base_text += (f"\n\n--- VLM 判读失败(不影响截图使用) ---\n{e}"
+                                      f"\n(关闭自动判读:config.json 设 take_screenshot_auto_analyze=false)")
                 return {
-                    "content": [{"type": "text", "text": f"[OK] 截图已保存\n\n{result.get('message', '')}\n\nWSL 路径：{result.get('path_wsl', '')}\nWindows 路径：{result.get('path', '')}"}]
+                    "content": [{"type": "text", "text": base_text}]
                 }
             else:
                 return {

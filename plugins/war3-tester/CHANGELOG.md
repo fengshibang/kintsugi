@@ -1,5 +1,13 @@
 # Changelog — war3-tester
 
+## 0.13.20 — 2026-07-21
+
+### 新增
+
+- **`take_screenshot` 默认自动 VLM 判读**：截图成功后自动调 `analyze_screenshot`（`.env` 配置的 VLM，如 qwen3.7-plus），判读文本（画面状态/UI/卡对话框/数值）拼进返回。graceful：VLM 未配或判读失败不阻塞，仍返回截图路径+警告（`isError` 不设）。`config.json` 设 `take_screenshot_auto_analyze=false` 可关闭。
+- **动机**：0.13.19 已在 SKILL.md 规定「截图后必须调 VLM 判读，禁止 Read 自看」（靠 AI 自觉）。但手动 `take_screenshot` 工具本身只返回路径，判读靠 AI 串联 `analyze_screenshot`，必不稳定（「经常不按要求用视觉模型」的结构性根因）。本次从「靠自觉的规则」升级为「插件默认强制」，根治。
+- **改动**：`config.py` 加 `take_screenshot_auto_analyze: bool=True`（对齐 `multi_instance` 配置模式）；`mcp_server.py` `take_screenshot` 分支成功后自动调 VLM + try/except graceful；工具描述/SKILL.md/README 同步。
+
 ## 0.13.19 — 2026-07-19
 
 ### 文档
