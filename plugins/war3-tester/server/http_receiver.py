@@ -39,7 +39,7 @@ class HTTPReceiver:
     """
 
     def __init__(self, host: str = '0.0.0.0', port: int = 8766,
-                 logs_dir: Path = None):
+                 logs_dir: Path = None, store=None):
         """
         初始化 HTTP 接收端
 
@@ -47,6 +47,7 @@ class HTTPReceiver:
             host: 监听地址
             port: 监听端口
             logs_dir: 日志目录（默认 server/logs/）
+            store: TestStateStore 实例（跨线程状态 owner，v0.14.0 注入）
         """
         self.host = host
         self.port = port
@@ -64,18 +65,8 @@ class HTTPReceiver:
 
         self.http_server = None
         self.http_thread = None
-        self._game_errors = []  # 存储游戏内错误上报（/error 端点写入）
-        # 【v2】按 test_name 缓冲的进度时间线与结构化日志（/progress、/log 端点写入）
-        # /result 到达时合并进 result.json（游戏侧只管 POST，MCP 汇总，见设计文档 4.2/4.3）
-        self._progress = {}  # test_name -> list[progress_entry]
-        self._logs = {}      # test_name -> list[log_entry]
-        self._max_logs_per_test = 2000  # 单测试日志缓冲上限（防爆内存）
-
-        # inspect_game 运行时查询队列与结果缓存（v0.9.0 新增）
-        # _inspect_pending: list[dict]，每项 {id, expr}，游戏端 GET /inspect/pending 取走执行
-        # _inspect_results: dict[id -> dict]，游戏端 POST /inspect/result 回传，MCP 轮询取出
-        self._inspect_pending = []   # FIFO 队列（append 入，pop(0) 出）
-        self._inspect_results = {}   # id → {"id","value"} 或 {"id","error"}
+        # v0.14.0: 状态存储委托给 TestStateStore（5 缓冲字段已移除）
+        self.store = store
 
     def start(self) -> bool:
         """启动 HTTP 服务器（后台线程）
@@ -204,7 +195,6 @@ class HTTPReceiver:
         from flask import Flask, request, jsonify
 
         app = Flask(__name__)
-        app.game_errors = self._game_errors  # 共享错误列表
 
         def save_screenshots(test_name: str, screenshots: list) -> list:
             """保存截图并返回文件路径列表"""
@@ -264,21 +254,8 @@ class HTTPReceiver:
                 if saved_screenshots:
                     data['screenshots'] = saved_screenshots
 
-                # 【v2】合并 MCP 侧缓冲的 progress / logs / game_errors
-                # 游戏侧只管 POST，MCP 按 test_name 汇总回填（设计文档 4.2/4.3）
-                buffered_progress = self._progress.get(test_name)
-                if buffered_progress:
-                    existing = data.get('progress') or []
-                    data['progress'] = (existing + buffered_progress) if existing else list(buffered_progress)
-                buffered_logs = self._logs.get(test_name)
-                if buffered_logs:
-                    existing = data.get('logs') or []
-                    data['logs'] = (existing + buffered_logs) if existing else list(buffered_logs)
-                # game_errors：本次测试相关的错误上报（按 test_name 过滤；未带 test_name 的归 unknown）
-                related_errors = [e for e in self._game_errors
-                                  if e.get('test_name', 'unknown') == test_name]
-                if related_errors and not data.get('game_errors'):
-                    data['game_errors'] = related_errors
+                # v0.14.0: 委托 store 合并缓冲的 progress / logs / game_errors
+                data = self.store.merge_into(test_name, data)
 
                 # 写入结果文件
                 with open(result_file, 'w', encoding='utf-8') as f:
@@ -351,7 +328,7 @@ class HTTPReceiver:
                 if traceback:
                     self.logger.error(f"[堆栈] {traceback[:500]}...")
 
-                app.game_errors.append({
+                self.store.record_error(test_name, {
                     'test_name': test_name,
                     'error': error_message,
                     'traceback': traceback,
@@ -406,7 +383,7 @@ class HTTPReceiver:
                 if 'elapsed_ms' in data:
                     entry['elapsed_ms'] = data['elapsed_ms']
 
-                self._progress.setdefault(test_name, []).append(entry)
+                self.store.record_progress(test_name, entry)
                 self.logger.info(f"[进度] {test_name}: {entry['step']} ({entry['phase']})")
                 return jsonify({'success': True, 'message': '进度已接收'})
             except Exception as e:
@@ -421,10 +398,9 @@ class HTTPReceiver:
             队列为空时返回 {}（200），绝不阻塞——游戏每 200ms 轮询一次。
             """
             try:
-                if not self._inspect_pending:
+                entry = self.store.take_pending_inspect()
+                if entry is None:
                     return jsonify({})
-                # 取出最旧的一条（FIFO），同时从队列移除
-                entry = self._inspect_pending.pop(0)
                 return jsonify(entry)
             except Exception as e:
                 self.logger.error(f"处理 /inspect/pending 失败：{e}", exc_info=True)
@@ -451,8 +427,8 @@ class HTTPReceiver:
                 if not req_id:
                     return jsonify({'success': False, 'error': '缺少 id 字段'}), 400
 
-                # 存入结果缓存（整个 body，含 id+value 或 id+error）
-                self._inspect_results[req_id] = data
+                # 存入 store 结果缓存（整个 body，含 id+value 或 id+error）
+                self.store.record_inspect_result(req_id, data)
                 self.logger.info(f"[inspect] 收到结果：{req_id}")
                 return jsonify({'success': True, 'message': '结果已接收'})
             except Exception as e:
@@ -488,11 +464,7 @@ class HTTPReceiver:
                     'timestamp': data.get('timestamp') or datetime.now().isoformat(),
                 }
 
-                bucket = self._logs.setdefault(test_name, [])
-                bucket.append(entry)
-                # 上限防爆：超出则丢弃最旧的一半
-                if len(bucket) > self._max_logs_per_test:
-                    del bucket[:len(bucket) // 2]
+                self.store.record_log(test_name, entry)
 
                 return jsonify({'success': True, 'message': '日志已接收'})
             except Exception as e:
@@ -511,34 +483,3 @@ class HTTPReceiver:
         if result_file.exists():
             result_file.unlink()
             self.logger.info(f"已删除旧结果文件: {result_file}")
-
-    def get_game_errors(self) -> list:
-        """获取游戏内错误上报列表"""
-        return self._game_errors
-
-    def get_progress(self, test_name: str) -> list:
-        """获取指定测试的进度时间线（v2）"""
-        return self._progress.get(test_name, [])
-
-    def get_logs(self, test_name: str) -> list:
-        """获取指定测试的结构化日志（v2）"""
-        return self._logs.get(test_name, [])
-
-    def clear_test_buffers(self, test_name: str = None) -> None:
-        """清除测试缓冲（progress / logs）
-
-        每个 test_commit / batch 单测开始前调用，避免上一个测试的缓冲污染。
-
-        Args:
-            test_name: 指定测试名则只清该测试的 progress/logs；None 则清空全部。
-        """
-        if test_name is None:
-            self._progress.clear()
-            self._logs.clear()
-            return
-        self._progress.pop(test_name, None)
-        self._logs.pop(test_name, None)
-
-    def clear_game_errors(self) -> None:
-        """清空游戏内错误上报列表（batch 开始前重置）"""
-        self._game_errors.clear()

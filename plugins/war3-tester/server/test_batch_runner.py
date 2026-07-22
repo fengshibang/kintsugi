@@ -16,7 +16,9 @@ TestBatchRunner - 批量测试编排（v2 新增，设计文档 4.1）
 - 重试（max_retries）
 - failed 列表会话内内存缓存（供 filter="failed" 复用，不持久化）
 
-依赖（构造时注入）：config / executor / http_receiver / mcp_server（复用 _prepare_test_entry）
+依赖（构造时注入）：config / executor / http_receiver / store + 三 module
+（test_mode_flag / test_entry_preparer / diagnostics_collector）。
+零反向依赖：不引用 mcp_server，消除循环依赖。
 """
 
 import json
@@ -34,18 +36,24 @@ class TestBatchRunner:
     # 失败时触发截图的类型（设计文档 4.7：assertion/runtime_error/compile_error 不截图）
     SCREENSHOT_FAILURE_TYPES = {'crash', 'timeout', 'unknown'}
 
-    def __init__(self, config, executor, http_receiver, mcp_server):
+    def __init__(self, config, executor, http_receiver, test_mode_flag, test_entry_preparer, diagnostics_collector, store=None):
         """
         Args:
             config: Config 实例
             executor: 执行器（WinProxy / Local）
-            http_receiver: HTTPReceiver 实例（取 progress/logs/game_errors）
-            mcp_server: War3TesterMCP 实例（复用 _prepare_test_entry）
+            http_receiver: HTTPReceiver 实例（文件操作）
+            test_mode_flag: TestModeFlag 实例（v0.15.0 注入，_test_off.lua 管理）
+            test_entry_preparer: TestEntryPreparer 实例（v0.15.0 注入，测试入口准备）
+            diagnostics_collector: DiagnosticsCollector 实例（v0.15.0 注入，诊断信息收集）
+            store: TestStateStore 实例（v0.14.0 注入，跨线程状态 owner）
         """
         self.config = config
         self.executor = executor
         self.http_receiver = http_receiver
-        self.mcp_server = mcp_server
+        self.test_mode_flag = test_mode_flag  # v0.15.0: 消除 mcp_server 反向依赖
+        self.test_entry_preparer = test_entry_preparer  # v0.15.0: 消除 mcp_server 反向依赖
+        self.diagnostics_collector = diagnostics_collector  # v0.15.0: 消除 mcp_server 反向依赖
+        self.store = store  # v0.14.0: 跨线程状态 owner
         self.logger = setup_logger('test-batch')
         # 本次 batch 的 failed 列表（内存，不持久化），供 filter="failed" 复用
         self._failed_cache: List[Dict[str, str]] = []
@@ -209,6 +217,7 @@ class TestBatchRunner:
         passed = 0
         failed_list = []
         self._failed_cache = []  # 重置本次 batch 的 failed 缓存
+        self.store.clear_all()  # batch 边界清空 game_errors，保证 batch 间隔离
 
         for i, t in enumerate(selected):
             test_name = t['test_name']
@@ -218,7 +227,7 @@ class TestBatchRunner:
             attempt = 0
             single = None
             while attempt <= max_retries:
-                single = self._run_single_test(
+                single = self.run_single_test(
                     test_name, test_file, timeout_per_test, platform, source_dir,
                     auto_screenshot_on_failure)
                 if single.get('success'):
@@ -306,16 +315,19 @@ class TestBatchRunner:
     # 单测执行核心（run_test_batch 与 mcp_server.test_commit 共享）
     # ------------------------------------------------------------------
 
-    def _run_single_test(self, test_name: str, test_file: str = None,
+    def run_single_test(self, test_name: str, test_file: str = None,
                          timeout: int = 90, platform: str = None, source_dir: str = None,
                          auto_screenshot_on_failure: bool = True) -> dict:
         """运行单个测试（独立会话）。返回标准化结果（含 failure_type / progress / logs）。
 
         流程：预清理 → 准备入口 → 编译 → 启动 → 轮询+进程监控 → 分类 → 截图 → 清理
+
+        v0.15.0: 从 _run_single_test 提升为 public，供 mcp_server.test_commit 直接调用。
         """
-        # 清缓冲：避免上一个测试的 progress/logs/game_errors 污染本次
-        self.http_receiver.clear_test_buffers(test_name)
-        self.http_receiver.clear_game_errors()
+        # v0.14.0: 清缓冲（委托 store）
+        # 决策5：每测试开头只用 clear_test（清该 test 的 progress/logs）
+        # clear_all 只在 batch 边界调（会清 game_errors，违背全局保留）
+        self.store.clear_test(test_name)
 
         # source_dir 默认 config.compile_source_dir（与 test_commit handle 一致）；
         # 否则 _prepare_test_entry 会 fallback 到 project_root(cache)，
@@ -330,8 +342,9 @@ class TestBatchRunner:
 
         try:
             # 0.5 准备测试入口（写 _target_test.lua + run_auto_test.lua）
+            # v0.15.0: 委托 TestEntryPreparer.prepare（消除 mcp_server 反向依赖）
             try:
-                self.mcp_server._prepare_test_entry(test_name, test_file, source_dir)
+                self.test_entry_preparer.prepare(test_name, test_file, source_dir)
             except Exception as e:
                 return self._build_result(test_name, success=False, failure_type='env_error',
                                           error=f'准备测试入口失败：{e}', elapsed=0)
@@ -391,9 +404,11 @@ class TestBatchRunner:
             if outcome is None:
                 outcome = 'env_error' if not game_seen_alive else 'timeout'
 
-            # 4. 读取 game_errors（HTTPReceiver 内存缓存，不依赖游戏进程，stop_game 前后都能读）
+            # 4. 读取 game_errors（store 全局缓冲，不依赖游戏进程，stop_game 前后都能读）
             #    必须在预拍前赋值：预拍的 _classify_failure 引用它（result 分支失败路径）
-            game_errors = self.http_receiver.get_game_errors()
+            # v0.14.0: 委托 store.snapshot 获取
+            snap = self.store.snapshot(test_name)
+            game_errors = snap['game_errors']
 
             # 5. 预拍截图 + inspect 快照（在 stop_game 前，游戏还活着时）
             # timeout 时游戏本还活着（_is_game_alive=True），必须此时截图；
@@ -431,21 +446,17 @@ class TestBatchRunner:
             self._write_test_off(source_dir)
 
     def _write_test_off(self, source_dir: str) -> None:
-        """测试完成后写 _test_off.lua，让手动游戏时 auto-test 模块不加载（零干扰）。"""
+        """测试完成后写 _test_off.lua，让手动游戏时 auto-test 模块不加载（零干扰）。
+
+        v0.15.0: 委托 TestModeFlag.write_after_test（消除 mcp_server 反向依赖）
+        """
         try:
             test_dir = self.config.get_test_dir_path(self.config._resolve_path(source_dir))
             if test_dir is None:
                 self.logger.warning('[toggle] source_dir 非有效项目根，跳过写 _test_off')
                 return
-            # 【M1 归拢】与 toggle_test 一致，写入 _war3_tester/_test_off.lua
-            # 直接内联路径（_get_war3_tester_dir 是 War3TesterMCP 的方法，TestBatchRunner 没有）
-            wt_dir = test_dir / '_war3_tester'
-            wt_dir.mkdir(parents=True, exist_ok=True)
-            off_path = wt_dir / '_test_off.lua'
-            off_path.write_text(
-                '-- _run_single_test 完成后自动生成：手动游戏时 auto-test 模块不加载（init.lua early-return）\nreturn true\n',
-                encoding='utf-8')
-            self.logger.info(f"[toggle] 测试完成，已写 _war3_tester/_test_off.lua（手动游戏零干扰）")
+            # v0.15.0: 委托 TestModeFlag.write_after_test
+            self.test_mode_flag.write_after_test(test_dir)
         except Exception as e:
             self.logger.warning(f"[toggle] 写 _test_off 失败：{e}")
 
@@ -485,6 +496,10 @@ class TestBatchRunner:
                 screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
 
+            # 决策5：result 分支（最常见路径）诊断收集后必须 clear_test
+            # success 和 fail 都要清 progress/logs
+            self.store.clear_test(test_name)
+
             return self._build_result(
                 test_name, success=test_success, failure_type=failure_type,
                 result=result_data, result_file=str(result_file) if result_file else None,
@@ -499,12 +514,18 @@ class TestBatchRunner:
             failure_type = 'crash'
             # screenshots 已由 _run_single_test 在 stop_game 前预拍（pre_screenshots）
             # crash 时游戏已崩，截图本就截不到（返回 []），预拍无害
-            progress = self.http_receiver.get_progress(test_name)
+            # v0.14.0: 委托 store.snapshot 获取 progress/logs
+            snap = self.store.snapshot(test_name)
+            progress = snap['progress']
+            logs = snap['logs']
 
             # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
             if auto_screenshot_on_failure:
                 screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
+
+            # v0.14.0: 诊断收集完成后清缓冲
+            self.store.clear_test(test_name)
 
             return self._build_result(
                 test_name, success=False, failure_type='crash',
@@ -514,7 +535,7 @@ class TestBatchRunner:
                 debug_output=debug_output,
                 crash_log=None,  # P1：crash_log_reader 读取 Errors\<时间戳> Crash.txt
                 progress=progress,
-                logs=self.http_receiver.get_logs(test_name),
+                logs=logs,
                 error=f'游戏进程崩溃（曾启动后消失），已收 {len(progress)} 条进度')
 
         if outcome == 'timeout':
@@ -524,10 +545,18 @@ class TestBatchRunner:
             # 【时序修复】timeout 时游戏还活着，截图在 stop_game 前执行，保证窗口存在
             # inspect_snapshot 也在 stop_game 前收集（依赖游戏进程轮询）
 
+            # v0.14.0: 委托 store.snapshot 获取 progress/logs
+            snap = self.store.snapshot(test_name)
+            progress = snap['progress']
+            logs = snap['logs']
+
             # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
             if auto_screenshot_on_failure:
                 screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
+
+            # v0.14.0: 诊断收集完成后清缓冲
+            self.store.clear_test(test_name)
 
             return self._build_result(
                 test_name, success=False, failure_type='timeout',
@@ -535,9 +564,9 @@ class TestBatchRunner:
                 screenshot_analysis=screenshot_analysis,
                 inspect_snapshot=inspect_snapshot,
                 debug_output=debug_output,
-                progress=self.http_receiver.get_progress(test_name),
-                logs=self.http_receiver.get_logs(test_name),
-                error=f'测试超时 ({elapsed}s)，最后进度：{self._last_progress_step(test_name)}')
+                progress=progress,
+                logs=logs,
+                error=f'测试超时 ({elapsed}s)，最后进度：{self._last_progress_step(test_name, progress)}')
 
         # outcome == 'env_error'（游戏从未启动）
         return self._build_result(
@@ -623,8 +652,8 @@ class TestBatchRunner:
             if not screenshot_path or not os.path.exists(screenshot_path):
                 return None
 
-            # 调用 mcp_server 的 analyze_screenshot
-            analysis = self.mcp_server.analyze_screenshot(screenshot_path)
+            # 调用 diagnostics_collector 的 analyze_screenshot（v0.15.0: 消除 mcp_server 反向依赖）
+            analysis = self.diagnostics_collector.analyze_screenshot(screenshot_path)
             return analysis
         except Exception as e:
             self.logger.warning(f"[{test_name}] VLM 判读失败（graceful）：{e}")
@@ -635,6 +664,7 @@ class TestBatchRunner:
 
         查询表达式从 config.inspect_queries 读取（项目自定义，默认空=不查 inspect）。
         通用性：不硬编码任何项目特化 API，项目通过 config.json -> test.inspect_queries 配置。
+        v0.14.0: 委托 store.submit_inspect + take_inspect（消除直插私有字段）
         """
         try:
             # 从 config 读取查询表达式列表（项目自定义，默认空）
@@ -647,22 +677,15 @@ class TestBatchRunner:
             snapshots = []
             for expr in queries:
                 try:
-                    # 使用 inspect_game 的机制（直接操作 _inspect_pending）
-                    query_id = f"q_{int(time.time() * 1000)}_{os.getpid()}"
-                    self.http_receiver._inspect_pending.append({
-                        "id": query_id,
-                        "expr": expr
-                    })
+                    # v0.14.0: 委托 store 管理 inspect 协议
+                    query_id = self.store.submit_inspect(expr)
                     # 等待结果（最多 2s）
-                    for _ in range(10):
-                        time.sleep(0.2)
-                        result = self.http_receiver._inspect_results.pop(query_id, None)
-                        if result:
-                            if "error" in result:
-                                snapshots.append(f"{expr}: ERROR - {result['error']}")
-                            else:
-                                snapshots.append(f"{expr}: {result.get('value', '')}")
-                            break
+                    result = self.store.take_inspect(query_id, timeout=2)
+                    if result:
+                        if "error" in result:
+                            snapshots.append(f"{expr}: ERROR - {result['error']}")
+                        else:
+                            snapshots.append(f"{expr}: {result.get('value', '')}")
                 except Exception as e:
                     snapshots.append(f"{expr}: 查询失败 - {e}")
 
@@ -674,16 +697,19 @@ class TestBatchRunner:
     def _collect_debug_output(self) -> Optional[str]:
         """【M4 方向 G】收集调试输出（graceful）"""
         try:
-            # 调用 mcp_server 的 _get_debug_output
-            debug_text = self.mcp_server._get_debug_output(limit=20, level='error')
+            # v0.15.0: 调用 diagnostics_collector 的 get_debug_output（消除 mcp_server 反向依赖）
+            debug_text = self.diagnostics_collector.get_debug_output(limit=20, level='error')
             return debug_text
         except Exception as e:
             self.logger.warning(f"debug_output 收集失败（graceful）：{e}")
             return f"debug_output 收集失败: {e}"
 
-    def _last_progress_step(self, test_name: str) -> str:
-        """取最后一条进度的 step 名（timeout 诊断用）"""
-        progress = self.http_receiver.get_progress(test_name)
+    def _last_progress_step(self, test_name: str, progress: list = None) -> str:
+        """取最后一条进度的 step 名（timeout 诊断用）
+        v0.14.0: 接受 progress 参数（由调用方从 store.snapshot 获取）
+        """
+        if progress is None:
+            progress = self.store.snapshot(test_name)['progress']
         if progress:
             last = progress[-1]
             return f"{last.get('step', '?')}({last.get('phase', '?')})"

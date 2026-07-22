@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+TestEntryPreparer - 测试入口文件准备模块
+
+职责：
+- 准备 _target_test.lua 和 run_auto_test.lua
+- 调用 TestModeFlag 开启测试模式（删除 _test_off.lua）
+- 注入插件产物（inspect_handler / assertions / jass_mock）
+- 覆盖 mcp_server._prepare_test_entry 的全部逻辑
+
+零反向依赖：只依赖 config + TestModeFlag + logger，不引用 mcp_server / test_batch_runner / http_receiver
+"""
+
+import re
+import logging
+from pathlib import Path
+from typing import Optional
+
+
+class TestEntryPreparer:
+    """
+    测试入口文件准备器。
+
+    覆盖 mcp_server._prepare_test_entry 的全部逻辑：
+    1. 解析 source_dir，获取 test_dir
+    2. 获取 _war3_tester/ 子目录
+    3. 删除 _test_off.lua（开启测试模式）+ legacy 清理
+    4. 推断 test_file（如果未提供）
+    5. 构建模块名
+    6. 写 _target_test.lua
+    7. 写 run_auto_test.lua（带引导模板）
+    8. 注入插件产物（inspect_handler / assertions / jass_mock）
+
+    构造参数：
+        test_mode_flag: TestModeFlag 实例
+        server_dir: 插件 server 目录 Path（用于读取 lua_bootstrap.lua 等模板）
+        config: Config 实例
+        logger: 日志记录器（可选）
+    """
+
+    def __init__(self, test_mode_flag, server_dir, config, logger=None):
+        self.test_mode_flag = test_mode_flag
+        self.server_dir = server_dir
+        self.config = config
+        self.logger = logger or logging.getLogger(__name__)
+
+    def _get_war3_tester_dir(self, test_dir):
+        """
+        返回插件产物隔离子目录（_war3_tester/），不存在则创建。
+
+        从 mcp_server._get_war3_tester_dir 忠实搬运（mcp_server.py:615-624）。
+        """
+        wt = test_dir / '_war3_tester'
+        wt.mkdir(parents=True, exist_ok=True)
+        return wt
+
+    def _copy_file_to(self, src, dst, label):
+        """
+        复制单个 lua 文件，失败 graceful（不抛异常，不阻断调用方）。
+
+        从 mcp_server._copy_file_to 忠实搬运（mcp_server.py:626-638）。
+        """
+        if not src.exists():
+            self.logger.warning("[_copy_file_to] 源文件不存在: %s，跳过 %s", src, label)
+            return
+        try:
+            with open(src, 'r', encoding='utf-8') as _f:
+                content = _f.read()
+            with open(dst, 'w', encoding='utf-8') as _f:
+                _f.write(content)
+            self.logger.info("[_copy_file_to] 已注入 %s → %s", label, dst)
+        except (IOError, OSError) as _e:
+            self.logger.warning("[_copy_file_to] %s 复制失败（graceful）: %s", label, _e)
+
+    def _inject_war3_tester_assets(self, wt_dir):
+        """
+        注入所有插件产物到 _war3_tester/ 子目录（M1 归拢）。
+
+        从 mcp_server._inject_war3_tester_assets 忠实搬运（mcp_server.py:1564-1586）。
+
+        注入文件：
+        - inspect_handler.lua（运行时查询处理器）
+        - assertions.lua（通用断言库）
+        - jass_mock.lua（jass mock 表）
+
+        失败 graceful（不抛异常，不阻断调用方）。
+
+        Args:
+            wt_dir: _war3_tester/ 子目录 Path 对象
+        """
+        assets = [
+            ('inspect_handler.lua', 'inspect_handler'),
+            ('assertions.lua', 'assertions'),
+            ('jass_mock.lua', 'jass_mock'),
+        ]
+        for filename, label in assets:
+            src = self.server_dir / filename
+            dst = wt_dir / filename
+            self._copy_file_to(src, dst, label)
+
+    def prepare(self, test_name, test_file, source_dir):
+        """
+        准备测试入口文件（编译前调用）。
+
+        从 mcp_server._prepare_test_entry 忠实搬运（mcp_server.py:640-783）。
+
+        【红线 1/4/9/10】通用化：
+        - test_dir 可配置（默认 'auto-test'）
+        - test_module_prefix 可配置（默认空串）
+        - 严禁框架词
+
+        Args:
+            test_name: 测试名称
+            test_file: 测试文件名（如 'test_skill_a00d.lua'）
+            source_dir: 源码目录
+
+        Returns:
+            bool: 是否成功准备
+        """
+        # 解析 source_dir
+        resolved_source = self.config._resolve_path(source_dir) if source_dir else self.config.project_root
+        test_dir = self.config.get_test_dir_path(resolved_source)
+        if test_dir is None:
+            self.logger.error(
+                '[TestEntryPreparer] source_dir 非有效项目根，跳过测试引导: %s',
+                resolved_source
+            )
+            return False
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        # 【M1 归拢】插件产物集中放 _war3_tester/ 子目录
+        wt_dir = self._get_war3_tester_dir(test_dir)
+
+        # 测试时强制开启：删除 toggle_test 写入的关闭标志，确保 test_commit 能跑测试
+        # 【M1】_test_off.lua 已移入 _war3_tester/ 子目录
+        # 委托 TestModeFlag.enable（覆盖 mcp_server:666-677 的删除 + legacy 清理）
+        self.test_mode_flag.enable(test_dir)
+
+        # 推断 test_file
+        if not test_file:
+            if re.search(r'[一-鿿]', test_name):
+                self.logger.error(
+                    "test_name='%s' 包含中文，无法推断文件名，请显式传入 test_file 参数",
+                    test_name
+                )
+                raise ValueError(
+                    f"test_name='{test_name}' 包含中文，无法推断文件名，"
+                    f"请显式传入 test_file 参数"
+                )
+            # 修复：test_name 可能已含 'test_' 前缀（如 'test_xinfa_faction'），
+            # 此时不再追加，避免生成 'test_test_xinfa_faction.lua' 致 require 失败、test_commit 报 env_error
+            if test_name.startswith('test_'):
+                test_file = f'{test_name}.lua'
+            else:
+                test_file = f'test_{test_name}.lua'
+
+        if not test_file.endswith('.lua'):
+            test_file = test_file + '.lua'
+
+        # 构建模块名
+        # test_module_base = 不含前缀的相对模块名（交给引导脚本拼 test_module_prefix）
+        # module_name = 完整路径（仅用于日志）
+        test_module_base = test_file.replace('.lua', '').replace('/', '.')
+        module_name = (
+            self.config.test_module_prefix + test_module_base
+            if self.config.test_module_prefix
+            else test_module_base
+        )
+
+        self.logger.info(
+            "[test_commit] test_name=%s, test_file=%s, module=%s",
+            test_name, test_file, module_name
+        )
+
+        # 写 _target_test.lua
+        # 【M1 归拢】移入 _war3_tester/ 子目录
+        target_test_path = wt_dir / '_target_test.lua'
+        # 【F4 修复】携带 http_host/http_port，让测试文件知道往哪 POST 结果
+        # 游戏运行在 Windows 侧，统一 POST 到 127.0.0.1：
+        # - WSL 模式：经 WSL2 localhost forwarding 到达 WSL 接收端（与旧硬编码 127.0.0.1 同机制）
+        # - 原生 Windows：直达本机接收端
+        # 注：wsl_to_windows_ip 是 WSL→Windows 方向，游戏在 Windows 侧用它方向反了
+        http_host_for_game = '127.0.0.1'
+        target_test_content = (
+            f"return {{test_name='{test_name}', test_file='{test_file}', "
+            f"test_module='{test_module_base}', test_module_prefix='{self.config.test_module_prefix}', "
+            f"http_host='{http_host_for_game}', http_port={self.config.http_port}}}\n"
+        )
+        with open(target_test_path, 'w', encoding='utf-8') as f:
+            f.write(target_test_content)
+        self.logger.info("[test_commit] 已写入 _war3_tester/_target_test.lua")
+
+        # 写 run_auto_test.lua（引导模板）
+        # 【v0.2 增强】支持 test_bootstrap_template 自定义引导模板
+        run_auto_test_path = test_dir / 'run_auto_test.lua'
+        bootstrap_content = None
+
+        # 1. 若配置了自定义模板，尝试读取
+        if self.config.test_bootstrap_template:
+            custom_template_path = self.config._resolve_path(self.config.test_bootstrap_template)
+            if custom_template_path.exists():
+                try:
+                    with open(custom_template_path, 'r', encoding='utf-8') as f:
+                        bootstrap_content = f.read()
+                    self.logger.info("[test_commit] 使用自定义引导模板: %s", custom_template_path)
+                except (IOError, OSError) as e:
+                    self.logger.warning(
+                        "[test_commit] 自定义模板读取失败: %s，fallback 到通用模板", e
+                    )
+                    bootstrap_content = None
+            else:
+                self.logger.warning(
+                    "[test_commit] 自定义模板不存在: %s，fallback 到通用模板", custom_template_path
+                )
+
+        # 2. 未配置或读取失败时，使用通用模板
+        if bootstrap_content is None:
+            generic_bootstrap_path = self.server_dir / 'lua_bootstrap.lua'
+            if generic_bootstrap_path.exists():
+                with open(generic_bootstrap_path, 'r', encoding='utf-8') as f:
+                    bootstrap_content = f.read()
+                self.logger.info("[test_commit] 使用通用引导模板: %s", generic_bootstrap_path)
+            else:
+                self.logger.warning(
+                    "[test_commit] 通用引导模板不存在: %s", generic_bootstrap_path
+                )
+                return False  # 无法写入引导，直接返回
+
+        # 2.5 【Fail 1 修复】注入 _target_test 的 require 路径（通用，不硬编码项目路径）
+        # lua_bootstrap.lua 中使用占位符 @@W3T_TARGET_TEST_MODULE@@，此处替换为
+        # {test_module_prefix}_war3_tester._target_test，适用所有项目（空 prefix 也能工作）
+        _prefix = self.config.test_module_prefix
+        _target_test_module = f'{_prefix}_war3_tester._target_test'
+        bootstrap_content = bootstrap_content.replace(
+            '@@W3T_TARGET_TEST_MODULE@@', _target_test_module
+        )
+
+        # 3. 注入插件产物到 _war3_tester/（inspect_handler + assertions + jass_mock）
+        self._inject_war3_tester_assets(wt_dir)
+
+        # 4. 在 bootstrap_content 末尾追加 pcall 包裹的 require+start
+        # 【M1 归拢】inspect_handler 已移入 _war3_tester/ 子目录
+        bootstrap_content += (
+            "\n\n-- === inspect_handler 自动注入（plugin 追加，auto-test on 时启动运行时查询）===\n"
+            "pcall(function()\n"
+            f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
+            "    if ih and ih.start then ih.start() end\n"
+            "end)\n"
+            "\n"
+            "-- === 插件内置断言库 + jass mock（M1 新增，graceful 加载，缺失时静默跳过）===\n"
+            "pcall(function()\n"
+            f"    _G.__war3_tester_assertions = require('{_prefix}_war3_tester.assertions')\n"
+            "end)\n"
+            "pcall(function()\n"
+            f"    _G.__war3_tester_jass_mock = require('{_prefix}_war3_tester.jass_mock')\n"
+            "end)\n"
+        )
+
+        # 5. 写入 run_auto_test.lua
+        with open(run_auto_test_path, 'w', encoding='utf-8') as f:
+            f.write(bootstrap_content)
+        self.logger.info("[test_commit] 已写入 run_auto_test.lua")
+
+        return True

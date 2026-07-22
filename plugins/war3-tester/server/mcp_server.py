@@ -46,6 +46,11 @@ from test_batch_runner import TestBatchRunner
 from desktop_runner import DesktopRunner
 from watcher import FileWatcher
 from logger import setup_logger
+from test_state_store import TestStateStore
+# v0.15.0: 三 module（消除 mcp_server↔batch_runner 循环依赖）
+from test_mode_flag import TestModeFlag
+from test_entry_preparer import TestEntryPreparer
+from diagnostics_collector import DiagnosticsCollector
 
 # 初始化配置：project_root 优先取 start_mcp.js 注入的 WAR3_PROJECT_ROOT（项目目录），
 # 缺省传 None 回退插件目录（向后兼容）。让 config.json/.env 读取回归项目目录。
@@ -55,8 +60,11 @@ config = Config(project_root=Path(_war3_project_root) if _war3_project_root else
 # 创建执行器（按 is_wsl() 自动选择）
 executor = create_executor(config)
 
-# HTTP 接收端
-http_receiver = HTTPReceiver(host=config.http_host, port=config.http_port)
+# v0.14.0: 创建唯一 TestStateStore（跨线程状态 owner）
+store = TestStateStore()
+
+# HTTP 接收端（注入 store）
+http_receiver = HTTPReceiver(host=config.http_host, port=config.http_port, store=store)
 
 
 class War3TesterMCP:
@@ -67,8 +75,23 @@ class War3TesterMCP:
         self.logger = setup_logger('war3-mcp')
         self.executor = executor
         self.http_receiver = http_receiver
-        # v2: 批量测试编排器（复用 _prepare_test_entry，与 test_commit 共享单测执行核心）
-        self.batch_runner = TestBatchRunner(config, executor, http_receiver, self)
+        self.store = store  # v0.14.0: 跨线程状态 owner
+
+        # v0.15.0: 三 module（消除 mcp_server↔batch_runner 循环依赖）
+        self.test_mode_flag = TestModeFlag(logger=self.logger)
+        self.diagnostics_collector = DiagnosticsCollector(store, config, logger=self.logger)
+        self.test_entry_preparer = TestEntryPreparer(
+            self.test_mode_flag, SERVER_DIR, config, logger=self.logger
+        )
+
+        # v2: 批量测试编排器（注入 store + 三 module，与 http_receiver 共享状态访问）
+        self.batch_runner = TestBatchRunner(
+            config, executor, http_receiver,
+            test_mode_flag=self.test_mode_flag,
+            test_entry_preparer=self.test_entry_preparer,
+            diagnostics_collector=self.diagnostics_collector,
+            store=store
+        )
         # M2: 桌面纯逻辑单测运行器（不启动游戏，秒级反馈）
         self.desktop_runner = DesktopRunner(config, executor)
         # M4: 文件监控器（watch 模式）
@@ -636,153 +659,22 @@ class War3TesterMCP:
         """
         准备测试入口文件（编译前调用）。
 
-        【红线 1/4/9/10】通用化：
-        - test_dir 可配置（默认 'auto-test'）
-        - test_module_prefix 可配置（默认空串）
-        - 严禁框架词
+        v0.15.0: 委托 TestEntryPreparer.prepare（消除反向依赖，保留方法签名供内部调用）
 
         Args:
             test_name: 测试名称
             test_file: 测试文件名（如 'test_skill_a00d.lua'）
             source_dir: 源码目录
         """
-        # 解析 source_dir
-        resolved_source = config._resolve_path(source_dir) if source_dir else self.project_root
-        test_dir = config.get_test_dir_path(resolved_source)
-        if test_dir is None:
-            self.logger.error(f'[_prepare_test_entry] source_dir 非有效项目根，跳过测试引导: {resolved_source}')
-            return
-        test_dir.mkdir(parents=True, exist_ok=True)
-
-        # 【M1 归拢】插件产物集中放 _war3_tester/ 子目录
-        wt_dir = self._get_war3_tester_dir(test_dir)
-
-        # 测试时强制开启：删除 toggle_test 写入的关闭标志，确保 test_commit 能跑测试
-        # 【M1】_test_off.lua 已移入 _war3_tester/ 子目录
-        off_path = wt_dir / '_test_off.lua'
-        if off_path.exists():
-            off_path.unlink()
-            self.logger.info("[test_commit] 已删除 _war3_tester/_test_off.lua（强制开启测试模式）")
-        # 兼容旧版：清理 test_dir 根的残留 _test_off.lua（过渡期）
-        legacy_off = test_dir / '_test_off.lua'
-        if legacy_off.exists():
-            try:
-                legacy_off.unlink()
-            except (IOError, OSError):
-                pass
-
-        # 推断 test_file
-        if not test_file:
-            if re.search(r'[一-鿿]', test_name):
-                raise ValueError(
-                    f"test_name='{test_name}' 包含中文，无法推断文件名，"
-                    f"请显式传入 test_file 参数"
-                )
-            # 修复：test_name 可能已含 'test_' 前缀（如 'test_xinfa_faction'），
-            # 此时不再追加，避免生成 'test_test_xinfa_faction.lua' 致 require 失败、test_commit 报 env_error
-            if test_name.startswith('test_'):
-                test_file = f'{test_name}.lua'
-            else:
-                test_file = f'test_{test_name}.lua'
-
-        if not test_file.endswith('.lua'):
-            test_file = test_file + '.lua'
-
-        # 构建模块名
-        # test_module_base = 不含前缀的相对模块名（交给引导脚本拼 test_module_prefix）
-        # module_name = 完整路径（仅用于日志）
-        test_module_base = test_file.replace('.lua', '').replace('/', '.')
-        module_name = config.test_module_prefix + test_module_base if config.test_module_prefix else test_module_base
-
-        self.logger.info(f"[test_commit] test_name={test_name}, test_file={test_file}, module={module_name}")
-
-        # 写 _target_test.lua
-        # 【M1 归拢】移入 _war3_tester/ 子目录
-        target_test_path = wt_dir / '_target_test.lua'
-        # 【F4 修复】携带 http_host/http_port，让测试文件知道往哪 POST 结果
-        # 游戏运行在 Windows 侧，统一 POST 到 127.0.0.1：
-        # - WSL 模式：经 WSL2 localhost forwarding 到达 WSL 接收端（与旧硬编码 127.0.0.1 同机制）
-        # - 原生 Windows：直达本机接收端
-        # 注：wsl_to_windows_ip 是 WSL→Windows 方向，游戏在 Windows 侧用它方向反了
-        http_host_for_game = '127.0.0.1'
-        target_test_content = (
-            f"return {{test_name='{test_name}', test_file='{test_file}', "
-            f"test_module='{test_module_base}', test_module_prefix='{config.test_module_prefix}', "
-            f"http_host='{http_host_for_game}', http_port={config.http_port}}}\n"
-        )
-        with open(target_test_path, 'w', encoding='utf-8') as f:
-            f.write(target_test_content)
-        self.logger.info(f"[test_commit] 已写入 _war3_tester/_target_test.lua")
-
-        # 写 run_auto_test.lua（引导模板选择逻辑）
-        # 【v0.2 增强】支持 test_bootstrap_template 自定义引导模板
-        run_auto_test_path = test_dir / 'run_auto_test.lua'
-        bootstrap_content = None
-
-        # 1. 若配置了自定义模板，尝试读取
-        if config.test_bootstrap_template:
-            custom_template_path = config._resolve_path(config.test_bootstrap_template)
-            if custom_template_path.exists():
-                try:
-                    with open(custom_template_path, 'r', encoding='utf-8') as f:
-                        bootstrap_content = f.read()
-                    self.logger.info(f"[test_commit] 使用自定义引导模板: {custom_template_path}")
-                except (IOError, OSError) as e:
-                    self.logger.warning(f"[test_commit] 自定义模板读取失败: {e}，fallback 到通用模板")
-                    bootstrap_content = None
-            else:
-                self.logger.warning(f"[test_commit] 自定义模板不存在: {custom_template_path}，fallback 到通用模板")
-
-        # 2. 未配置或读取失败时，使用通用模板
-        if bootstrap_content is None:
-            generic_bootstrap_path = SERVER_DIR / 'lua_bootstrap.lua'
-            if generic_bootstrap_path.exists():
-                with open(generic_bootstrap_path, 'r', encoding='utf-8') as f:
-                    bootstrap_content = f.read()
-                self.logger.info(f"[test_commit] 使用通用引导模板: {generic_bootstrap_path}")
-            else:
-                self.logger.warning(f"[test_commit] 通用引导模板不存在: {generic_bootstrap_path}")
-                return  # 无法写入引导，直接返回
-
-        # 2.5 【Fail 1 修复】注入 _target_test 的 require 路径（通用，不硬编码项目路径）
-        # lua_bootstrap.lua 中使用占位符 @@W3T_TARGET_TEST_MODULE@@，此处替换为
-        # {test_module_prefix}_war3_tester._target_test，适用所有项目（空 prefix 也能工作）
-        _prefix = config.test_module_prefix
-        _target_test_module = f'{_prefix}_war3_tester._target_test'
-        bootstrap_content = bootstrap_content.replace('@@W3T_TARGET_TEST_MODULE@@', _target_test_module)
-
-        # 3. 注入插件产物到 _war3_tester/（inspect_handler + assertions + jass_mock）
-        self._inject_war3_tester_assets(wt_dir)
-
-        # 4. 在 bootstrap_content 末尾追加 pcall 包裹的 require+start
-        # 【M1 归拢】inspect_handler 已移入 _war3_tester/ 子目录
-        bootstrap_content += (
-            "\n\n-- === inspect_handler 自动注入（plugin 追加，auto-test on 时启动运行时查询）===\n"
-            "pcall(function()\n"
-            f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
-            "    if ih and ih.start then ih.start() end\n"
-            "end)\n"
-            "\n"
-            "-- === 插件内置断言库 + jass mock（M1 新增，graceful 加载，缺失时静默跳过）===\n"
-            "pcall(function()\n"
-            f"    _G.__war3_tester_assertions = require('{_prefix}_war3_tester.assertions')\n"
-            "end)\n"
-            "pcall(function()\n"
-            f"    _G.__war3_tester_jass_mock = require('{_prefix}_war3_tester.jass_mock')\n"
-            "end)\n"
-        )
-
-        # 5. 写入 run_auto_test.lua
-        with open(run_auto_test_path, 'w', encoding='utf-8') as f:
-            f.write(bootstrap_content)
-        self.logger.info(f"[test_commit] 已写入 run_auto_test.lua")
+        # v0.15.0: 委托 test_entry_preparer（内部已含 _get_war3_tester_dir/_inject_war3_tester_assets/删_test_off）
+        self.test_entry_preparer.prepare(test_name, test_file, source_dir)
 
     def test_commit(self, test_name: str, test_file: str = None,
                     timeout: int = 60, platform: str = None, source_dir: str = None,
                     auto_screenshot_on_failure: bool = True) -> dict:
         """运行测试 - 编译 + 启动游戏 + 等待 HTTP 结果
 
-        v2 增强（设计文档 4.1）：委托 batch_runner._run_single_test，与 run_test_batch
+        v2 增强（设计文档 4.1）：委托 batch_runner.run_single_test，与 run_test_batch
         共享单测执行核心，自动获得：
         - 进程存活监控（游戏崩溃 → failure_type='crash'）
         - failure_type 分类（compile_error/crash/timeout/assertion/runtime_error/env_error）
@@ -797,7 +689,7 @@ class War3TesterMCP:
             source_dir: 源码目录
             auto_screenshot_on_failure: 失败时自动截图
         """
-        single = self.batch_runner._run_single_test(
+        single = self.batch_runner.run_single_test(
             test_name, test_file, timeout, platform, source_dir, auto_screenshot_on_failure)
 
         success = single.get('success', False)
@@ -842,35 +734,13 @@ class War3TesterMCP:
             return {'success': False, 'enabled': enabled,
                     'action': '失败：source_dir 非有效 w2l 项目根',
                     'compile_error': f'source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {source_dir}'}
-        test_dir.mkdir(parents=True, exist_ok=True)
-        # 【M1 归拢】所有插件产物移入 _war3_tester/
-        wt_dir = self._get_war3_tester_dir(test_dir)
-        off_path = wt_dir / '_test_off.lua'
-        target_path = wt_dir / '_target_test.lua'
-        run_auto_path = test_dir / 'run_auto_test.lua'  # run_auto_test.lua 仍放 test_dir 根（auto-test/init.lua 约定）
-
-        # 兼容旧版：清理 test_dir 根的残留 _test_off.lua / _target_test.lua（过渡期）
-        for legacy in (test_dir / '_test_off.lua', test_dir / '_target_test.lua'):
-            if legacy.exists():
-                try:
-                    legacy.unlink()
-                except (IOError, OSError):
-                    pass
-
+        # v0.15.0: 委托 test_mode_flag（内部已含 _test_off 写/删 + legacy 清理 + _target_test/run_auto_test 残留清理）
         if enabled:
-            if off_path.exists():
-                off_path.unlink()
+            self.test_mode_flag.enable(test_dir)
             action = '已开启：auto-test 模块恢复加载（跑测试请用 test_commit）'
             self.logger.info('[toggle_test] 开启：删除 _war3_tester/_test_off.lua')
         else:
-            # 写关闭标志 + 清测试残留，确保手动游戏零干扰
-            off_path.write_text(
-                '-- toggle_test 生成：本文件存在则 auto-test 模块不加载（手动游戏模式）\n'
-                'return true\n',
-                encoding='utf-8')
-            for p in (target_path, run_auto_path):
-                if p.exists():
-                    p.unlink()
+            self.test_mode_flag.disable(test_dir)
             action = '已关闭：auto-test 模块不加载，手动游戏零干扰'
             self.logger.info('[toggle_test] 关闭：写入 _war3_tester/_test_off.lua，清理 _target_test.lua/run_auto_test.lua 残留')
 
@@ -883,108 +753,12 @@ class War3TesterMCP:
             'compile_error': compile_result.get('error') if not compile_result.get('success') else None,
         }
 
-    def _read_image_b64(self, path: str):
-        """读取图片，返回 (base64 数据, media_type)。"""
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"截图文件不存在: {path}")
-        mime = mimetypes.guess_type(path)[0] or "image/png"
-        # Anthropic 兼容接口只接受 image/png、image/jpeg、image/gif、image/webp
-        if mime not in ("image/png", "image/jpeg", "image/gif", "image/webp"):
-            mime = "image/png"
-        with open(path, "rb") as f:
-            return base64.b64encode(f.read()).decode(), mime
-
     def analyze_screenshot(self, png_path: str, prompt: str = "") -> str:
         """调用多模态视觉模型（VLM）分析截图，返回文本结果。
 
-        逻辑照搬 scripts/analyze_screenshot.py 的 analyze() 函数：
-        - 读图 → base64 → 调 Anthropic 兼容接口 POST {VLM_BASE_URL}/v1/messages
-        - 模型/URL/key 从环境变量读：VLM_MODEL、VLM_BASE_URL、VLM_API_KEY
-        - 缺任一项都明确报错（不静默用默认值）
+        v0.15.0: 委托 diagnostics_collector（thin delegate）
         """
-        if not prompt:
-            prompt = (
-                "你是 War3 自动化测试的视觉判读助手。请分析这张游戏截图，输出：\n"
-                "1. 画面状态（主菜单/选难度/对战中/结算 等）\n"
-                "2. UI 元素（对话框、按钮、血条、技能栏是否可见）\n"
-                "3. 是否卡在需要用户输入的对话框（是/否 + 依据）\n"
-                "4. 单位/血量等可见数值\n"
-                "简洁分条作答。"
-            )
-
-        b64, mime = self._read_image_b64(png_path)
-
-        # 环境变量读取（缺任一项报错，不静默用默认值）
-        base_url = os.environ.get("VLM_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL")
-        if not base_url:
-            raise RuntimeError(
-                "未配置 VLM_BASE_URL（或 ANTHROPIC_BASE_URL）。"
-                "请在 ~/.claude/settings.json 的 env 中设置 VLM_BASE_URL，"
-                "然后 /mcp 重连 war3-tester。"
-            )
-        model = os.environ.get("VLM_MODEL")
-        if not model:
-            raise RuntimeError(
-                "未配置 VLM_MODEL（视觉多模态模型名）。"
-                "请在 ~/.claude/settings.json 的 env 中设置 VLM_MODEL"
-                "（当前视觉模型，例如 qwen3.7-plus），然后 /mcp 重连 war3-tester。"
-            )
-        api_key = os.environ.get("VLM_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-        if not api_key:
-            raise RuntimeError(
-                "未配置 VLM_API_KEY（或 ANTHROPIC_AUTH_TOKEN）。"
-                "请在 ~/.claude/settings.json 的 env 中设置 API token，"
-                "然后 /mcp 重连 war3-tester。"
-            )
-
-        payload = {
-            "model": model,
-            "max_tokens": 1024,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime,
-                                "data": b64,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
-        }
-
-        req = urllib.request.Request(
-            f"{base_url.rstrip('/')}/v1/messages",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
-
-        try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"代理返回 HTTP {e.code}:\n{body}") from None
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"无法连接代理 {base_url}: {e.reason}") from None
-
-        # Anthropic 兼容响应：content 是 block 数组
-        blocks = data.get("content", [])
-        texts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
-        result = "\n".join(t for t in texts if t).strip()
-        if not result:
-            raise RuntimeError(f"模型未返回文本。原始响应:\n{json.dumps(data, ensure_ascii=False)}")
-        return result
+        return self.diagnostics_collector.analyze_screenshot(png_path, prompt)
 
     def _get_project_info(self, source_dir: str, max_depth: int = 3) -> str:
         """
@@ -1132,132 +906,9 @@ class War3TesterMCP:
         """
         聚合游戏调试输出（纯读取，不启动游戏）。
 
-        聚合来源：
-        1. War3 游戏日志文件（config.war3_log_dir → get_war3_log_file_path）
-        2. HTTP /error 端点缓存的运行时错误（http_receiver._game_errors）
-        3. HTTP /log 端点缓存的分级日志（http_receiver._logs，按 test_name 分组）
-
-        Args:
-            limit: 每级最多返回条数
-            level: 过滤级别 'all' | 'error' | 'warning'
-            source_dir: 源码目录（可选，仅用于上下文展示）
-
-        Returns:
-            格式化的调试输出文本
+        v0.15.0: 委托 diagnostics_collector（thin delegate）
         """
-        out = []
-        out.append("## 调试输出")
-        out.append(f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        out.append(f"过滤级别：{level}  每级上限：{limit}")
-        out.append("")
-
-        # === 1. War3 游戏日志 ===
-        out.append("### War3 游戏日志")
-        try:
-            log_path = config.get_war3_log_file_path(player_id=1)
-            if log_path and log_path.exists():
-                out.append(f"日志文件：{log_path}")
-                try:
-                    raw_lines = log_path.read_text(encoding='utf-8', errors='ignore').splitlines()
-                except (OSError, IOError) as e:
-                    raw_lines = []
-                    out.append(f"读取失败：{e}")
-
-                # 按级别过滤（War3 日志通常无标准级别标记，按关键字猜测）
-                error_keywords = ('error', '错误', 'fail', '失败', 'exception', '异常', 'FATAL', 'fatal')
-                warning_keywords = ('warn', 'warning', '警告', 'deprecated')
-
-                error_lines = []
-                warning_lines = []
-                other_lines = []
-                for line in raw_lines:
-                    line_lower = line.lower()
-                    if any(kw in line_lower for kw in error_keywords):
-                        error_lines.append(line)
-                    elif any(kw in line_lower for kw in warning_keywords):
-                        warning_lines.append(line)
-                    else:
-                        other_lines.append(line)
-
-                out.append(f"总行数：{len(raw_lines)}  错误关键字：{len(error_lines)}  警告关键字：{len(warning_lines)}")
-
-                if level in ('all', 'error') and error_lines:
-                    out.append(f"\n#### 错误行（最近 {min(limit, len(error_lines))} 条）")
-                    for l in error_lines[-limit:]:
-                        out.append(f"  [ERROR] {l}")
-                if level in ('all', 'warning') and warning_lines:
-                    out.append(f"\n#### 警告行（最近 {min(limit, len(warning_lines))} 条）")
-                    for l in warning_lines[-limit:]:
-                        out.append(f"  [WARN] {l}")
-                if level == 'all' and not error_lines and not warning_lines:
-                    out.append("\n（日志中未发现错误/警告关键字，显示最后 10 行）")
-                    for l in raw_lines[-10:]:
-                        out.append(f"  {l}")
-            else:
-                out.append("（游戏日志文件不存在或 war3_log_dir 未配置）")
-        except Exception as e:
-            out.append(f"（读取游戏日志出错：{e}）")
-        out.append("")
-
-        # === 2. HTTP /error 缓存的游戏内错误 ===
-        out.append("### HTTP /error 缓存的运行时错误")
-        try:
-            game_errors = self.http_receiver.get_game_errors()
-            if game_errors:
-                out.append(f"缓存错误总数：{len(game_errors)}")
-                # 按时间倒序取最近 limit 条
-                recent = game_errors[-limit:] if len(game_errors) > limit else game_errors
-                for err in reversed(recent):
-                    test_name = err.get('test_name', 'unknown')
-                    error_msg = err.get('error', '')
-                    tb = err.get('traceback', '')
-                    ts = err.get('timestamp', '')
-                    if level in ('all', 'error'):
-                        out.append(f"  [ERROR] [{ts}] {test_name}: {error_msg}")
-                        if tb:
-                            # 截断 traceback
-                            tb_short = tb[:300] + '...' if len(tb) > 300 else tb
-                            for tb_line in tb_short.splitlines()[:5]:
-                                out.append(f"    {tb_line}")
-            else:
-                out.append("（无缓存错误）")
-        except Exception as e:
-            out.append(f"（读取 HTTP 错误缓存出错：{e}）")
-        out.append("")
-
-        # === 3. HTTP /log 缓存的分级日志 ===
-        out.append("### HTTP /log 缓存的分级日志")
-        try:
-            all_logs = self.http_receiver._logs  # test_name -> list[log_entry]
-            if all_logs:
-                total_entries = sum(len(v) for v in all_logs.values())
-                out.append(f"缓存日志测试数：{len(all_logs)}  总条目：{total_entries}")
-
-                for test_name, entries in all_logs.items():
-                    errors = [e for e in entries if e.get('level') == 'error']
-                    warnings = [e for e in entries if e.get('level') == 'warn']
-
-                    if level in ('all', 'error') and errors:
-                        out.append(f"\n#### [{test_name}] 错误日志（最近 {min(limit, len(errors))} 条）")
-                        for e in errors[-limit:]:
-                            msg = e.get('message', '')
-                            cat = e.get('category', '')
-                            ts = e.get('timestamp', '')
-                            out.append(f"  [ERROR] [{ts}] {cat}: {msg}")
-
-                    if level in ('all', 'warning') and warnings:
-                        out.append(f"\n#### [{test_name}] 警告日志（最近 {min(limit, len(warnings))} 条）")
-                        for w in warnings[-limit:]:
-                            msg = w.get('message', '')
-                            cat = w.get('category', '')
-                            ts = w.get('timestamp', '')
-                            out.append(f"  [WARN] [{ts}] {cat}: {msg}")
-            else:
-                out.append("（无缓存分级日志）")
-        except Exception as e:
-            out.append(f"（读取 HTTP 分级日志缓存出错：{e}）")
-
-        return "\n".join(out)
+        return self.diagnostics_collector.get_debug_output(limit, level, source_dir)
 
     def _scaffold_test(self, module: str, layer: str, name: str = None, source_dir: str = None) -> dict:
         """
@@ -1743,21 +1394,9 @@ end
                     self.logger.warning(f"[run_game] 写入 run_auto_test.lua 失败（graceful）: {e}")
 
                 # 3. 删 _test_off.lua（若存在），让 auto-test 模块加载 run_auto_test
-                # 【M1 归拢】_test_off.lua 已移入 _war3_tester/
-                off_path = wt_dir / '_test_off.lua'
-                try:
-                    if off_path.exists():
-                        off_path.unlink()
-                        self.logger.info(f"[run_game] 已删除 _war3_tester/_test_off.lua（启用 inspect_handler）")
-                except (IOError, OSError) as e:
-                    self.logger.warning(f"[run_game] 删除 _test_off.lua 失败（graceful）: {e}")
-                # 兼容旧版：清理 test_dir 根的残留
-                legacy_off = test_dir / '_test_off.lua'
-                if legacy_off.exists():
-                    try:
-                        legacy_off.unlink()
-                    except (IOError, OSError):
-                        pass
+                # v0.15.0: 委托 test_mode_flag.enable（内部已含 _test_off 删除 + legacy 清理）
+                self.test_mode_flag.enable(test_dir)
+                self.logger.info(f"[run_game] 已删除 _war3_tester/_test_off.lua（启用 inspect_handler）")
 
                 # 4. 编译地图（把 inspect_handler + run_auto_test 打包进 w3x）
                 compile_result = self.executor.compile(source_dir)
@@ -1918,38 +1557,28 @@ end
                     "isError": True
                 }
 
-            # 生成唯一 id（毫秒时间戳 + 随机后缀防爆）
-            query_id = f"q_{int(time.time() * 1000)}_{os.getpid()}"
-
-            # 加入 pending 队列
+            # v0.14.0: 委托 store 管理 inspect 协议（消除直插私有字段）
             try:
-                self.http_receiver._inspect_pending.append({
-                    "id": query_id,
-                    "expr": expr
-                })
+                query_id = self.store.submit_inspect(expr)
             except Exception as e:
                 return {
                     "content": [{"type": "text", "text": f"[FAIL] 加入查询队列失败：{e}"}],
                     "isError": True
                 }
 
-            # 轮询等待结果（每 0.2s 查一次，直到 timeout）
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                time.sleep(0.2)
-                result = self.http_receiver._inspect_results.pop(query_id, None)
-                if result:
-                    # 命中，返回结果
-                    if "error" in result:
-                        return {
-                            "content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}],
-                            "isError": True
-                        }
-                    else:
-                        value = result.get("value", "")
-                        return {
-                            "content": [{"type": "text", "text": f"[OK] 查询结果：\n{value}"}]
-                        }
+            # 轮询等待结果（store.take_inspect 内部 0.2s 间隔轮询）
+            result = self.store.take_inspect(query_id, timeout=timeout)
+            if result:
+                if "error" in result:
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}],
+                        "isError": True
+                    }
+                else:
+                    value = result.get("value", "")
+                    return {
+                        "content": [{"type": "text", "text": f"[OK] 查询结果：\n{value}"}]
+                    }
 
             # 超时
             return {
