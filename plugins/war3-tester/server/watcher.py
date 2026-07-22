@@ -23,8 +23,16 @@ import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
+from enum import Enum
 
 from logger import setup_logger
+
+
+class WatcherState(Enum):
+    """监控器显式状态"""
+    IDLE = 'idle'           # 未启动
+    RUNNING = 'running'     # 监控线程运行中
+    STOPPED = 'stopped'     # 已停止（包括异常退出）
 
 
 class FileWatcher:
@@ -40,8 +48,9 @@ class FileWatcher:
         self.config = config
         self.logger = setup_logger('watcher')
 
-        # 监控状态
-        self._watching = False
+        # 显式状态机 + 统一状态锁
+        self._state = WatcherState.IDLE
+        self._state_lock = threading.Lock()  # 保护 _state 和 _thread
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
@@ -78,12 +87,13 @@ class FileWatcher:
         Returns:
             {'success': bool, 'message': str, 'watch_id': str}
         """
-        if self._watching:
-            return {
-                'success': False,
-                'message': '已有监控在运行，请先调用 stop_watch 停止',
-                'watch_id': None,
-            }
+        with self._state_lock:
+            if self._state != WatcherState.IDLE:
+                return {
+                    'success': False,
+                    'message': '已有监控在运行，请先调用 stop_watch 停止',
+                    'watch_id': None,
+                }
 
         # 解析 source_dir
         resolved_source = self.config._resolve_path(source_dir) if source_dir else self.config.compile_source_dir
@@ -132,9 +142,10 @@ class FileWatcher:
 
         # 启动后台线程
         self._stop_event.clear()
-        self._watching = True
-        self._thread = threading.Thread(target=self._watch_loop, daemon=True)
-        self._thread.start()
+        with self._state_lock:
+            self._state = WatcherState.RUNNING
+            self._thread = threading.Thread(target=self._watch_loop, daemon=True)
+            self._thread.start()
 
         watch_id = f"watch_{int(time.time() * 1000)}"
         self.logger.info(f"[watch] 启动监控: test={test_name}, source={resolved_source}, watch_id={watch_id}")
@@ -161,22 +172,29 @@ class FileWatcher:
         Returns:
             {'success': bool, 'message': str, 'total_runs': int}
         """
-        if not self._watching:
-            return {
-                'success': False,
-                'message': '没有监控在运行',
-                'total_runs': 0,
-            }
+        with self._state_lock:
+            if self._state != WatcherState.RUNNING:
+                return {
+                    'success': False,
+                    'message': '没有监控在运行',
+                    'total_runs': 0,
+                }
+            thread = self._thread
 
         # 发送停止信号
         self._stop_event.set()
 
-        # 等待线程结束
-        if self._thread:
-            self._thread.join(timeout=5.0)
+        # 等待线程结束（快速检测线程是否已死）
+        if thread:
+            thread.join(timeout=5.0)
+            # 如果线程仍在运行，记录警告但不阻塞
+            if thread.is_alive():
+                self.logger.warning(f"[watch] 监控线程未在 5s 内退出，强制继续清理")
 
-        self._watching = False
-        self._thread = None
+        # 复位状态
+        with self._state_lock:
+            self._state = WatcherState.STOPPED
+            self._thread = None
 
         with self._results_lock:
             total_runs = len(self._results)
@@ -202,54 +220,75 @@ class FileWatcher:
         with self._results_lock:
             results_copy = list(self._results)
 
+        with self._state_lock:
+            watching = self._state == WatcherState.RUNNING
+
         return {
             'success': True,
             'results': results_copy,
             'count': len(results_copy),
-            'watching': self._watching,
+            'watching': watching,
             'test_name': self._test_name,
             'log_file': str(self._log_file) if self._log_file else None,
         }
 
     def _watch_loop(self):
-        """后台监控循环"""
-        self.logger.info(f"[watch] 监控线程启动: test={self._test_name}")
+        """后台监控循环
 
-        # 首次运行一次测试（基线）
-        self._run_test_and_record("initial_run")
+        异常安全：用 try/finally 包裹整个循环体，保证线程因任何异常
+        （initial_run / 循环内 Exception / BaseException 如 KeyboardInterrupt）
+        退出后，状态一定从 RUNNING 复位到 STOPPED，避免 get_results 谎报 watching=True。
+        """
+        try:
+            self.logger.info(f"[watch] 监控线程启动: test={self._test_name}")
 
-        while not self._stop_event.is_set():
-            try:
-                # 扫描文件，检测改动
-                changed_files = self._detect_changes()
+            # 首次运行一次测试（基线）—— 原 bug：在 try 外，抛异常直接杀死线程
+            self._run_test_and_record("initial_run")
 
-                if changed_files:
-                    self.logger.info(f"[watch] 检测到文件改动: {changed_files}")
+            while not self._stop_event.is_set():
+                try:
+                    # 扫描文件，检测改动
+                    changed_files = self._detect_changes()
 
-                    # 防抖延迟
-                    time.sleep(self._debounce_delay)
+                    if changed_files:
+                        self.logger.info(f"[watch] 检测到文件改动: {changed_files}")
 
-                    # 再次检测（避免 debounce 期间的改动被忽略）
-                    changed_files2 = self._detect_changes()
-                    if changed_files2:
-                        changed_files.extend(changed_files2)
-                        changed_files = list(set(changed_files))
+                        # 防抖延迟
+                        time.sleep(self._debounce_delay)
 
-                    # 运行测试
-                    trigger = f"file_change: {', '.join(changed_files[:3])}"
-                    self._run_test_and_record(trigger)
+                        # 再次检测（避免 debounce 期间的改动被忽略）
+                        changed_files2 = self._detect_changes()
+                        if changed_files2:
+                            changed_files.extend(changed_files2)
+                            changed_files = list(set(changed_files))
 
-                    # 更新文件修改时间缓存
-                    self._scan_files()
+                        # 运行测试
+                        trigger = f"file_change: {', '.join(changed_files[:3])}"
+                        self._run_test_and_record(trigger)
 
-                # 等待下一次轮询
-                self._stop_event.wait(self._poll_interval)
+                        # 更新文件修改时间缓存
+                        self._scan_files()
 
-            except Exception as e:
-                self.logger.error(f"[watch] 监控循环异常: {e}")
-                time.sleep(1.0)
+                    # 等待下一次轮询
+                    self._stop_event.wait(self._poll_interval)
 
-        self.logger.info(f"[watch] 监控线程结束: test={self._test_name}")
+                except Exception as e:
+                    # 循环内异常：记录后继续，不退出线程
+                    self.logger.error(f"[watch] 监控循环异常: {e}")
+                    time.sleep(1.0)
+
+            self.logger.info(f"[watch] 监控线程正常结束: test={self._test_name}")
+
+        except BaseException as e:
+            # 捕获所有异常（含 KeyboardInterrupt/SystemExit），保证状态复位
+            self.logger.error(f"[watch] 监控线程因未捕获异常退出: {type(e).__name__}: {e}")
+
+        finally:
+            # 关键兜底：线程无论因何退出，都必须把状态从 RUNNING 翻成 STOPPED
+            with self._state_lock:
+                if self._state == WatcherState.RUNNING:
+                    self._state = WatcherState.STOPPED
+                    self.logger.warning(f"[watch] 监控线程异常退出，已强制复位状态为 STOPPED")
 
     def _scan_files(self):
         """扫描监控路径，更新文件修改时间缓存"""
