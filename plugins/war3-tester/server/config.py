@@ -126,6 +126,14 @@ class Config:
         # 项目通过 config.json -> test.inspect_queries 配置，如 ["Player(0):getGold()", "UnitObj.all_count()"]
         self.inspect_queries: List[str] = []
 
+        # v0.19.6(候选③): get_project_info 关注的模块子目录（War3 ECS 项目约定）
+        # 项目通过 config.json -> project_info.module_dirs 覆盖（通用化，默认值逐字 = 原 19 项）
+        self.project_info_module_dirs: List[str] = [
+            '技能', 'Buffs', '物品', '任务', '副本', 'systems', 'entities',
+            'components', 'model', 'data', 'NPC', '单位', '进攻波', 'AI',
+            'states', 'logic', 'types', 'core', '界面',
+        ]
+
         # HTTP 服务器配置
         self.http_host: str = "0.0.0.0"
         self.http_port: int = 8766
@@ -222,6 +230,11 @@ class Config:
             self.inspect_queries = test_config.get('inspect_queries', self.inspect_queries)
             # 桌面测试专属 package.path（项目声明，插件读取后通过 LUA_EXTRA_PATH 传给子进程）
             self.extra_package_path = test_config.get('extra_package_path', self.extra_package_path)
+
+        # 6.6 project_info 配置（v0.19.6 候选③）
+        project_info_config = file_config.get('project_info', {})
+        if project_info_config:
+            self.project_info_module_dirs = project_info_config.get('module_dirs', self.project_info_module_dirs)
 
         # 7. HTTP 服务器配置
         http_config = file_config.get('http_server', {})

@@ -1,5 +1,18 @@
 # Changelog — war3-tester
 
+## 0.19.6 — 2026-07-23
+
+### 重构（第二轮架构审查候选③⑤：mcp_server 方法外提 module）
+
+- **mcp_server 方法外提 2 module**（消除 god class 局部膨胀；候选④ handler 读 `self.config` 后的下游）：
+  - `scaffolder.py`（`ProjectScaffolder`）：外提 `_get_project_info` / `_generate_test_skeleton` / `_scaffold_test`，逐字搬迁零逻辑改动。`module_dirs` 中文目录硬编码改为从 config 读（通用化，默认值逐字 = 原 19 项，行为不变；项目可经 `config.json` 的 `project_info.module_dirs` 覆盖）。
+  - `environment_provisioner.py`（`EnvironmentProvisioner`）：外提 `_handle_setup_environment` 闭包（98 行），返回结构逐字保留（`{"content":[...], "isError": failed_count>0}`）。
+  - `config.py`：加 `project_info_module_dirs` 字段（默认 19 项）+ `_load_config` 读 `project_info.module_dirs`。
+  - `mcp_server.py`：import 两 module + `__init__` 注入两实例 + 4 方法改 thin delegate（handler 闭包 + 注册 schema 不变，-447 行）。
+- 两 module 零反向依赖（只 import 标准库，收 config/logger/plugin_root 参数）。
+- 单测：新增 `scaffolder_test.py`（6 case）+ `environment_provisioner_test.py`（4 case）；现有 config/import/dispatch 单测无回归。
+- 运行层：get_project_info / scaffold_test / setup_environment 经 MCP 实跑无回归（待重启加载 0.19.6 验证）。
+
 ## 0.13.20 — 2026-07-21
 
 ### 新增

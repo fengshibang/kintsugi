@@ -50,6 +50,9 @@ from test_state_store import TestStateStore
 from test_mode_flag import TestModeFlag
 from test_entry_preparer import TestEntryPreparer
 from diagnostics_collector import DiagnosticsCollector
+# v0.19.6(候选③⑤): 两 module（消除 mcp_server 方法膨胀）
+from scaffolder import ProjectScaffolder
+from environment_provisioner import EnvironmentProvisioner
 
 # v0.19.5(候选④): 模块级全局已废弃,四对象(config/executor/store/http_receiver)改由
 # War3TesterMCP.__init__ 构造并存 self。import mcp_server 不触发构造(__init__ 在实例化时调),
@@ -89,6 +92,11 @@ class War3TesterMCP:
         self.diagnostics_collector = DiagnosticsCollector(self.store, self.config, logger=self.logger)
         self.test_entry_preparer = TestEntryPreparer(
             self.test_mode_flag, SERVER_DIR, self.config, logger=self.logger
+        )
+        # v0.19.6(候选③⑤): 两 module（消除 mcp_server 方法膨胀）
+        self.project_scaffolder = ProjectScaffolder(self.config, logger=self.logger)
+        self.environment_provisioner = EnvironmentProvisioner(
+            self.config, SERVER_DIR.parent, logger=self.logger
         )
 
         # v2: 批量测试编排器（注入 store + 三 module，与 http_receiver 共享状态访问）
@@ -753,95 +761,9 @@ class War3TesterMCP:
              _handle_get_watch_results)
 
         # 23. setup_environment
+        # v0.19.6(候选⑤): 闭包体搬至 EnvironmentProvisioner.setup，此处 thin delegate
         def _handle_setup_environment(arguments):
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            source_dir = arguments.get("source_dir")
-            components = arguments.get("components", ["socket", "http", "nopause"])
-            war3_dir = arguments.get("war3_dir")
-            if source_dir:
-                project_root = Path(source_dir)
-            elif self.config.project_root:
-                project_root = self.config.project_root
-            else:
-                project_root = None
-            if not war3_dir and self.config.war3_log_dir:
-                try:
-                    inferred_war3_dir = Path(self.config.war3_log_dir).parent
-                    if inferred_war3_dir.exists():
-                        war3_dir = str(inferred_war3_dir)
-                except Exception:
-                    pass
-            plugin_root = SERVER_DIR.parent
-            results = []
-            if "socket" in components:
-                try:
-                    if not project_root:
-                        results.append({"component": "socket", "status": "failed", "message": "未指定 source_dir 且 WAR3_PROJECT_ROOT 未设置"})
-                    else:
-                        socket_src_dir = plugin_root / "bin" / "socket"
-                        socket_dst_dir = project_root / "map"
-                        if not socket_src_dir.exists():
-                            results.append({"component": "socket", "status": "failed", "message": f"插件 bin/socket 目录不存在：{socket_src_dir}"})
-                        else:
-                            socket_dst_dir.mkdir(parents=True, exist_ok=True)
-                            copied_files = []
-                            for dll_name in ["socket.dll", "libwinpthread-1.dll"]:
-                                src = socket_src_dir / dll_name
-                                dst = socket_dst_dir / dll_name
-                                if src.exists():
-                                    shutil.copy2(src, dst)
-                                    copied_files.append(str(dst))
-                            if copied_files:
-                                results.append({"component": "socket", "status": "success", "message": f"已拷贝 {len(copied_files)} 个文件到 {socket_dst_dir}", "files": copied_files})
-                            else:
-                                results.append({"component": "socket", "status": "failed", "message": "未找到 socket.dll 或 libwinpthread-1.dll"})
-                except Exception as e:
-                    results.append({"component": "socket", "status": "failed", "message": f"部署失败：{e}"})
-            if "http" in components:
-                try:
-                    proc = subprocess.run([sys.executable, "-m", "pip", "install", "flask", "werkzeug"], capture_output=True, text=True, timeout=120)
-                    if proc.returncode == 0:
-                        results.append({"component": "http", "status": "success", "message": "flask + werkzeug 已安装（或已是最新）"})
-                    else:
-                        results.append({"component": "http", "status": "failed", "message": f"pip install 失败：{proc.stderr}"})
-                except subprocess.TimeoutExpired:
-                    results.append({"component": "http", "status": "failed", "message": "pip install 超时（120秒）"})
-                except Exception as e:
-                    results.append({"component": "http", "status": "failed", "message": f"pip install 异常：{e}"})
-            if "nopause" in components:
-                try:
-                    if not war3_dir:
-                        results.append({"component": "nopause", "status": "skipped", "message": "未指定 war3_dir 且无法从 config.war3_log_dir 反推，请传参 war3_dir"})
-                    else:
-                        nopause_src = plugin_root / "bin" / "nopause.asi"
-                        nopause_dst = Path(war3_dir) / "nopause.asi"
-                        if not nopause_src.exists():
-                            results.append({"component": "nopause", "status": "failed", "message": f"插件 bin/nopause.asi 不存在：{nopause_src}"})
-                        else:
-                            shutil.copy2(nopause_src, nopause_dst)
-                            results.append({"component": "nopause", "status": "success", "message": f"已拷贝 nopause.asi 到 {nopause_dst}"})
-                except Exception as e:
-                    results.append({"component": "nopause", "status": "failed", "message": f"部署失败：{e}"})
-            messages = [f"## 环境部署结果\n\n时间：{timestamp}"]
-            if project_root:
-                messages.append(f"项目根目录：{project_root}")
-            if war3_dir:
-                messages.append(f"War3 安装目录：{war3_dir}")
-            messages.append("")
-            success_count = sum(1 for r in results if r.get("status") == "success")
-            failed_count = sum(1 for r in results if r.get("status") == "failed")
-            skipped_count = sum(1 for r in results if r.get("status") == "skipped")
-            messages.append(f"总计：{len(results)} 个组件（成功 {success_count} / 失败 {failed_count} / 跳过 {skipped_count}）\n")
-            for r in results:
-                status_icon = "✅" if r.get("status") == "success" else ("❌" if r.get("status") == "failed" else "⚠️")
-                messages.append(f"{status_icon} {r.get('component')}: {r.get('status')}")
-                messages.append(f"   {r.get('message')}")
-                if r.get("files"):
-                    for f in r["files"]:
-                        messages.append(f"   - {f}")
-                messages.append("")
-            is_error = failed_count > 0
-            return {"content": [{"type": "text", "text": "\n".join(messages)}], "isError": is_error}
+            return self.environment_provisioner.setup(arguments)
 
         _add("setup_environment",
              "一键部署测试环境组件（socket.dll/nopause.asi/Flask 依赖）。游戏端靠 socket.dll 发 HTTP 回传测试结果，靠 nopause.asi 防失焦暂停，MCP 端靠 Flask 接收。缺装任一组件会导致 test_commit 静默超时。",
@@ -974,143 +896,9 @@ class War3TesterMCP:
         """
         扫描项目地图脚本目录，返回结构化分析（纯静态，只读）。
 
-        分析内容：
-        1. 目录树概要（限 max_depth 层）
-        2. 各模块子目录文件计数（按约定子目录名识别）
-        3. 代码行数统计（按文件扩展名分组）
-        4. 关键入口文件列表（init.lua 等）
-
-        Args:
-            source_dir: 源码根目录（通常为 config.compile_source_dir）
-            max_depth: 目录树扫描最大深度
-
-        Returns:
-            格式化的分析文本
+        v0.19.6(候选③): thin delegate，委托 project_scaffolder.get_project_info
         """
-        root = Path(source_dir)
-        if not root.exists() or not root.is_dir():
-            return f"[WARN] 源码目录不存在或不是目录：{source_dir}"
-
-        # 跳过的噪声目录
-        skip_dirs = {
-            '.git', 'node_modules', '__pycache__', '.codegraph',
-            'logs', 'archive', '.idea', '.vs', 'dist', 'build',
-            '.claude', 'w3x2lni',
-        }
-
-        # 关注的模块子目录（War3 ECS 项目约定）
-        module_dirs = {
-            '技能', 'Buffs', '物品', '任务', '副本', 'systems', 'entities',
-            'components', 'model', 'data', 'NPC', '单位', '进攻波', 'AI',
-            'states', 'logic', 'types', 'core', '界面',
-        }
-
-        # 关键入口文件名
-        entry_files = {'init.lua', 'main.lua', 'app.lua', 'config.lua', 'bootstrap.lua'}
-
-        # === 1. 目录树 + 2. 模块计数 + 3. 行数统计 + 4. 入口文件 ===
-        dir_tree_lines = []
-        module_counts = {}  # module_name -> file_count
-        ext_line_counts = {}  # ext -> total_lines
-        ext_file_counts = {}  # ext -> file_count
-        entry_file_list = []  # list of relative paths
-        total_files = 0
-        total_lines = 0
-
-        def scan_dir(current: Path, depth: int, prefix: str):
-            """递归扫描目录"""
-            nonlocal total_files, total_lines
-            if depth > max_depth:
-                return
-
-            try:
-                entries = sorted(current.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
-            except (PermissionError, OSError):
-                return
-
-            for entry in entries:
-                if entry.name.startswith('.'):
-                    continue
-                if entry.is_dir():
-                    if entry.name in skip_dirs:
-                        continue
-                    if depth < max_depth:
-                        dir_tree_lines.append(f"{prefix}📁 {entry.name}/")
-                        scan_dir(entry, depth + 1, prefix + "  ")
-                    else:
-                        # 最深层只列目录名，不递归
-                        dir_tree_lines.append(f"{prefix}📁 {entry.name}/")
-                elif entry.is_file():
-                    total_files += 1
-                    rel = str(entry.relative_to(root))
-                    ext = entry.suffix.lower()
-                    if ext:
-                        ext_file_counts[ext] = ext_file_counts.get(ext, 0) + 1
-                        try:
-                            line_count = sum(1 for _ in entry.open('r', encoding='utf-8', errors='ignore'))
-                        except (OSError, PermissionError):
-                            line_count = 0
-                        ext_line_counts[ext] = ext_line_counts.get(ext, 0) + line_count
-                        total_lines += line_count
-
-                    # 模块目录归属统计（只看直接子目录）
-                    parts = entry.relative_to(root).parts
-                    if len(parts) >= 2 and parts[0] in module_dirs:
-                        mod = parts[0]
-                        module_counts[mod] = module_counts.get(mod, 0) + 1
-
-                    # 入口文件
-                    if entry.name in entry_files:
-                        entry_file_list.append(rel)
-
-        dir_tree_lines.append(f"📁 {root.name}/")
-        scan_dir(root, 1, "  ")
-
-        # === 组装输出 ===
-        out = []
-        out.append(f"## 项目结构分析")
-        out.append(f"扫描目录：{root}")
-        out.append(f"扫描时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        out.append(f"总文件数：{total_files}  总代码行数：{total_lines}")
-        out.append("")
-
-        # 模块计数
-        out.append("### 模块文件计数")
-        if module_counts:
-            for mod in sorted(module_counts.keys()):
-                out.append(f"  {mod}: {module_counts[mod]} 个文件")
-        else:
-            out.append("  （未发现约定的模块子目录）")
-        out.append("")
-
-        # 行数按扩展名
-        out.append("### 代码行数统计（按扩展名）")
-        if ext_line_counts:
-            for ext in sorted(ext_line_counts.keys(), key=lambda e: -ext_line_counts.get(e, 0)):
-                out.append(f"  {ext}: {ext_file_counts.get(ext, 0)} 个文件, {ext_line_counts[ext]} 行")
-        else:
-            out.append("  （无代码文件）")
-        out.append("")
-
-        # 入口文件
-        out.append("### 关键入口文件")
-        if entry_file_list:
-            for ef in sorted(entry_file_list):
-                out.append(f"  {ef}")
-        else:
-            out.append("  （未发现 init.lua / main.lua 等入口文件）")
-        out.append("")
-
-        # 目录树（截断防爆）
-        out.append(f"### 目录树（max_depth={max_depth}）")
-        max_tree_lines = 200
-        if len(dir_tree_lines) > max_tree_lines:
-            out.extend(dir_tree_lines[:max_tree_lines])
-            out.append(f"  ... 已截断（共 {len(dir_tree_lines)} 行，显示前 {max_tree_lines} 行）")
-        else:
-            out.extend(dir_tree_lines)
-
-        return "\n".join(out)
+        return self.project_scaffolder.get_project_info(source_dir, max_depth)
 
     def _get_debug_output(self, limit: int = 50, level: str = "all", source_dir: str = None) -> str:
         """
@@ -1124,233 +912,16 @@ class War3TesterMCP:
         """
         生成 TDD 测试骨架（M3 方向 D）
 
-        Args:
-            module: 模块名（如 'talent'、'skill_a00d'）
-            layer: 测试层 'unit' | 'integration' | 'e2e'
-            name: 测试名（可选，默认 test_<layer>_<module>）
-            source_dir: 源码目录
-
-        Returns:
-            {'success': bool, 'file': str, 'message': str, 'error': str | None}
+        v0.19.6(候选③): thin delegate，委托 project_scaffolder.scaffold_test
         """
-        # v0.19.3: 收敛 source_dir 归一化
-        resolved = self.config.resolve_source_dir(source_dir)
-        test_dir = self.config.get_test_dir_path(resolved)
-        if test_dir is None:
-            return {
-                'success': False,
-                'file': None,
-                'message': '',
-                'error': f'source_dir 非有效 w2l 项目根: {resolved}',
-            }
-
-        test_dir.mkdir(parents=True, exist_ok=True)
-
-        # 生成测试文件名
-        if name:
-            test_name = name if name.startswith('test_') else f'test_{name}'
-        else:
-            test_name = f'test_{layer}_{module}'
-
-        test_file = f'{test_name}.lua'
-        test_file_path = test_dir / test_file
-
-        # 检查文件是否已存在
-        if test_file_path.exists():
-            return {
-                'success': False,
-                'file': str(test_file_path),
-                'message': '',
-                'error': f'测试文件已存在: {test_file_path}',
-            }
-
-        # 生成骨架内容
-        content = self._generate_test_skeleton(module, layer, test_name)
-
-        try:
-            with open(test_file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            return {
-                'success': True,
-                'file': str(test_file_path),
-                'message': f'已生成测试骨架: {test_file}\n\n'
-                           f'下一步:\n'
-                           f'1. 编辑 {test_file} 填充测试逻辑\n'
-                           f'2. 运行 tdd_red(test_name="{test_name}", layer="{layer}") 确认 Red\n'
-                           f'3. 实现功能代码\n'
-                           f'4. 运行 tdd_green(test_name="{test_name}", layer="{layer}") 确认 Green',
-                'error': None,
-            }
-        except Exception as e:
-            return {
-                'success': False,
-                'file': str(test_file_path),
-                'message': '',
-                'error': f'写入文件失败: {e}',
-            }
+        return self.project_scaffolder.scaffold_test(module, layer, name, source_dir)
 
     def _generate_test_skeleton(self, module: str, layer: str, test_name: str) -> str:
-        """生成测试骨架内容（通用，不硬编码项目路径）"""
+        """生成测试骨架内容（通用，不硬编码项目路径）
 
-        # 根据 layer 选择不同的引导方式
-        if layer == 'unit':
-            # 桌面单测：使用 jass_mock + assertions
-            header = f'-- @layer unit\n'
-            header += f'-- TDD 测试骨架: {test_name}\n'
-            header += f'-- 桌面纯逻辑单测（秒级反馈）\n\n'
-            header += f'-- 加载插件内置断言库（由 desktop_bootstrap 注入到 _G.__war3_tester_assertions）\n'
-            header += f'local assert = _G.__war3_tester_assertions or {{}}\n'
-            header += f'local assertEquals = assert.assertEquals or function(a, b, msg) error(msg or "assertion failed") end\n'
-            header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
-            header += f'-- 加载 jass mock（由 desktop_bootstrap 注入到 _G.__war3_tester_jass_mock）\n'
-            header += f'-- local jass_mock = _G.__war3_tester_jass_mock\n\n'
-            # unit 层使用 _G.__test_result（desktop_bootstrap 解析它）
-            result_reporting = f'''
--- ============================================================================
--- 测试入口（最小契约: RunAutoTest）
--- ============================================================================
-
-function RunAutoTest()
-    print("=== 开始测试: {test_name} ===")
-
-    local success, err = pcall(test_case_1)
-    if not success then
-        print("[FAIL] test_case_1: " .. tostring(err))
-        -- 桌面层：设 _G.__test_result 让 desktop_bootstrap 解析为失败
-        _G.__test_result = {{success=false, test_name='{test_name}', details=tostring(err), cases={{}}}}
-        return
-    end
-
-    print("=== 测试完成: {test_name} ===")
-    -- 桌面层：设 _G.__test_result 让 desktop_bootstrap 解析为成功
-    _G.__test_result = {{success=true, test_name='{test_name}', details='all passed', cases={{}}}}
-end
-'''
-        else:
-            # integration/e2e: 游戏内测试，必须 HTTP POST /result
-            header = f'-- @layer {layer}\n'
-            header += f'-- TDD 测试骨架: {test_name}\n'
-            header += f'-- 游戏内测试（需编译+启动游戏）\n\n'
-            header += f'-- 加载插件内置断言库（由 lua_bootstrap 注入到 _G.__war3_tester_assertions）\n'
-            header += f'local assert = _G.__war3_tester_assertions or {{}}\n'
-            header += f'local assertEquals = assert.assertEquals or function(a, b, msg) error(msg or "assertion failed") end\n'
-            header += f'local assertTrue = assert.assertTrue or function(cond, msg) if not cond then error(msg or "assertTrue failed") end end\n\n'
-            # integration/e2e 层必须 HTTP POST（test_commit 不读 _G.__test_result）
-            # 【通用性】不硬编码任何项目专有 require 路径，由项目自身提供 HTTP 客户端
-            result_reporting = f'''
--- ============================================================================
--- HTTP POST 结果上报（通用骨架 - 需项目适配）
--- ============================================================================
--- 【重要】integration/e2e 层必须 HTTP POST 结果到 8766，test_commit 才能接收。
--- _G.__test_result 仅桌面层（desktop_bootstrap）使用，游戏内无效。
--- data 必须含 assertions 字段，_classify_failure 才能判定 assertion 失败。
---
--- 【适配说明】
--- War3 定制 Lua 通常无 luasocket（socket.http 不可用），需用项目/平台自身 HTTP 客户端。
--- 下方 http_post_result 是占位实现，需项目根据自身框架适配 HTTP POST 逻辑。
--- 参考范例：examples/wzns/run_auto_test.framework.lua（wzns 框架的 HTTP 适配器）
--- ============================================================================
-
-local function http_post_result(test_name, success, details, assertions)
-    local data = {{
-        test_name = test_name,
-        success = success,
-        details = details or '',
-        -- assertions 字段：_classify_failure 读取它判定 failure_type=assertion
-        -- 格式: {{name='...', passed=true|false, message='...'}}, ...}}
-        assertions = assertions or {{}},
-    }}
-
-    -- TODO: 项目适配 - 使用项目自身的 HTTP 客户端 POST 结果到 8766
-    -- 常见模式（需项目实现）：
-    --   local http_client = require('<your_project>.http_client')
-    --   http_client.post('http://127.0.0.1:8766/result', data)
-    --
-    -- 参考范例：examples/wzns/run_auto_test.framework.lua 的 exportResults 函数
-    --
-    -- 占位实现：仅打印日志，实际游戏内不会上报（test_commit 会超时）
-    print(string.format('[HTTP] TODO: 需项目适配 HTTP POST 到 http://127.0.0.1:8766/result'))
-    print(string.format('[HTTP] test_name=%s, success=%s', test_name, tostring(success)))
-
-    -- fallback 到 _G.__test_result（仅桌面层有效，游戏内 test_commit 不读）
-    _G.__test_result = data
-end
-
--- ============================================================================
--- 测试入口（最小契约: RunAutoTest）
--- ============================================================================
-
-function RunAutoTest()
-    print("=== 开始测试: {test_name} ===")
-
-    local success, err = pcall(test_case_1)
-    if not success then
-        print("[FAIL] test_case_1: " .. tostring(err))
-        -- 游戏内：HTTP POST 结果到 8766（test_commit 依赖此机制）
-        -- assertions 含 passed=false 让 _classify_failure 判定 assertion（tdd_red -> red_valid）
-        http_post_result('{test_name}', false, tostring(err),
-            {{name='test_case_1', passed=false, message=tostring(err)}})
-        return
-    end
-
-    print("=== 测试完成: {test_name} ===")
-    -- 游戏内：HTTP POST 结果到 8766（test_commit 依赖此机制）
-    http_post_result('{test_name}', true, 'all passed',
-        {{name='test_case_1', passed=true}})
-end
-'''
-
-        # TDD 三段式骨架（通用部分）
-        skeleton = f'''
--- ============================================================================
--- 测试模块: {module}
--- 测试层: {layer}
--- ============================================================================
-
--- Arrange: 准备测试数据和环境
-local function setup()
-    -- TODO: 初始化测试数据
-    -- 例如: local data = {{id = 1, name = "test"}}
-    return {{}}
-end
-
--- Act: 执行被测功能
-local function execute(data)
-    -- TODO: 调用被测函数
-    -- 例如: local result = MyModule.process(data)
-    -- return result
-    return nil
-end
-
--- Assert: 验证结果
-local function verify(result)
-    -- TODO: 断言检查结果
-    -- 例如: assertEquals(result.id, 1, "ID 应该为 1")
-    -- 例如: assertTrue(result.success, "应该成功")
-end
-
--- ============================================================================
--- 测试用例
--- ============================================================================
-
-local function test_case_1()
-    print("[TEST] test_case_1: 基本功能测试")
-
-    -- Arrange
-    local data = setup()
-
-    -- Act
-    local result = execute(data)
-
-    -- Assert
-    verify(result)
-
-    print("[PASS] test_case_1")
-end
-
-'''
-
-        return header + skeleton + result_reporting
+        v0.19.6(候选③): thin delegate，委托 project_scaffolder.generate_test_skeleton
+        """
+        return self.project_scaffolder.generate_test_skeleton(module, layer, test_name)
 
     def _tdd_red(self, test_name: str, layer: str, source_dir: str = None, timeout: int = 60) -> dict:
         """
