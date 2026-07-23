@@ -74,7 +74,7 @@ class TestBatchRunner:
             {'success': bool, 'test_dir': str, 'count': int, 'total_est_seconds': int,
              'tests': [{test_name, file, type(sync/async), layer(unit/integration/e2e), est_seconds}], ...}
         """
-        resolved = self.config._resolve_path(source_dir) if source_dir else self.config.compile_source_dir
+        resolved = self.config.resolve_path(source_dir) if source_dir else self.config.compile_source_dir
         test_dir = self.config.get_test_dir_path(resolved)
         if test_dir is None or not test_dir.exists():
             return {
@@ -451,7 +451,7 @@ class TestBatchRunner:
         v0.15.0: 委托 TestModeFlag.write_after_test（消除 mcp_server 反向依赖）
         """
         try:
-            test_dir = self.config.get_test_dir_path(self.config._resolve_path(source_dir))
+            test_dir = self.config.get_test_dir_path(self.config.resolve_path(source_dir))
             if test_dir is None:
                 self.logger.warning('[toggle] source_dir 非有效项目根，跳过写 _test_off')
                 return

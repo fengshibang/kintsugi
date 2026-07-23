@@ -33,7 +33,9 @@ def _check_war3_remaining(tasklist_stdout: str) -> dict:
       无残留 → {'success': True, 'message': '游戏进程已全部清除'}
       有残留 → {'success': False, 'message': '进程仍未清除：...', 'remaining': [...]}
     """
-    lines = tasklist_stdout.split('\n')
+    # 防御 stdout=None：subprocess 在某些环境（疑似 Python 3.14）返回 stdout=None，
+    # 不防御则 split crash 导致 stop_game 整体失败（尽管 powershell 杀进程已执行）
+    lines = (tasklist_stdout or '').split('\n')
     remaining = []
     for line in lines:
         lower = line.lower()
@@ -714,8 +716,9 @@ class LocalExecutor(ExecutorBase):
                 return {
                     'success': proc.returncode == 0,
                     'returncode': proc.returncode,
-                    'stdout': proc.stdout,
-                    'stderr': proc.stderr,
+                    # or '' 防御 stdout/stderr=None（Python 3.14 嫌疑），从源头保证调用者拿 str
+                    'stdout': proc.stdout or '',
+                    'stderr': proc.stderr or '',
                 }
             except subprocess.TimeoutExpired:
                 return {'success': False, 'error': f'命令超时 ({timeout}s)'}

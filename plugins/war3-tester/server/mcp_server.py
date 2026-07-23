@@ -174,8 +174,7 @@ class War3TesterMCP:
         # 1. compile_map / compile_only（合并：同一 handler 服务两个 name）
         def _handle_compile(arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            source_dir = arguments.get("source_dir", str(config.compile_source_dir))
-            source_dir = str(config._resolve_path(source_dir))
+            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
             result = self.executor.compile(source_dir)
             if result.get("success"):
                 return {
@@ -208,12 +207,8 @@ class War3TesterMCP:
             test_file = arguments.get("test_file")
             timeout = arguments.get("timeout", 60)
             platform = arguments.get("platform")
-            source_dir = arguments.get("source_dir")
+            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
             auto_screenshot_on_failure = arguments.get("auto_screenshot_on_failure", True)
-            if not source_dir:
-                source_dir = str(config.compile_source_dir)
-            else:
-                source_dir = str(config._resolve_path(source_dir))
             if not platform:
                 run_mode, _ = config.get_run_mode_with_source()
                 platform = run_mode
@@ -250,7 +245,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             layer = arguments.get("layer")
             if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
+                source_dir = str(config.resolve_path(source_dir))
             if not platform:
                 run_mode, _ = config.get_run_mode_with_source()
                 platform = run_mode
@@ -292,7 +287,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             layer = arguments.get("layer")
             if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
+                source_dir = str(config.resolve_path(source_dir))
             discovery = self.batch_runner.discover_tests(source_dir, filter_pattern=flt, layer=layer)
             if discovery.get("success"):
                 tests = discovery.get("tests", [])
@@ -321,35 +316,15 @@ class War3TesterMCP:
                 run_mode, _ = config.get_run_mode_with_source()
                 platform = run_mode
             if inject_inspect:
-                source_dir = arguments.get("source_dir") or str(config.compile_source_dir)
-                resolved_source = config._resolve_path(source_dir)
-                test_dir = config.get_test_dir_path(resolved_source)
+                # v0.19.3: 收敛 source_dir 归一化(×3 复用)
+                resolved_source = config.resolve_source_dir(arguments.get("source_dir"))
+                test_dir = self.test_entry_preparer.prepare_inspect_only(resolved_source)
                 if test_dir is None:
                     return {
                         "content": [{"type": "text", "text": f"[FAIL] source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {resolved_source}，可能传错（如多了子目录）"}],
                         "isError": True
                     }
-                test_dir.mkdir(parents=True, exist_ok=True)
-                wt_dir = self._get_war3_tester_dir(test_dir)
-                self._inject_war3_tester_assets(wt_dir)
-                run_auto_test_path = test_dir / 'run_auto_test.lua'
-                _prefix = config.test_module_prefix
-                inspect_only_content = (
-                    "-- inspect-only bootstrap（run_game 注入，仅启动运行时查询，不跑测试）\n"
-                    "pcall(function()\n"
-                    f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
-                    "    if ih and ih.start then ih.start() end\n"
-                    "end)\n"
-                )
-                try:
-                    with open(run_auto_test_path, 'w', encoding='utf-8') as f:
-                        f.write(inspect_only_content)
-                    self.logger.info(f"[run_game] 已写入 inspect-only run_auto_test.lua → {run_auto_test_path}")
-                except (IOError, OSError) as e:
-                    self.logger.warning(f"[run_game] 写入 run_auto_test.lua 失败（graceful）: {e}")
-                self.test_mode_flag.enable(test_dir)
-                self.logger.info(f"[run_game] 已删除 _war3_tester/_test_off.lua（启用 inspect_handler）")
-                compile_result = self.executor.compile(source_dir)
+                compile_result = self.executor.compile(resolved_source)
                 if not compile_result.get("success"):
                     return {
                         "content": [{"type": "text", "text": f"[FAIL] 地图编译失败（inject_inspect 启用）\n\n时间：{timestamp}\n\n{compile_result.get('error', '未知错误')}"}],
@@ -493,11 +468,7 @@ class War3TesterMCP:
         def _handle_toggle_test(arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             enabled = arguments.get("enabled", True)
-            source_dir = arguments.get("source_dir")
-            if not source_dir:
-                source_dir = str(config.compile_source_dir)
-            else:
-                source_dir = str(config._resolve_path(source_dir))
+            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
             result = self.toggle_test(enabled, source_dir)
             if result.get("success"):
                 return {"content": [{"type": "text", "text": f"[OK] 测试模式{result.get('action', '')}\n\n时间：{timestamp}"}]}
@@ -518,11 +489,7 @@ class War3TesterMCP:
         # 13. get_project_info
         def _handle_get_project_info(arguments):
             try:
-                source_dir = arguments.get("source_dir")
-                if not source_dir:
-                    source_dir = str(config.compile_source_dir)
-                else:
-                    source_dir = str(config._resolve_path(source_dir))
+                source_dir = config.resolve_source_dir(arguments.get("source_dir"))
                 max_depth = arguments.get("max_depth", 3)
                 result = self._get_project_info(source_dir, max_depth)
                 return {"content": [{"type": "text", "text": result}]}
@@ -591,7 +558,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             timeout = arguments.get("timeout", 10)
             if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
+                source_dir = str(config.resolve_path(source_dir))
             try:
                 result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
                 messages = [f"## 桌面单测\n\n时间：{timestamp}"]
@@ -625,13 +592,9 @@ class War3TesterMCP:
             module = arguments.get("module")
             layer = arguments.get("layer", "unit")
             name = arguments.get("name")
-            source_dir = arguments.get("source_dir")
             if not module:
                 return {"content": [{"type": "text", "text": "[FAIL] 缺少 module 参数"}], "isError": True}
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-            else:
-                source_dir = str(config.compile_source_dir)
+            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
             try:
                 result = self._scaffold_test(module, layer, name, source_dir)
                 if result.get("success"):
@@ -664,7 +627,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             timeout = arguments.get("timeout", 60)
             if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
+                source_dir = str(config.resolve_path(source_dir))
             try:
                 result = self._tdd_red(test_name, layer, source_dir, timeout)
                 messages = [f"## TDD Red 阶段\n\n时间：{timestamp}"]
@@ -703,7 +666,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             timeout = arguments.get("timeout", 60)
             if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
+                source_dir = str(config.resolve_path(source_dir))
             try:
                 result = self._tdd_green(test_name, layer, source_dir, timeout)
                 messages = [f"## TDD Green 阶段\n\n时间：{timestamp}"]
@@ -740,7 +703,7 @@ class War3TesterMCP:
             poll_interval = arguments.get("poll_interval", 1.0)
             debounce_delay = arguments.get("debounce_delay", 0.5)
             if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
+                source_dir = str(config.resolve_path(source_dir))
             try:
                 result = self.file_watcher.start_watch(test_name, source_dir, poll_interval, debounce_delay)
                 if result.get('success'):
@@ -925,31 +888,6 @@ class War3TesterMCP:
             "isError": True
         }
 
-    def _get_war3_tester_dir(self, test_dir: Path) -> Path:
-        """
-        返回插件产物隔离子目录（_war3_tester/），不存在则创建。
-
-        【红线 6 / M1 归拢】插件往项目写入的所有产物集中放此子文件夹，
-        不散落在测试目录根。项目自有的 test_*.lua 留在 test_dir 根。
-        """
-        wt = test_dir / '_war3_tester'
-        wt.mkdir(parents=True, exist_ok=True)
-        return wt
-
-    def _copy_file_to(self, src: Path, dst: Path, label: str) -> None:
-        """复制单个 lua 文件，失败 graceful（不抛异常，不阻断调用方）。"""
-        if not src.exists():
-            self.logger.warning(f"[_copy_file_to] 源文件不存在: {src}，跳过 {label}")
-            return
-        try:
-            with open(src, 'r', encoding='utf-8') as _f:
-                content = _f.read()
-            with open(dst, 'w', encoding='utf-8') as _f:
-                _f.write(content)
-            self.logger.info(f"[_copy_file_to] 已注入 {label} → {dst}")
-        except (IOError, OSError) as _e:
-            self.logger.warning(f"[_copy_file_to] {label} 复制失败（graceful）: {_e}")
-
     def _prepare_test_entry(self, test_name: str, test_file: str, source_dir: str) -> None:
         """
         准备测试入口文件（编译前调用）。
@@ -1024,7 +962,7 @@ class War3TesterMCP:
         开启(true)：删除 _war3_tester/_test_off.lua，恢复 auto-test 模块默认加载。
         注：跑测试本身仍需 test_commit（它写入 _war3_tester/_target_test.lua，并会自动删除 _test_off.lua）。
         """
-        test_dir = config.get_test_dir_path(config._resolve_path(source_dir))
+        test_dir = config.get_test_dir_path(config.resolve_path(source_dir))
         if test_dir is None:
             return {'success': False, 'enabled': enabled,
                     'action': '失败：source_dir 非有效 w2l 项目根',
@@ -1218,7 +1156,8 @@ class War3TesterMCP:
         Returns:
             {'success': bool, 'file': str, 'message': str, 'error': str | None}
         """
-        resolved = config._resolve_path(source_dir) if source_dir else config.compile_source_dir
+        # v0.19.3: 收敛 source_dir 归一化
+        resolved = config.resolve_source_dir(source_dir)
         test_dir = config.get_test_dir_path(resolved)
         if test_dir is None:
             return {
@@ -1519,30 +1458,6 @@ end
             result = self.test_commit(test_name, None, timeout, None, source_dir, True)
 
         return result
-
-    def _inject_war3_tester_assets(self, wt_dir: Path) -> None:
-        """
-        注入所有插件产物到 _war3_tester/ 子目录（M1 归拢）。
-
-        注入文件：
-        - inspect_handler.lua（运行时查询处理器）
-        - assertions.lua（通用断言库）
-        - jass_mock.lua（jass mock 表）
-
-        失败 graceful（不抛异常，不阻断调用方）。
-
-        Args:
-            wt_dir: _war3_tester/ 子目录 Path 对象
-        """
-        assets = [
-            ('inspect_handler.lua', 'inspect_handler'),
-            ('assertions.lua', 'assertions'),
-            ('jass_mock.lua', 'jass_mock'),
-        ]
-        for filename, label in assets:
-            src = SERVER_DIR / filename
-            dst = wt_dir / filename
-            self._copy_file_to(src, dst, label)
 
     async def handle_resource_read(self, uri: str) -> dict:
         """处理资源读取"""

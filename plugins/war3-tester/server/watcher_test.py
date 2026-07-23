@@ -42,7 +42,7 @@ def _make_watcher(tmpdir, desktop_runner=None):
     # 模拟 config
     config = MagicMock()
     config.compile_source_dir = tmpdir
-    config._resolve_path = lambda x: Path(x) if x else tmpdir
+    config.resolve_path = lambda x: Path(x) if x else tmpdir
     config.get_test_dir_path = lambda x: tmpdir / 'auto-test'
 
     # 创建 auto-test 目录和测试文件

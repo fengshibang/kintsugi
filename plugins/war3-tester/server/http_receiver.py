@@ -163,7 +163,8 @@ class HTTPReceiver:
                 self.logger.warning(f"netstat 执行失败：returncode={result.returncode}")
                 return cleaned
 
-            for line in result.stdout.splitlines():
+            # or '' 防御 stdout=None（与 env_bridge._check_war3_remaining 同源 bug）
+            for line in (result.stdout or '').splitlines():
                 # 匹配 :8766 且 LISTENING 的行
                 if f':{self.port}' in line and 'LISTENING' in line:
                     parts = line.split()
@@ -318,6 +319,10 @@ class HTTPReceiver:
                         data = json.loads(raw_data)
                     except (json.JSONDecodeError, ValueError):
                         return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
+                # 二次兜底:json.loads('null') 等合法 JSON 解析为 None，
+                # 不兜底则后续 data.get() 抛 AttributeError 被外层 except 吞成 500（应返回 400）
+                if not data:
+                    return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
 
                 test_name = data.get('test_name', 'unknown')
                 error_message = data.get('error', '')
@@ -422,6 +427,10 @@ class HTTPReceiver:
                         data = json.loads(raw_data)
                     except (json.JSONDecodeError, ValueError):
                         return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
+                # 二次兜底:json.loads('null') 等合法 JSON 解析为 None，
+                # 不兜底则后续 data.get() 抛 AttributeError 被外层 except 吞成 500（应返回 400）
+                if not data:
+                    return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
 
                 req_id = data.get('id')
                 if not req_id:

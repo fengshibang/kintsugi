@@ -106,7 +106,7 @@ class DesktopRunner:
             }
 
         # 2. 解析 source_dir 和测试目录
-        resolved_source = self.config._resolve_path(source_dir) if source_dir else self.config.compile_source_dir
+        resolved_source = self.config.resolve_path(source_dir) if source_dir else self.config.compile_source_dir
         test_dir = self.config.get_test_dir_path(resolved_source)
         if test_dir is None:
             return {

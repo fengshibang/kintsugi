@@ -46,12 +46,12 @@ def _make_mock_config(tmpdir):
     config.test_bootstrap_template = ''
     config.http_port = 8766
 
-    def _resolve_path(path):
+    def resolve_path(path):
         if not path or path == '.':
             return config.project_root
         return Path(path)
 
-    config._resolve_path = _resolve_path
+    config.resolve_path = resolve_path
 
     def get_test_dir_path(source_dir):
         # 模拟 w2l 项目根校验

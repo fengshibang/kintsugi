@@ -99,6 +99,60 @@ class TestEntryPreparer:
             dst = wt_dir / filename
             self._copy_file_to(src, dst, label)
 
+    def prepare_inspect_only(self, source_dir):
+        """
+        准备 inspect-only 运行环境（仅注入 inspect 运行查询，不跑测试）。
+
+        从 mcp_server._handle_launch_or_run 的 inject_inspect 分支提取。
+        流程：resolve source_dir → test_dir None 校验 → mkdir → wt_dir →
+              inject_assets → 写 inspect-only run_auto_test.lua → test_mode_flag.enable
+
+        Args:
+            source_dir: 源码目录路径
+
+        Returns:
+            Path: test_dir（成功时）
+            None: source_dir 非有效项目根
+        """
+        # 解析 source_dir
+        resolved_source = self.config.resolve_path(source_dir) if source_dir else self.config.project_root
+        test_dir = self.config.get_test_dir_path(resolved_source)
+        if test_dir is None:
+            self.logger.error(
+                '[prepare_inspect_only] source_dir 非有效项目根: %s',
+                resolved_source
+            )
+            return None
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        # 【M1 归拢】插件产物集中放 _war3_tester/ 子目录
+        wt_dir = self._get_war3_tester_dir(test_dir)
+
+        # 注入插件产物（inspect_handler / assertions / jass_mock）
+        self._inject_war3_tester_assets(wt_dir)
+
+        # 写 inspect-only run_auto_test.lua
+        run_auto_test_path = test_dir / 'run_auto_test.lua'
+        _prefix = self.config.test_module_prefix
+        inspect_only_content = (
+            "-- inspect-only bootstrap（run_game 注入，仅启动运行时查询，不跑测试）\n"
+            "pcall(function()\n"
+            f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
+            "    if ih and ih.start then ih.start() end\n"
+            "end)\n"
+        )
+        try:
+            with open(run_auto_test_path, 'w', encoding='utf-8') as f:
+                f.write(inspect_only_content)
+            self.logger.info("[prepare_inspect_only] 已写入 inspect-only run_auto_test.lua → %s", run_auto_test_path)
+        except (IOError, OSError) as e:
+            self.logger.warning("[prepare_inspect_only] 写入 run_auto_test.lua 失败（graceful）: %s", e)
+
+        # 开启测试模式（删除 _test_off.lua）
+        self.test_mode_flag.enable(test_dir)
+
+        return test_dir
+
     def prepare(self, test_name, test_file, source_dir):
         """
         准备测试入口文件（编译前调用）。
@@ -119,7 +173,7 @@ class TestEntryPreparer:
             bool: 是否成功准备
         """
         # 解析 source_dir
-        resolved_source = self.config._resolve_path(source_dir) if source_dir else self.config.project_root
+        resolved_source = self.config.resolve_path(source_dir) if source_dir else self.config.project_root
         test_dir = self.config.get_test_dir_path(resolved_source)
         if test_dir is None:
             self.logger.error(
@@ -198,7 +252,7 @@ class TestEntryPreparer:
 
         # 1. 若配置了自定义模板，尝试读取
         if self.config.test_bootstrap_template:
-            custom_template_path = self.config._resolve_path(self.config.test_bootstrap_template)
+            custom_template_path = self.config.resolve_path(self.config.test_bootstrap_template)
             if custom_template_path.exists():
                 try:
                     with open(custom_template_path, 'r', encoding='utf-8') as f:

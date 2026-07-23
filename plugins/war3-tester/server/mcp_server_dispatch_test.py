@@ -30,7 +30,7 @@ _mock_config.project_root = None
 _mock_config.compile_source_dir = '.'
 _mock_config.http_host = '127.0.0.1'
 _mock_config.http_port = 0
-_mock_config._resolve_path = lambda p: p
+_mock_config.resolve_path = lambda p: p
 
 _mock_executor = MagicMock()
 _mock_store = MagicMock()
@@ -54,7 +54,14 @@ _patches = [
 for _p in _patches:
     _p.start()
 
-# 现在安全 import（模块级实例化走的是 MagicMock）
+# v0.19.0: mcp_server 模块级 config/executor/store/http_receiver 改为 None 占位（init_runtime 才构造）。
+# 上面的 patch('config.Config') 只拦构造函数调用，对模块级全局赋值无效——
+# 直接赋 mock 覆盖模块级全局，War3TesterMCP.__init__ 读到的就是 mock。
+import mcp_server
+mcp_server.config = _mock_config
+mcp_server.executor = _mock_executor
+mcp_server.store = _mock_store
+mcp_server.http_receiver = _mock_http_receiver
 from mcp_server import War3TesterMCP
 
 

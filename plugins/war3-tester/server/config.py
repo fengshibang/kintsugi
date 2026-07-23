@@ -112,7 +112,7 @@ class Config:
         self.test_module_prefix: str = ""
         # test_bootstrap_template: 自定义引导模板路径
         # 空串 = 使用通用 server/lua_bootstrap.lua（默认行为）
-        # 非空 = 用 _resolve_path 解析后读取该文件作为 run_auto_test.lua 内容
+        # 非空 = 用 resolve_path 解析后读取该文件作为 run_auto_test.lua 内容
         # 文件不存在时 fallback 到通用模板，不 crash
         self.test_bootstrap_template: str = ""
         # extra_package_path: 桌面测试专属 package.path（分号分隔多 path，相对 source_dir）
@@ -175,8 +175,8 @@ class Config:
         # 1.5 提前解析编译目录（供 .env 加载与 w2l 项目内查找使用）
         compile_config = file_config.get('compile', {})
         if compile_config:
-            self.compile_source_dir = self._resolve_path(compile_config.get('source_dir', '.'))
-            self.compile_output_path = self._resolve_path(compile_config.get('output_path', '.'))
+            self.compile_source_dir = self.resolve_path(compile_config.get('source_dir', '.'))
+            self.compile_output_path = self.resolve_path(compile_config.get('output_path', '.'))
             # 【红线 3】默认 map.w3x
             self.compile_output_name = compile_config.get('output_name', 'map.w3x')
 
@@ -254,7 +254,7 @@ class Config:
 
         # 8.5 War3 游戏日志目录
         if file_config.get('war3_log_dir'):
-            self.war3_log_dir = self._resolve_path(file_config['war3_log_dir'])
+            self.war3_log_dir = self.resolve_path(file_config['war3_log_dir'])
         else:
             ydwe_path = self.ydwe_path or self._get_ydwe_candidates()[0]
             if ydwe_path:
@@ -304,7 +304,20 @@ class Config:
         except Exception:
             return ''
 
-    def _resolve_path(self, path: str) -> Path:
+    def resolve_source_dir(self, source_dir) -> str:
+        """把用户传入的 source_dir 归一为绝对路径字符串。
+
+        None/空时回退 compile_source_dir。等价于：
+          if source_dir: str(self.resolve_path(source_dir)) else str(self.compile_source_dir)
+
+        v0.19.3: 收敛 mcp_server.py 中散落的「source_dir 归一化」重复模式。
+        只收敛 fallback=compile_source_dir 的点；fallback=project_root 或无 fallback 的点不在此方法覆盖范围。
+        """
+        if source_dir:
+            return str(self.resolve_path(source_dir))
+        return str(self.compile_source_dir)
+
+    def resolve_path(self, path: str) -> Path:
         """
         解析路径：支持绝对路径或相对路径（相对于项目根目录）
         支持 Windows 风格和 WSL 风格路径
@@ -431,7 +444,7 @@ class Config:
         Args:
             project_dir: 项目目录（地图源码目录）。默认 compile_source_dir。
                          支持 Windows（D:\\...）与 WSL（/mnt/d/...）两种路径格式，
-                         内部经 _resolve_path 归一化到本机可访问路径。
+                         内部经 resolve_path 归一化到本机可访问路径。
 
         查找顺序（命中即返回）：
           1. 环境变量 W2L_PATH（最高优先级）
@@ -442,7 +455,7 @@ class Config:
         全部未命中返回 None。
         """
         # 归一化项目目录到本机可访问路径（Windows/WSL 自适应）
-        proj = self._resolve_path(str(project_dir)) if project_dir else self.compile_source_dir
+        proj = self.resolve_path(str(project_dir)) if project_dir else self.compile_source_dir
 
         plugin_root = Path(__file__).parent.parent
         candidates: List[Path] = []
@@ -586,7 +599,7 @@ class Config:
         """检查路径是否是有效的 KKWE 安装"""
         if not path:
             return False
-        actual_path = self._resolve_path(str(path))
+        actual_path = self.resolve_path(str(path))
         config_exe = actual_path / 'bin' / 'YDWEConfig.exe'
         game_exe1 = actual_path / 'KKWE.exe'
         game_exe2 = actual_path / 'Warcraft III.exe'
@@ -596,7 +609,7 @@ class Config:
         """检查路径是否是有效的 YDWE 安装"""
         if not path:
             return False
-        actual_path = self._resolve_path(str(path))
+        actual_path = self.resolve_path(str(path))
         config_exe = actual_path / 'bin' / 'ydweconfig.exe'
         game_exe = actual_path / 'YDWE.exe'
         return config_exe.exists() or game_exe.exists()
