@@ -67,6 +67,20 @@ store = TestStateStore()
 http_receiver = HTTPReceiver(host=config.http_host, port=config.http_port, store=store)
 
 
+class ToolSpec:
+    """工具注册条目：绑定 schema 与 handler 到同一条目（单源注册）。
+
+    v0.17.0: 消除 schema 与 handler 双源注册。capabilities["tools"] 由 registry 单源生成，
+    handle_tool_call 改为查表分发。新增工具只需在 _register_tools() 添加一个 ToolSpec。
+    """
+    __slots__ = ('name', 'schema', 'handler')
+
+    def __init__(self, name: str, schema: dict, handler):
+        self.name = name
+        self.schema = schema
+        self.handler = handler
+
+
 class War3TesterMCP:
     """War3 Tester MCP Server"""
 
@@ -97,520 +111,12 @@ class War3TesterMCP:
         # M4: 文件监控器（watch 模式）
         self.file_watcher = FileWatcher(self.desktop_runner, config)
 
-        # MCP 能力声明
+        # v0.17.0: 工具注册表（单源）。capabilities["tools"] 与 handle_tool_call 都从这里派生。
+        self._tool_registry = self._register_tools()
+
+        # MCP 能力声明（tools 由 registry 单源生成，resources 仍手写）
         self.capabilities = {
-            "tools": [
-                {
-                    "name": "compile_map",
-                    "description": "编译地图 - 使用 w2l.exe slk 编译地图，不启动游戏",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径，默认使用 config.compile_source_dir"
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "test_commit",
-                    "description": "测试代码变更 - 编译地图并启动游戏运行测试",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "test_name": {
-                                "type": "string",
-                                "description": "测试名称，如 'test_hero_h000'"
-                            },
-                            "test_file": {
-                                "type": "string",
-                                "description": "测试 Lua 文件名（如 'test_skill_a00d.lua'）"
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "description": "等待测试完成的超时时间（秒），默认 60",
-                                "default": 60
-                            },
-                            "platform": {
-                                "type": "string",
-                                "description": "游戏平台：'ydwe' 或 'kkwe'，默认自动选择",
-                                "enum": ["ydwe", "kkwe"]
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径（支持 ${workspaceRoot} 变量）"
-                            },
-                            "auto_screenshot_on_failure": {
-                                "type": "boolean",
-                                "default": True,
-                                "description": "失败时自动截图（仅 crash/timeout/unknown 触发，v2 增强）"
-                            }
-                        },
-                        "required": ["test_name"]
-                    }
-                },
-                {
-                    "name": "run_test_batch",
-                    "description": "批量运行测试 - 顺序运行多个测试（每个独立游戏会话），返回结构化汇总。支持 filter=all/failed/列表、重试、超时、失败截图、failure_type 分类（v2 新增）",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "test_filter": {
-                                "type": ["string", "array"],
-                                "description": "'all'(默认) | 'failed'(复用上次失败列表) | 测试名/文件名列表 | glob 子串",
-                                "default": "all"
-                            },
-                            "stop_on_first_failure": {
-                                "type": "boolean", "default": False,
-                                "description": "首个失败即停止后续测试"
-                            },
-                            "max_retries": {
-                                "type": "integer", "default": 1,
-                                "description": "单测失败最大重试次数"
-                            },
-                            "timeout_per_test": {
-                                "type": "integer", "default": 90,
-                                "description": "单测超时秒数"
-                            },
-                            "auto_screenshot_on_failure": {
-                                "type": "boolean", "default": True,
-                                "description": "失败时自动截图（仅 crash/timeout/unknown 触发）"
-                            },
-                            "platform": {
-                                "type": "string", "enum": ["ydwe", "kkwe"],
-                                "description": "游戏平台，默认自动选择"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径"
-                            },
-                            "layer": {
-                                "type": "string",
-                                "description": "按测试层过滤：'all'(默认) | 'unit' | 'integration' | 'e2e'（M3 新增）",
-                                "enum": ["all", "unit", "integration", "e2e"]
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "discover_tests",
-                    "description": "发现测试 - 扫描测试目录，返回测试列表 + 分类(sync/async) + 估算耗时（v2 新增）",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "filter": {
-                                "type": "string",
-                                "description": "过滤子串（匹配 test_name），可选"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径"
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "compile_only",
-                    "description": "仅编译地图，不启动游戏",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径"
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "launch_only",
-                    "description": "仅启动游戏，不编译",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "map_path": {
-                                "type": "string",
-                                "description": "地图文件路径"
-                            },
-                            "platform": {
-                                "type": "string",
-                                "description": "游戏平台：'ydwe' 或 'kkwe'",
-                                "enum": ["ydwe", "kkwe"]
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "run_game",
-                    "description": "仅启动游戏，不运行测试",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "map_path": {
-                                "type": "string",
-                                "description": "地图文件路径"
-                            },
-                            "platform": {
-                                "type": "string",
-                                "description": "游戏平台：'ydwe' 或 'kkwe'",
-                                "enum": ["ydwe", "kkwe"]
-                            },
-                            "inject_inspect": {
-                                "type": "boolean",
-                                "description": "是否注入运行时查询处理器（inspect_handler）。True 时自动注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译，让 inspect_game 在 run_game 启动的游戏里可用。默认 True",
-                                "default": True
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "inject_inspect 启用时，地图源码目录（如 D:\\maps\\wzns），默认 config.compile_source_dir"
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "stop_game",
-                    "description": "关闭魔兽争霸 3 游戏进程",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "platform": {
-                                "type": "string",
-                                "description": "游戏平台：'ydwe' 或 'kkwe'",
-                                "enum": ["ydwe", "kkwe"]
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "stop_http_server",
-                    "description": "关闭 HTTP 测试服务器",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "cleanup_all",
-                    "description": "清理所有资源 - 关闭 war3.exe 进程和 HTTP 服务器",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "take_screenshot",
-                    "description": "截取游戏窗口截图。成功后默认自动调 VLM(analyze_screenshot)判读画面,返回含判读文本;VLM 未配或判读失败则 graceful 仅返回路径不阻塞。config.json 的 take_screenshot_auto_analyze=false 可关闭自动判读。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "test_name": {
-                                "type": "string",
-                                "description": "测试名称，用于组织截图文件"
-                            },
-                            "filename": {
-                                "type": "string",
-                                "description": "截图文件名（可选）"
-                            },
-                            "window_title": {
-                                "type": "string",
-                                "description": "窗口标题关键词（可选）"
-                            }
-                        },
-                        "required": ["test_name"]
-                    }
-                },
-                {
-                    "name": "analyze_screenshot",
-                    "description": "用多模态视觉模型（VLM）分析游戏截图，返回画面判读文本。需要环境变量 VLM_MODEL/VLM_BASE_URL/VLM_API_KEY",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "png_path": {
-                                "type": "string",
-                                "description": "截图 PNG 文件路径（Windows 绝对路径或相对路径）"
-                            },
-                            "prompt": {
-                                "type": "string",
-                                "description": "自定义分析提示词（可选，默认判读画面状态/UI元素/是否卡对话框/可见数值）"
-                            }
-                        },
-                        "required": ["png_path"]
-                    }
-                },
-                {
-                    "name": "send_key",
-                    "description": "向 War3 游戏窗口发送键盘事件。支持单键（'enter', 'a', 'f1', 'up' 等）和组合键（'ctrl+c', 'shift+a', 'alt+f4', 'ctrl+shift+s' 等，+ 分隔修饰键与主键）。完整 VK 表：字母 A-Z、数字 0-9、F1-F12、方向键、修饰键(Shift/Ctrl/Alt)、Tab/Backspace/Delete/Home/End/PageUp/PageDown 等。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "key": {
-                                "type": "string",
-                                "description": "按键名称。单键如 'enter', 'space', 'escape', 'a'-'z', '0'-'9', 'f1'-'f12', 'up', 'down', 'left', 'right', 'shift', 'ctrl', 'alt', 'tab', 'backspace', 'delete' 等。组合键用 + 分隔：'ctrl+c', 'shift+enter', 'alt+f4', 'ctrl+shift+a'。"
-                            }
-                        },
-                        "required": ["key"]
-                    }
-                },
-                {
-                    "name": "toggle_test",
-                    "description": "一键开关自动测试模式。关闭时 auto-test 模块不加载（手动游戏零干扰：无横幅/无 log 拦截/无自动选难度/无自动跑测试）；开启时恢复默认加载。变更后自动重编译地图。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "enabled": {
-                                "type": "boolean",
-                                "description": "true=开启(恢复 auto-test 加载，跑测试仍需 test_commit)；false=关闭(模块不加载，手动游戏零干扰)"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径，默认 config.compile_source_dir"
-                            }
-                        },
-                        "required": ["enabled"]
-                    }
-                },
-                {
-                    "name": "get_project_info",
-                    "description": "地图/脚本结构分析 - 扫描项目地图脚本目录，返回结构化分析：目录树概要、各模块文件计数（技能/Buff/物品/任务/副本/系统/entities/components 等子目录）、代码行数统计、关键入口文件（init.lua 等）。纯静态分析，只读文件系统，不启动游戏。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径，默认 config.compile_source_dir"
-                            },
-                            "max_depth": {
-                                "type": "integer",
-                                "description": "目录树扫描最大深度，默认 3",
-                                "default": 3
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "inspect_game",
-                    "description": "运行时对象检查 - 在游戏内执行一段 Lua 表达式并返回结果。AI 调用后，MCP 将查询放入 pending 队列，游戏端轮询拉取执行并回传结果。用于运行时调试、查看单位属性、检查游戏状态等。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "expr": {
-                                "type": "string",
-                                "description": "要在游戏内执行的 Lua 表达式（如 'UnitObj.all_count()' 或 'Player(1):getGold()'）"
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "description": "等待游戏端回传结果的超时时间（秒），默认 5",
-                                "default": 5
-                            }
-                        },
-                        "required": ["expr"]
-                    }
-                },
-                {
-                    "name": "get_debug_output",
-                    "description": "调试输出捕获 - 聚合游戏的调试输出：① War3 游戏日志（按 config.war3_log_dir 定位）② HTTP /error 端点缓存的运行时错误（http_receiver 内存缓冲）。按 error/warning 分级返回最近 N 条。纯读取，不启动游戏。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "limit": {
-                                "type": "integer",
-                                "description": "每级最多返回条数，默认 50",
-                                "default": 50
-                            },
-                            "level": {
-                                "type": "string",
-                                "description": "过滤级别：'all'(默认) | 'error' | 'warning'",
-                                "enum": ["all", "error", "warning"]
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径（仅用于日志上下文，可选）"
-                            }
-                        }
-                    }
-                },
-                {
-                    "name": "run_unit_test",
-                    "description": "桌面纯逻辑单测 - 不编译地图、不启动游戏，用桌面 lua5.3 秒级跑纯逻辑测试。依赖 jass_mock 隔离游戏 API，适合 TDD 快速反馈循环。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "test_name": {
-                                "type": "string",
-                                "description": "测试名称（如 'test_talent_config'）"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径（默认 config.compile_source_dir）"
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "description": "超时时间（秒），默认 10",
-                                "default": 10
-                            }
-                        },
-                        "required": ["test_name"]
-                    }
-                },
-                {
-                    "name": "scaffold_test",
-                    "description": "生成 TDD 测试骨架 - 按模块名+层生成 Arrange-Act-Assert 三段式测试文件，自动注册进测试列表。unit 层用桌面跑（秒级），integration/e2e 用游戏内跑。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "module": {
-                                "type": "string",
-                                "description": "模块名（如 'talent'、'skill_a00d'）"
-                            },
-                            "layer": {
-                                "type": "string",
-                                "description": "测试层：'unit'（桌面秒级）| 'integration'（游戏内）| 'e2e'（全流程）",
-                                "enum": ["unit", "integration", "e2e"]
-                            },
-                            "name": {
-                                "type": "string",
-                                "description": "测试名（可选，默认 test_<layer>_<module>）"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径（默认 config.compile_source_dir）"
-                            }
-                        },
-                        "required": ["module", "layer"]
-                    }
-                },
-                {
-                    "name": "tdd_red",
-                    "description": "TDD Red 阶段 - 跑测试预期失败，确认测试有效。区分「预期 assertion fail」（测试有效，Red 成立）vs「意外 env_error/compile_error」（测试写错，Red 不成立）。unit 层用 run_unit_test，integration/e2e 用 test_commit。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "test_name": {
-                                "type": "string",
-                                "description": "测试名称"
-                            },
-                            "layer": {
-                                "type": "string",
-                                "description": "测试层（决定用 run_unit_test 还是 test_commit）",
-                                "enum": ["unit", "integration", "e2e"],
-                                "default": "unit"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径"
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "description": "超时时间（秒），默认 60",
-                                "default": 60
-                            }
-                        },
-                        "required": ["test_name"]
-                    }
-                },
-                {
-                    "name": "tdd_green",
-                    "description": "TDD Green 阶段 - 跑测试预期通过。unit 层用 run_unit_test，integration/e2e 用 test_commit。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "test_name": {
-                                "type": "string",
-                                "description": "测试名称"
-                            },
-                            "layer": {
-                                "type": "string",
-                                "description": "测试层",
-                                "enum": ["unit", "integration", "e2e"],
-                                "default": "unit"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径"
-                            },
-                            "timeout": {
-                                "type": "integer",
-                                "description": "超时时间（秒），默认 60",
-                                "default": 60
-                            }
-                        },
-                        "required": ["test_name"]
-                    }
-                },
-                {
-                    "name": "watch_unit_tests",
-                    "description": "【M4 方向 F】启动文件监控模式 - 监控测试文件和源文件改动，自动重跑相关 unit 测试。后台线程运行，不阻塞 MCP。结果累积到日志文件。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "test_name": {
-                                "type": "string",
-                                "description": "测试名称（如 'test_talent_config'）"
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "源码目录路径（默认 config.compile_source_dir）"
-                            },
-                            "poll_interval": {
-                                "type": "number",
-                                "description": "轮询间隔（秒），默认 1.0",
-                                "default": 1.0
-                            },
-                            "debounce_delay": {
-                                "type": "number",
-                                "description": "防抖延迟（秒），默认 0.5",
-                                "default": 0.5
-                            }
-                        },
-                        "required": ["test_name"]
-                    }
-                },
-                {
-                    "name": "stop_watch",
-                    "description": "【M4 方向 F】停止文件监控模式",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                },
-                {
-                    "name": "get_watch_results",
-                    "description": "【M4 方向 F】获取文件监控累积的测试结果",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {}
-                    }
-                },
-                {
-                    "name": "setup_environment",
-                    "description": "一键部署测试环境组件（socket.dll/nopause.asi/Flask 依赖）。游戏端靠 socket.dll 发 HTTP 回传测试结果，靠 nopause.asi 防失焦暂停，MCP 端靠 Flask 接收。缺装任一组件会导致 test_commit 静默超时。",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "source_dir": {
-                                "type": "string",
-                                "description": "目标项目根目录，默认取环境变量 WAR3_PROJECT_ROOT"
-                            },
-                            "components": {
-                                "type": "array",
-                                "items": {
-                                    "type": "string",
-                                    "enum": ["socket", "http", "nopause"]
-                                },
-                                "description": "要安装的组件列表，默认三个全装：socket（拷 socket.dll 到项目 map/）、http（pip install flask werkzeug）、nopause（拷 nopause.asi 到 war3 安装目录）",
-                                "default": ["socket", "http", "nopause"]
-                            },
-                            "war3_dir": {
-                                "type": "string",
-                                "description": "war3 安装目录（war3.exe 同目录，用于 nopause 部署）。默认从 config.war3_log_dir 反推；反推不到则跳过 nopause 并提示传参"
-                            }
-                        }
-                    }
-                },
-            ],
+            "tools": [spec.schema for spec in self._tool_registry.values()],
             "resources": [
                 {
                     "uri": "war3://logs/compile",
@@ -628,6 +134,779 @@ class War3TesterMCP:
                     "description": "可用的游戏日志文件列表"
                 }
             ]
+        }
+
+    def _register_tools(self) -> dict:
+        """v0.17.0: 注册所有工具到 registry（单源）。
+
+        每个 ToolSpec 绑定 schema 与 handler。capabilities["tools"] 由此派生，
+        handle_tool_call 改为查表分发。新增工具只需在此添加一个 ToolSpec。
+
+        Returns:
+            dict: name -> ToolSpec
+        """
+        registry = {}
+
+        def _add(name, description, input_schema, handler):
+            schema = {
+                "name": name,
+                "description": description,
+                "inputSchema": input_schema
+            }
+            registry[name] = ToolSpec(name, schema, handler)
+
+        # 1. compile_map / compile_only（合并：同一 handler 服务两个 name）
+        def _handle_compile(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            source_dir = arguments.get("source_dir", str(config.compile_source_dir))
+            source_dir = str(config._resolve_path(source_dir))
+            result = self.executor.compile(source_dir)
+            if result.get("success"):
+                return {
+                    "content": [{"type": "text", "text": f"[OK] 地图编译成功\n\n时间：{timestamp}\n\n{result.get('message', '')}"}]
+                }
+            else:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] 地图编译失败\n\n时间：{timestamp}\n\n{result.get('error', '未知错误')}"}],
+                    "isError": True
+                }
+
+        _add("compile_map",
+             "编译地图 - 使用 w2l.exe slk 编译地图，不启动游戏",
+             {"type": "object", "properties": {
+                 "source_dir": {"type": "string", "description": "源码目录路径，默认使用 config.compile_source_dir"}
+             }},
+             _handle_compile)
+
+        _add("compile_only",
+             "仅编译地图，不启动游戏",
+             {"type": "object", "properties": {
+                 "source_dir": {"type": "string", "description": "源码目录路径"}
+             }},
+             _handle_compile)
+
+        # 2. test_commit
+        def _handle_test_commit(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            test_name = arguments.get("test_name", "unknown")
+            test_file = arguments.get("test_file")
+            timeout = arguments.get("timeout", 60)
+            platform = arguments.get("platform")
+            source_dir = arguments.get("source_dir")
+            auto_screenshot_on_failure = arguments.get("auto_screenshot_on_failure", True)
+            if not source_dir:
+                source_dir = str(config.compile_source_dir)
+            else:
+                source_dir = str(config._resolve_path(source_dir))
+            if not platform:
+                run_mode, _ = config.get_run_mode_with_source()
+                platform = run_mode
+            result = self.test_commit(test_name, test_file, timeout, platform, source_dir,
+                                      auto_screenshot_on_failure)
+            messages = [f"## 测试代码变更\n\n时间：{timestamp}"]
+            if result.get("message"):
+                messages.append(result.get("message", ""))
+            elif result.get("error"):
+                messages.append(f"\n[ERROR] {result.get('error', 'unknown')}")
+            return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+
+        _add("test_commit",
+             "测试代码变更 - 编译地图并启动游戏运行测试",
+             {"type": "object", "properties": {
+                 "test_name": {"type": "string", "description": "测试名称，如 'test_hero_h000'"},
+                 "test_file": {"type": "string", "description": "测试 Lua 文件名（如 'test_skill_a00d.lua'）"},
+                 "timeout": {"type": "integer", "description": "等待测试完成的超时时间（秒），默认 60", "default": 60},
+                 "platform": {"type": "string", "description": "游戏平台：'ydwe' 或 'kkwe'，默认自动选择", "enum": ["ydwe", "kkwe"]},
+                 "source_dir": {"type": "string", "description": "源码目录路径（支持 ${workspaceRoot} 变量）"},
+                 "auto_screenshot_on_failure": {"type": "boolean", "default": True, "description": "失败时自动截图（仅 crash/timeout/unknown 触发，v2 增强）"}
+             }, "required": ["test_name"]},
+             _handle_test_commit)
+
+        # 3. run_test_batch
+        def _handle_run_test_batch(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            test_filter = arguments.get("test_filter", "all")
+            stop_on_first_failure = arguments.get("stop_on_first_failure", False)
+            max_retries = arguments.get("max_retries", 1)
+            timeout_per_test = arguments.get("timeout_per_test", 90)
+            auto_ss = arguments.get("auto_screenshot_on_failure", True)
+            platform = arguments.get("platform")
+            source_dir = arguments.get("source_dir")
+            layer = arguments.get("layer")
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            if not platform:
+                run_mode, _ = config.get_run_mode_with_source()
+                platform = run_mode
+            batch_result = self.batch_runner.run_test_batch(
+                test_filter=test_filter, stop_on_first_failure=stop_on_first_failure,
+                max_retries=max_retries, timeout_per_test=timeout_per_test,
+                auto_screenshot_on_failure=auto_ss, source_dir=source_dir, platform=platform,
+                layer=layer)
+            messages = [f"## 批量测试\n\n时间：{timestamp}", batch_result.get("message", "")]
+            if not batch_result.get("success") and batch_result.get("error"):
+                messages.append(f"\n[ERROR] {batch_result['error']}")
+            summary = batch_result.get("summary", {})
+            if summary:
+                messages.append(f"\n汇总：{summary.get('passed')}/{summary.get('total')} 通过，"
+                                f"failure_types={summary.get('failure_types', {})}")
+            failed = batch_result.get("failed", [])
+            if failed:
+                messages.append(f"失败列表：{failed}")
+            return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+
+        _add("run_test_batch",
+             "批量运行测试 - 顺序运行多个测试（每个独立游戏会话），返回结构化汇总。支持 filter=all/failed/列表、重试、超时、失败截图、failure_type 分类（v2 新增）",
+             {"type": "object", "properties": {
+                 "test_filter": {"type": ["string", "array"], "description": "'all'(默认) | 'failed'(复用上次失败列表) | 测试名/文件名列表 | glob 子串", "default": "all"},
+                 "stop_on_first_failure": {"type": "boolean", "default": False, "description": "首个失败即停止后续测试"},
+                 "max_retries": {"type": "integer", "default": 1, "description": "单测失败最大重试次数"},
+                 "timeout_per_test": {"type": "integer", "default": 90, "description": "单测超时秒数"},
+                 "auto_screenshot_on_failure": {"type": "boolean", "default": True, "description": "失败时自动截图（仅 crash/timeout/unknown 触发）"},
+                 "platform": {"type": "string", "enum": ["ydwe", "kkwe"], "description": "游戏平台，默认自动选择"},
+                 "source_dir": {"type": "string", "description": "源码目录路径"},
+                 "layer": {"type": "string", "description": "按测试层过滤：'all'(默认) | 'unit' | 'integration' | 'e2e'（M3 新增）", "enum": ["all", "unit", "integration", "e2e"]}
+             }},
+             _handle_run_test_batch)
+
+        # 4. discover_tests
+        def _handle_discover_tests(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            flt = arguments.get("filter")
+            source_dir = arguments.get("source_dir")
+            layer = arguments.get("layer")
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            discovery = self.batch_runner.discover_tests(source_dir, filter_pattern=flt, layer=layer)
+            if discovery.get("success"):
+                tests = discovery.get("tests", [])
+                lines = [f"发现 {len(tests)} 个测试（估算 {discovery.get('total_est_seconds')}s）："]
+                for t in tests:
+                    layer_info = f", layer={t.get('layer', 'integration')}"
+                    lines.append(f"  - {t['test_name']} ({t['type']}{layer_info}, ~{t['est_seconds']}s)")
+                return {"content": [{"type": "text", "text": f"## 测试发现\n\n时间：{timestamp}\n\n" + "\n".join(lines)}]}
+            return {"content": [{"type": "text", "text": f"[FAIL] {discovery.get('error', '未知错误')}"}], "isError": True}
+
+        _add("discover_tests",
+             "发现测试 - 扫描测试目录，返回测试列表 + 分类(sync/async) + 估算耗时（v2 新增）",
+             {"type": "object", "properties": {
+                 "filter": {"type": "string", "description": "过滤子串（匹配 test_name），可选"},
+                 "source_dir": {"type": "string", "description": "源码目录路径"}
+             }},
+             _handle_discover_tests)
+
+        # 5. launch_only / run_game（合并：同一 handler，通过 tool_name 区分 inject_inspect 行为）
+        def _handle_launch_or_run(tool_name, arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            map_path = arguments.get("map_path", str(config.compile_output_path / config.compile_output_name))
+            platform = arguments.get("platform")
+            inject_inspect = arguments.get("inject_inspect", True) if tool_name == "run_game" else False
+            if not platform:
+                run_mode, _ = config.get_run_mode_with_source()
+                platform = run_mode
+            if inject_inspect:
+                source_dir = arguments.get("source_dir") or str(config.compile_source_dir)
+                resolved_source = config._resolve_path(source_dir)
+                test_dir = config.get_test_dir_path(resolved_source)
+                if test_dir is None:
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {resolved_source}，可能传错（如多了子目录）"}],
+                        "isError": True
+                    }
+                test_dir.mkdir(parents=True, exist_ok=True)
+                wt_dir = self._get_war3_tester_dir(test_dir)
+                self._inject_war3_tester_assets(wt_dir)
+                run_auto_test_path = test_dir / 'run_auto_test.lua'
+                _prefix = config.test_module_prefix
+                inspect_only_content = (
+                    "-- inspect-only bootstrap（run_game 注入，仅启动运行时查询，不跑测试）\n"
+                    "pcall(function()\n"
+                    f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
+                    "    if ih and ih.start then ih.start() end\n"
+                    "end)\n"
+                )
+                try:
+                    with open(run_auto_test_path, 'w', encoding='utf-8') as f:
+                        f.write(inspect_only_content)
+                    self.logger.info(f"[run_game] 已写入 inspect-only run_auto_test.lua → {run_auto_test_path}")
+                except (IOError, OSError) as e:
+                    self.logger.warning(f"[run_game] 写入 run_auto_test.lua 失败（graceful）: {e}")
+                self.test_mode_flag.enable(test_dir)
+                self.logger.info(f"[run_game] 已删除 _war3_tester/_test_off.lua（启用 inspect_handler）")
+                compile_result = self.executor.compile(source_dir)
+                if not compile_result.get("success"):
+                    return {
+                        "content": [{"type": "text", "text": f"[FAIL] 地图编译失败（inject_inspect 启用）\n\n时间：{timestamp}\n\n{compile_result.get('error', '未知错误')}"}],
+                        "isError": True
+                    }
+                self.logger.info(f"[run_game] 编译成功，准备启动游戏（inject_inspect 已注入）")
+            result = self.executor.run_game(map_path, platform)
+            if result.get("success"):
+                msg = f"[OK] 游戏已启动\n\n{result.get('message', '')}"
+                if inject_inspect:
+                    msg += "\n\n（inspect_handler 已注入，可使用 inspect_game 运行时查询）"
+                return {"content": [{"type": "text", "text": msg}]}
+            else:
+                return {
+                    "content": [{"type": "text", "text": f"[FAIL] 游戏启动失败\n\n{result.get('error', '未知错误')}"}],
+                    "isError": True
+                }
+
+        _add("launch_only",
+             "仅启动游戏，不编译",
+             {"type": "object", "properties": {
+                 "map_path": {"type": "string", "description": "地图文件路径"},
+                 "platform": {"type": "string", "description": "游戏平台：'ydwe' 或 'kkwe'", "enum": ["ydwe", "kkwe"]}
+             }},
+             lambda args: _handle_launch_or_run("launch_only", args))
+
+        _add("run_game",
+             "仅启动游戏，不运行测试",
+             {"type": "object", "properties": {
+                 "map_path": {"type": "string", "description": "地图文件路径"},
+                 "platform": {"type": "string", "description": "游戏平台：'ydwe' 或 'kkwe'", "enum": ["ydwe", "kkwe"]},
+                 "inject_inspect": {"type": "boolean", "description": "是否注入运行时查询处理器（inspect_handler）。True 时自动注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译，让 inspect_game 在 run_game 启动的游戏里可用。默认 True", "default": True},
+                 "source_dir": {"type": "string", "description": "inject_inspect 启用时，地图源码目录（如 D:\\maps\\wzns），默认 config.compile_source_dir"}
+             }},
+             lambda args: _handle_launch_or_run("run_game", args))
+
+        # 6. stop_game
+        def _handle_stop_game(arguments):
+            result = self.executor.stop_game()
+            if result.get("success"):
+                return {"content": [{"type": "text", "text": f"[OK] {result.get('message', '游戏已关闭')}"}]}
+            else:
+                return {"content": [{"type": "text", "text": f"[FAIL] {result.get('error', '游戏关闭失败')}"}], "isError": True}
+
+        _add("stop_game",
+             "关闭魔兽争霸 3 游戏进程",
+             {"type": "object", "properties": {
+                 "platform": {"type": "string", "description": "游戏平台：'ydwe' 或 'kkwe'", "enum": ["ydwe", "kkwe"]}
+             }},
+             _handle_stop_game)
+
+        # 7. stop_http_server
+        def _handle_stop_http_server(arguments):
+            self.http_receiver.stop()
+            return {"content": [{"type": "text", "text": "[OK] HTTP 服务器将随主进程退出自动关闭"}]}
+
+        _add("stop_http_server",
+             "关闭 HTTP 测试服务器",
+             {"type": "object", "properties": {}, "required": []},
+             _handle_stop_http_server)
+
+        # 8. cleanup_all
+        def _handle_cleanup_all(arguments):
+            stop_result = self.executor.stop_game()
+            self.http_receiver.stop()
+            return {"content": [{"type": "text", "text": f"[OK] 清理完成\n\n{stop_result.get('message', '')}"}]}
+
+        _add("cleanup_all",
+             "清理所有资源 - 关闭 war3.exe 进程和 HTTP 服务器",
+             {"type": "object", "properties": {}, "required": []},
+             _handle_cleanup_all)
+
+        # 9. take_screenshot
+        def _handle_take_screenshot(arguments):
+            test_name = arguments.get("test_name", "unknown")
+            filename = arguments.get("filename")
+            window_title = arguments.get("window_title")
+            result = self.executor.take_screenshot(test_name, filename, window_title)
+            if result.get("success"):
+                base_text = (f"[OK] 截图已保存\n\n{result.get('message', '')}\n\n"
+                             f"WSL 路径：{result.get('path_wsl', '')}\nWindows 路径：{result.get('path', '')}")
+                if getattr(config, 'take_screenshot_auto_analyze', True):
+                    png_path = result.get('path') or result.get('path_wsl')
+                    try:
+                        analysis = self.analyze_screenshot(png_path)
+                        base_text += f"\n\n--- VLM 判读 ---\n{analysis}"
+                    except Exception as e:
+                        base_text += (f"\n\n--- VLM 判读失败(不影响截图使用) ---\n{e}"
+                                      f"\n(关闭自动判读:config.json 设 take_screenshot_auto_analyze=false)")
+                return {"content": [{"type": "text", "text": base_text}]}
+            else:
+                return {"content": [{"type": "text", "text": f"[FAIL] 截图失败\n\n{result.get('error', '未知错误')}"}], "isError": True}
+
+        _add("take_screenshot",
+             "截取游戏窗口截图。成功后默认自动调 VLM(analyze_screenshot)判读画面,返回含判读文本;VLM 未配或判读失败则 graceful 仅返回路径不阻塞。config.json 的 take_screenshot_auto_analyze=false 可关闭自动判读。",
+             {"type": "object", "properties": {
+                 "test_name": {"type": "string", "description": "测试名称，用于组织截图文件"},
+                 "filename": {"type": "string", "description": "截图文件名（可选）"},
+                 "window_title": {"type": "string", "description": "窗口标题关键词（可选）"}
+             }, "required": ["test_name"]},
+             _handle_take_screenshot)
+
+        # 10. analyze_screenshot
+        def _handle_analyze_screenshot(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            png_path = arguments.get("png_path")
+            prompt = arguments.get("prompt", "")
+            if not png_path:
+                return {"content": [{"type": "text", "text": "[FAIL] 缺少 png_path 参数"}], "isError": True}
+            try:
+                analysis_text = self.analyze_screenshot(png_path, prompt)
+                return {"content": [{"type": "text", "text": f"[OK] 截图分析完成\n\n时间：{timestamp}\n\n{analysis_text}"}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] 截图分析失败\n\n{e}"}], "isError": True}
+
+        _add("analyze_screenshot",
+             "用多模态视觉模型（VLM）分析游戏截图，返回画面判读文本。需要环境变量 VLM_MODEL/VLM_BASE_URL/VLM_API_KEY",
+             {"type": "object", "properties": {
+                 "png_path": {"type": "string", "description": "截图 PNG 文件路径（Windows 绝对路径或相对路径）"},
+                 "prompt": {"type": "string", "description": "自定义分析提示词（可选，默认判读画面状态/UI元素/是否卡对话框/可见数值）"}
+             }, "required": ["png_path"]},
+             _handle_analyze_screenshot)
+
+        # 11. send_key
+        def _handle_send_key(arguments):
+            key = arguments.get("key", "enter")
+            result = self.executor.send_key(key)
+            if result.get("success"):
+                return {"content": [{"type": "text", "text": f"[OK] 已发送 {key} 键\n\n{result.get('message', '')}"}]}
+            else:
+                return {"content": [{"type": "text", "text": f"[FAIL] 发送按键失败\n\n{result.get('error', '未知错误')}"}], "isError": True}
+
+        _add("send_key",
+             "向 War3 游戏窗口发送键盘事件。支持单键（'enter', 'a', 'f1', 'up' 等）和组合键（'ctrl+c', 'shift+a', 'alt+f4', 'ctrl+shift+s' 等，+ 分隔修饰键与主键）。完整 VK 表：字母 A-Z、数字 0-9、F1-F12、方向键、修饰键(Shift/Ctrl/Alt)、Tab/Backspace/Delete/Home/End/PageUp/PageDown 等。",
+             {"type": "object", "properties": {
+                 "key": {"type": "string", "description": "按键名称。单键如 'enter', 'space', 'escape', 'a'-'z', '0'-'9', 'f1'-'f12', 'up', 'down', 'left', 'right', 'shift', 'ctrl', 'alt', 'tab', 'backspace', 'delete' 等。组合键用 + 分隔：'ctrl+c', 'shift+enter', 'alt+f4', 'ctrl+shift+a'。"}
+             }, "required": ["key"]},
+             _handle_send_key)
+
+        # 12. toggle_test
+        def _handle_toggle_test(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            enabled = arguments.get("enabled", True)
+            source_dir = arguments.get("source_dir")
+            if not source_dir:
+                source_dir = str(config.compile_source_dir)
+            else:
+                source_dir = str(config._resolve_path(source_dir))
+            result = self.toggle_test(enabled, source_dir)
+            if result.get("success"):
+                return {"content": [{"type": "text", "text": f"[OK] 测试模式{result.get('action', '')}\n\n时间：{timestamp}"}]}
+            else:
+                msg = f"[FAIL] toggle_test 未完成\n\n时间：{timestamp}\n"
+                if result.get("compile_error"):
+                    msg += f"编译失败：{result['compile_error']}"
+                return {"content": [{"type": "text", "text": msg}], "isError": True}
+
+        _add("toggle_test",
+             "一键开关自动测试模式。关闭时 auto-test 模块不加载（手动游戏零干扰：无横幅/无 log 拦截/无自动选难度/无自动跑测试）；开启时恢复默认加载。变更后自动重编译地图。",
+             {"type": "object", "properties": {
+                 "enabled": {"type": "boolean", "description": "true=开启(恢复 auto-test 加载，跑测试仍需 test_commit)；false=关闭(模块不加载，手动游戏零干扰)"},
+                 "source_dir": {"type": "string", "description": "源码目录路径，默认 config.compile_source_dir"}
+             }, "required": ["enabled"]},
+             _handle_toggle_test)
+
+        # 13. get_project_info
+        def _handle_get_project_info(arguments):
+            try:
+                source_dir = arguments.get("source_dir")
+                if not source_dir:
+                    source_dir = str(config.compile_source_dir)
+                else:
+                    source_dir = str(config._resolve_path(source_dir))
+                max_depth = arguments.get("max_depth", 3)
+                result = self._get_project_info(source_dir, max_depth)
+                return {"content": [{"type": "text", "text": result}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] get_project_info 失败：{e}"}], "isError": True}
+
+        _add("get_project_info",
+             "地图/脚本结构分析 - 扫描项目地图脚本目录，返回结构化分析：目录树概要、各模块文件计数（技能/Buff/物品/任务/副本/系统/entities/components 等子目录）、代码行数统计、关键入口文件（init.lua 等）。纯静态分析，只读文件系统，不启动游戏。",
+             {"type": "object", "properties": {
+                 "source_dir": {"type": "string", "description": "源码目录路径，默认 config.compile_source_dir"},
+                 "max_depth": {"type": "integer", "description": "目录树扫描最大深度，默认 3", "default": 3}
+             }},
+             _handle_get_project_info)
+
+        # 14. inspect_game
+        def _handle_inspect_game(arguments):
+            expr = arguments.get("expr")
+            timeout = arguments.get("timeout", 5)
+            if not expr:
+                return {"content": [{"type": "text", "text": "[FAIL] 缺少 expr 参数"}], "isError": True}
+            try:
+                query_id = self.store.submit_inspect(expr)
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] 加入查询队列失败：{e}"}], "isError": True}
+            result = self.store.take_inspect(query_id, timeout=timeout)
+            if result:
+                if "error" in result:
+                    return {"content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}], "isError": True}
+                else:
+                    value = result.get("value", "")
+                    return {"content": [{"type": "text", "text": f"[OK] 查询结果：\n{value}"}]}
+            return {"content": [{"type": "text", "text": f"[FAIL] 超时（{timeout}秒）：游戏端未回传结果"}], "isError": True}
+
+        _add("inspect_game",
+             "运行时对象检查 - 在游戏内执行一段 Lua 表达式并返回结果。AI 调用后，MCP 将查询放入 pending 队列，游戏端轮询拉取执行并回传结果。用于运行时调试、查看单位属性、检查游戏状态等。",
+             {"type": "object", "properties": {
+                 "expr": {"type": "string", "description": "要在游戏内执行的 Lua 表达式（如 'UnitObj.all_count()' 或 'Player(1):getGold()'）"},
+                 "timeout": {"type": "integer", "description": "等待游戏端回传结果的超时时间（秒），默认 5", "default": 5}
+             }, "required": ["expr"]},
+             _handle_inspect_game)
+
+        # 15. get_debug_output
+        def _handle_get_debug_output(arguments):
+            try:
+                limit = arguments.get("limit", 50)
+                level = arguments.get("level", "all")
+                source_dir = arguments.get("source_dir")
+                result = self._get_debug_output(limit, level, source_dir)
+                return {"content": [{"type": "text", "text": result}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] get_debug_output 失败：{e}"}], "isError": True}
+
+        _add("get_debug_output",
+             "调试输出捕获 - 聚合游戏的调试输出：① War3 游戏日志（按 config.war3_log_dir 定位）② HTTP /error 端点缓存的运行时错误（http_receiver 内存缓冲）。按 error/warning 分级返回最近 N 条。纯读取，不启动游戏。",
+             {"type": "object", "properties": {
+                 "limit": {"type": "integer", "description": "每级最多返回条数，默认 50", "default": 50},
+                 "level": {"type": "string", "description": "过滤级别：'all'(默认) | 'error' | 'warning'", "enum": ["all", "error", "warning"]},
+                 "source_dir": {"type": "string", "description": "源码目录路径（仅用于日志上下文，可选）"}
+             }},
+             _handle_get_debug_output)
+
+        # 16. run_unit_test
+        def _handle_run_unit_test(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            test_name = arguments.get("test_name", "unknown")
+            source_dir = arguments.get("source_dir")
+            timeout = arguments.get("timeout", 10)
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            try:
+                result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
+                messages = [f"## 桌面单测\n\n时间：{timestamp}"]
+                messages.append(f"测试名称：{result.get('test_name', test_name)}")
+                messages.append(f"结果：{'通过' if result.get('success') else '失败'}")
+                messages.append(f"耗时：{result.get('elapsed', 0):.2f}s")
+                if result.get('failure_type'):
+                    messages.append(f"failure_type: {result.get('failure_type')}")
+                if result.get('error'):
+                    messages.append(f"错误：{result.get('error')}")
+                if result.get('details'):
+                    messages.append(f"\n详情：\n{result.get('details')}")
+                if result.get('cases'):
+                    messages.append(f"\n用例：{result.get('cases')}")
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] run_unit_test 失败：{e}"}], "isError": True}
+
+        _add("run_unit_test",
+             "桌面纯逻辑单测 - 不编译地图、不启动游戏，用桌面 lua5.3 秒级跑纯逻辑测试。依赖 jass_mock 隔离游戏 API，适合 TDD 快速反馈循环。",
+             {"type": "object", "properties": {
+                 "test_name": {"type": "string", "description": "测试名称（如 'test_talent_config'）"},
+                 "source_dir": {"type": "string", "description": "源码目录路径（默认 config.compile_source_dir）"},
+                 "timeout": {"type": "integer", "description": "超时时间（秒），默认 10", "default": 10}
+             }, "required": ["test_name"]},
+             _handle_run_unit_test)
+
+        # 17. scaffold_test
+        def _handle_scaffold_test(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            module = arguments.get("module")
+            layer = arguments.get("layer", "unit")
+            name = arguments.get("name")
+            source_dir = arguments.get("source_dir")
+            if not module:
+                return {"content": [{"type": "text", "text": "[FAIL] 缺少 module 参数"}], "isError": True}
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            else:
+                source_dir = str(config.compile_source_dir)
+            try:
+                result = self._scaffold_test(module, layer, name, source_dir)
+                if result.get("success"):
+                    messages = [f"## 测试骨架生成\n\n时间：{timestamp}"]
+                    messages.append(f"模块：{module}")
+                    messages.append(f"层：{layer}")
+                    messages.append(f"文件：{result.get('file')}")
+                    messages.append(f"\n{result.get('message')}")
+                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+                else:
+                    return {"content": [{"type": "text", "text": f"[FAIL] {result.get('error', '生成失败')}"}], "isError": True}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] scaffold_test 失败：{e}"}], "isError": True}
+
+        _add("scaffold_test",
+             "生成 TDD 测试骨架 - 按模块名+层生成 Arrange-Act-Assert 三段式测试文件，自动注册进测试列表。unit 层用桌面跑（秒级），integration/e2e 用游戏内跑。",
+             {"type": "object", "properties": {
+                 "module": {"type": "string", "description": "模块名（如 'talent'、'skill_a00d'）"},
+                 "layer": {"type": "string", "description": "测试层：'unit'（桌面秒级）| 'integration'（游戏内）| 'e2e'（全流程）", "enum": ["unit", "integration", "e2e"]},
+                 "name": {"type": "string", "description": "测试名（可选，默认 test_<layer>_<module>）"},
+                 "source_dir": {"type": "string", "description": "源码目录路径（默认 config.compile_source_dir）"}
+             }, "required": ["module", "layer"]},
+             _handle_scaffold_test)
+
+        # 18. tdd_red
+        def _handle_tdd_red(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            test_name = arguments.get("test_name", "unknown")
+            layer = arguments.get("layer", "unit")
+            source_dir = arguments.get("source_dir")
+            timeout = arguments.get("timeout", 60)
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            try:
+                result = self._tdd_red(test_name, layer, source_dir, timeout)
+                messages = [f"## TDD Red 阶段\n\n时间：{timestamp}"]
+                messages.append(f"测试：{test_name}")
+                messages.append(f"层：{layer}")
+                messages.append(f"状态：{result.get('status')}")
+                messages.append(f"failure_type: {result.get('failure_type')}")
+                if result.get('status') == 'red_valid':
+                    messages.append("\n✅ Red 成立：测试预期失败，测试有效")
+                elif result.get('status') == 'red_invalid':
+                    messages.append("\n❌ Red 不成立：测试写错或环境问题")
+                    messages.append(f"原因：{result.get('reason')}")
+                elif result.get('status') == 'green':
+                    messages.append("\n⚠️ 测试通过了，但预期应该失败")
+                if result.get('error'):
+                    messages.append(f"\n错误：{result.get('error')}")
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] tdd_red 失败：{e}"}], "isError": True}
+
+        _add("tdd_red",
+             "TDD Red 阶段 - 跑测试预期失败，确认测试有效。区分「预期 assertion fail」（测试有效，Red 成立）vs「意外 env_error/compile_error」（测试写错，Red 不成立）。unit 层用 run_unit_test，integration/e2e 用 test_commit。",
+             {"type": "object", "properties": {
+                 "test_name": {"type": "string", "description": "测试名称"},
+                 "layer": {"type": "string", "description": "测试层（决定用 run_unit_test 还是 test_commit）", "enum": ["unit", "integration", "e2e"], "default": "unit"},
+                 "source_dir": {"type": "string", "description": "源码目录路径"},
+                 "timeout": {"type": "integer", "description": "超时时间（秒），默认 60", "default": 60}
+             }, "required": ["test_name"]},
+             _handle_tdd_red)
+
+        # 19. tdd_green
+        def _handle_tdd_green(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            test_name = arguments.get("test_name", "unknown")
+            layer = arguments.get("layer", "unit")
+            source_dir = arguments.get("source_dir")
+            timeout = arguments.get("timeout", 60)
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            try:
+                result = self._tdd_green(test_name, layer, source_dir, timeout)
+                messages = [f"## TDD Green 阶段\n\n时间：{timestamp}"]
+                messages.append(f"测试：{test_name}")
+                messages.append(f"层：{layer}")
+                messages.append(f"结果：{'通过' if result.get('success') else '失败'}")
+                messages.append(f"耗时：{result.get('elapsed', 0):.2f}s")
+                if result.get('success'):
+                    messages.append("\n✅ Green 成立：测试通过")
+                else:
+                    messages.append("\n❌ Green 不成立：测试仍失败")
+                    messages.append(f"failure_type: {result.get('failure_type')}")
+                    if result.get('error'):
+                        messages.append(f"错误：{result.get('error')}")
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] tdd_green 失败：{e}"}], "isError": True}
+
+        _add("tdd_green",
+             "TDD Green 阶段 - 跑测试预期通过。unit 层用 run_unit_test，integration/e2e 用 test_commit。",
+             {"type": "object", "properties": {
+                 "test_name": {"type": "string", "description": "测试名称"},
+                 "layer": {"type": "string", "description": "测试层", "enum": ["unit", "integration", "e2e"], "default": "unit"},
+                 "source_dir": {"type": "string", "description": "源码目录路径"},
+                 "timeout": {"type": "integer", "description": "超时时间（秒），默认 60", "default": 60}
+             }, "required": ["test_name"]},
+             _handle_tdd_green)
+
+        # 20. watch_unit_tests
+        def _handle_watch_unit_tests(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            test_name = arguments.get("test_name", "unknown")
+            source_dir = arguments.get("source_dir")
+            poll_interval = arguments.get("poll_interval", 1.0)
+            debounce_delay = arguments.get("debounce_delay", 0.5)
+            if source_dir:
+                source_dir = str(config._resolve_path(source_dir))
+            try:
+                result = self.file_watcher.start_watch(test_name, source_dir, poll_interval, debounce_delay)
+                if result.get('success'):
+                    messages = [f"## 文件监控已启动\n\n时间：{timestamp}"]
+                    messages.append(result.get('message', ''))
+                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+                else:
+                    return {"content": [{"type": "text", "text": f"[FAIL] {result.get('message', '启动失败')}"}], "isError": True}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] watch_unit_tests 失败：{e}"}], "isError": True}
+
+        _add("watch_unit_tests",
+             "【M4 方向 F】启动文件监控模式 - 监控测试文件和源文件改动，自动重跑相关 unit 测试。后台线程运行，不阻塞 MCP。结果累积到日志文件。",
+             {"type": "object", "properties": {
+                 "test_name": {"type": "string", "description": "测试名称（如 'test_talent_config'）"},
+                 "source_dir": {"type": "string", "description": "源码目录路径（默认 config.compile_source_dir）"},
+                 "poll_interval": {"type": "number", "description": "轮询间隔（秒），默认 1.0", "default": 1.0},
+                 "debounce_delay": {"type": "number", "description": "防抖延迟（秒），默认 0.5", "default": 0.5}
+             }, "required": ["test_name"]},
+             _handle_watch_unit_tests)
+
+        # 21. stop_watch
+        def _handle_stop_watch(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                result = self.file_watcher.stop_watch()
+                if result.get('success'):
+                    messages = [f"## 文件监控已停止\n\n时间：{timestamp}"]
+                    messages.append(result.get('message', ''))
+                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+                else:
+                    return {"content": [{"type": "text", "text": f"[FAIL] {result.get('message', '停止失败')}"}], "isError": True}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] stop_watch 失败：{e}"}], "isError": True}
+
+        _add("stop_watch",
+             "【M4 方向 F】停止文件监控模式",
+             {"type": "object", "properties": {}},
+             _handle_stop_watch)
+
+        # 22. get_watch_results
+        def _handle_get_watch_results(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                result = self.file_watcher.get_results()
+                messages = [f"## 文件监控结果\n\n时间：{timestamp}"]
+                messages.append(f"监控状态：{'运行中' if result.get('watching') else '已停止'}")
+                messages.append(f"测试名称：{result.get('test_name', 'N/A')}")
+                messages.append(f"总运行次数：{result.get('count', 0)}")
+                if result.get('log_file'):
+                    messages.append(f"日志文件：{result.get('log_file')}")
+                results = result.get('results', [])
+                if results:
+                    messages.append("\n### 最近 10 次运行：")
+                    for r in results[-10:]:
+                        status = "✅" if r.get('success') else "❌"
+                        messages.append(f"{status} {r.get('timestamp', '')} | "
+                                       f"触发：{r.get('trigger', '')} | "
+                                       f"结果：{'通过' if r.get('success') else r.get('failure_type', '失败')} | "
+                                       f"耗时：{r.get('elapsed', 0):.2f}s")
+                        if r.get('error'):
+                            messages.append(f"   错误：{r.get('error')}")
+                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] get_watch_results 失败：{e}"}], "isError": True}
+
+        _add("get_watch_results",
+             "【M4 方向 F】获取文件监控累积的测试结果",
+             {"type": "object", "properties": {}},
+             _handle_get_watch_results)
+
+        # 23. setup_environment
+        def _handle_setup_environment(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            source_dir = arguments.get("source_dir")
+            components = arguments.get("components", ["socket", "http", "nopause"])
+            war3_dir = arguments.get("war3_dir")
+            if source_dir:
+                project_root = Path(source_dir)
+            elif config.project_root:
+                project_root = config.project_root
+            else:
+                project_root = None
+            if not war3_dir and config.war3_log_dir:
+                try:
+                    inferred_war3_dir = Path(config.war3_log_dir).parent
+                    if inferred_war3_dir.exists():
+                        war3_dir = str(inferred_war3_dir)
+                except Exception:
+                    pass
+            plugin_root = SERVER_DIR.parent
+            results = []
+            if "socket" in components:
+                try:
+                    if not project_root:
+                        results.append({"component": "socket", "status": "failed", "message": "未指定 source_dir 且 WAR3_PROJECT_ROOT 未设置"})
+                    else:
+                        socket_src_dir = plugin_root / "bin" / "socket"
+                        socket_dst_dir = project_root / "map"
+                        if not socket_src_dir.exists():
+                            results.append({"component": "socket", "status": "failed", "message": f"插件 bin/socket 目录不存在：{socket_src_dir}"})
+                        else:
+                            socket_dst_dir.mkdir(parents=True, exist_ok=True)
+                            copied_files = []
+                            for dll_name in ["socket.dll", "libwinpthread-1.dll"]:
+                                src = socket_src_dir / dll_name
+                                dst = socket_dst_dir / dll_name
+                                if src.exists():
+                                    shutil.copy2(src, dst)
+                                    copied_files.append(str(dst))
+                            if copied_files:
+                                results.append({"component": "socket", "status": "success", "message": f"已拷贝 {len(copied_files)} 个文件到 {socket_dst_dir}", "files": copied_files})
+                            else:
+                                results.append({"component": "socket", "status": "failed", "message": "未找到 socket.dll 或 libwinpthread-1.dll"})
+                except Exception as e:
+                    results.append({"component": "socket", "status": "failed", "message": f"部署失败：{e}"})
+            if "http" in components:
+                try:
+                    proc = subprocess.run([sys.executable, "-m", "pip", "install", "flask", "werkzeug"], capture_output=True, text=True, timeout=120)
+                    if proc.returncode == 0:
+                        results.append({"component": "http", "status": "success", "message": "flask + werkzeug 已安装（或已是最新）"})
+                    else:
+                        results.append({"component": "http", "status": "failed", "message": f"pip install 失败：{proc.stderr}"})
+                except subprocess.TimeoutExpired:
+                    results.append({"component": "http", "status": "failed", "message": "pip install 超时（120秒）"})
+                except Exception as e:
+                    results.append({"component": "http", "status": "failed", "message": f"pip install 异常：{e}"})
+            if "nopause" in components:
+                try:
+                    if not war3_dir:
+                        results.append({"component": "nopause", "status": "skipped", "message": "未指定 war3_dir 且无法从 config.war3_log_dir 反推，请传参 war3_dir"})
+                    else:
+                        nopause_src = plugin_root / "bin" / "nopause.asi"
+                        nopause_dst = Path(war3_dir) / "nopause.asi"
+                        if not nopause_src.exists():
+                            results.append({"component": "nopause", "status": "failed", "message": f"插件 bin/nopause.asi 不存在：{nopause_src}"})
+                        else:
+                            shutil.copy2(nopause_src, nopause_dst)
+                            results.append({"component": "nopause", "status": "success", "message": f"已拷贝 nopause.asi 到 {nopause_dst}"})
+                except Exception as e:
+                    results.append({"component": "nopause", "status": "failed", "message": f"部署失败：{e}"})
+            messages = [f"## 环境部署结果\n\n时间：{timestamp}"]
+            if project_root:
+                messages.append(f"项目根目录：{project_root}")
+            if war3_dir:
+                messages.append(f"War3 安装目录：{war3_dir}")
+            messages.append("")
+            success_count = sum(1 for r in results if r.get("status") == "success")
+            failed_count = sum(1 for r in results if r.get("status") == "failed")
+            skipped_count = sum(1 for r in results if r.get("status") == "skipped")
+            messages.append(f"总计：{len(results)} 个组件（成功 {success_count} / 失败 {failed_count} / 跳过 {skipped_count}）\n")
+            for r in results:
+                status_icon = "✅" if r.get("status") == "success" else ("❌" if r.get("status") == "failed" else "⚠️")
+                messages.append(f"{status_icon} {r.get('component')}: {r.get('status')}")
+                messages.append(f"   {r.get('message')}")
+                if r.get("files"):
+                    for f in r["files"]:
+                        messages.append(f"   - {f}")
+                messages.append("")
+            is_error = failed_count > 0
+            return {"content": [{"type": "text", "text": "\n".join(messages)}], "isError": is_error}
+
+        _add("setup_environment",
+             "一键部署测试环境组件（socket.dll/nopause.asi/Flask 依赖）。游戏端靠 socket.dll 发 HTTP 回传测试结果，靠 nopause.asi 防失焦暂停，MCP 端靠 Flask 接收。缺装任一组件会导致 test_commit 静默超时。",
+             {"type": "object", "properties": {
+                 "source_dir": {"type": "string", "description": "目标项目根目录，默认取环境变量 WAR3_PROJECT_ROOT"},
+                 "components": {"type": "array", "items": {"type": "string", "enum": ["socket", "http", "nopause"]}, "description": "要安装的组件列表，默认三个全装：socket（拷 socket.dll 到项目 map/）、http（pip install flask werkzeug）、nopause（拷 nopause.asi 到 war3 安装目录）", "default": ["socket", "http", "nopause"]},
+                 "war3_dir": {"type": "string", "description": "war3 安装目录（war3.exe 同目录，用于 nopause 部署）。默认从 config.war3_log_dir 反推；反推不到则跳过 nopause 并提示传参"}
+             }},
+             _handle_setup_environment)
+
+        return registry
+
+    async def handle_tool_call(self, tool_name: str, arguments: dict) -> dict:
+        """v0.17.0: 查表分发。从 registry 查找 handler 并调用。未知工具走 fallback。"""
+        spec = self._tool_registry.get(tool_name)
+        if spec:
+            return await spec.handler(arguments) if asyncio.iscoroutinefunction(spec.handler) else spec.handler(arguments)
+        # fallback: 未知工具
+        return {
+            "content": [{"type": "text", "text": f"未知工具：{tool_name}"}],
+            "isError": True
         }
 
     def _get_war3_tester_dir(self, test_dir: Path) -> Path:
@@ -1248,762 +1527,6 @@ end
             src = SERVER_DIR / filename
             dst = wt_dir / filename
             self._copy_file_to(src, dst, label)
-
-    async def handle_tool_call(self, tool_name: str, arguments: dict) -> dict:
-        """处理工具调用"""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        if tool_name in ("compile_map", "compile_only"):
-            source_dir = arguments.get("source_dir", str(config.compile_source_dir))
-            source_dir = str(config._resolve_path(source_dir))
-            result = self.executor.compile(source_dir)
-
-            if result.get("success"):
-                return {
-                    "content": [{"type": "text", "text": f"[OK] 地图编译成功\n\n时间：{timestamp}\n\n{result.get('message', '')}"}]
-                }
-            else:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] 地图编译失败\n\n时间：{timestamp}\n\n{result.get('error', '未知错误')}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "test_commit":
-            test_name = arguments.get("test_name", "unknown")
-            test_file = arguments.get("test_file")
-            timeout = arguments.get("timeout", 60)
-            platform = arguments.get("platform")
-            source_dir = arguments.get("source_dir")
-            auto_screenshot_on_failure = arguments.get("auto_screenshot_on_failure", True)
-
-            if not source_dir:
-                source_dir = str(config.compile_source_dir)
-            else:
-                source_dir = str(config._resolve_path(source_dir))
-
-            if not platform:
-                run_mode, _ = config.get_run_mode_with_source()
-                platform = run_mode
-
-            result = self.test_commit(test_name, test_file, timeout, platform, source_dir,
-                                      auto_screenshot_on_failure)
-
-            messages = [f"## 测试代码变更\n\n时间：{timestamp}"]
-            if result.get("message"):
-                messages.append(result.get("message", ""))
-            elif result.get("error"):
-                messages.append(f"\n[ERROR] {result.get('error', 'unknown')}")
-
-            return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-
-        elif tool_name == "run_test_batch":
-            test_filter = arguments.get("test_filter", "all")
-            stop_on_first_failure = arguments.get("stop_on_first_failure", False)
-            max_retries = arguments.get("max_retries", 1)
-            timeout_per_test = arguments.get("timeout_per_test", 90)
-            auto_ss = arguments.get("auto_screenshot_on_failure", True)
-            platform = arguments.get("platform")
-            source_dir = arguments.get("source_dir")
-            layer = arguments.get("layer")  # M3: 按层过滤
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-            if not platform:
-                run_mode, _ = config.get_run_mode_with_source()
-                platform = run_mode
-
-            batch_result = self.batch_runner.run_test_batch(
-                test_filter=test_filter, stop_on_first_failure=stop_on_first_failure,
-                max_retries=max_retries, timeout_per_test=timeout_per_test,
-                auto_screenshot_on_failure=auto_ss, source_dir=source_dir, platform=platform,
-                layer=layer)
-
-            messages = [f"## 批量测试\n\n时间：{timestamp}", batch_result.get("message", "")]
-            if not batch_result.get("success") and batch_result.get("error"):
-                messages.append(f"\n[ERROR] {batch_result['error']}")
-            summary = batch_result.get("summary", {})
-            if summary:
-                messages.append(f"\n汇总：{summary.get('passed')}/{summary.get('total')} 通过，"
-                                f"failure_types={summary.get('failure_types', {})}")
-            failed = batch_result.get("failed", [])
-            if failed:
-                messages.append(f"失败列表：{failed}")
-            return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-
-        elif tool_name == "discover_tests":
-            flt = arguments.get("filter")
-            source_dir = arguments.get("source_dir")
-            layer = arguments.get("layer")  # M3: 按层过滤
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-            discovery = self.batch_runner.discover_tests(source_dir, filter_pattern=flt, layer=layer)
-            if discovery.get("success"):
-                tests = discovery.get("tests", [])
-                lines = [f"发现 {len(tests)} 个测试（估算 {discovery.get('total_est_seconds')}s）："]
-                for t in tests:
-                    layer_info = f", layer={t.get('layer', 'integration')}"
-                    lines.append(f"  - {t['test_name']} ({t['type']}{layer_info}, ~{t['est_seconds']}s)")
-                return {"content": [{"type": "text",
-                                     "text": f"## 测试发现\n\n时间：{timestamp}\n\n" + "\n".join(lines)}]}
-            return {"content": [{"type": "text", "text": f"[FAIL] {discovery.get('error', '未知错误')}"}],
-                    "isError": True}
-
-        elif tool_name in ("launch_only", "run_game"):
-            map_path = arguments.get("map_path", str(config.compile_output_path / config.compile_output_name))
-            platform = arguments.get("platform")
-
-            # run_game 支持 inject_inspect 参数（默认 True），launch_only 保持原有行为
-            inject_inspect = arguments.get("inject_inspect", True) if tool_name == "run_game" else False
-
-            if not platform:
-                run_mode, _ = config.get_run_mode_with_source()
-                platform = run_mode
-
-            # inject_inspect=True 时：注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译
-            if inject_inspect:
-                source_dir = arguments.get("source_dir") or str(config.compile_source_dir)
-                resolved_source = config._resolve_path(source_dir)
-                test_dir = config.get_test_dir_path(resolved_source)
-                if test_dir is None:
-                    return {
-                        "content": [{"type": "text", "text": f"[FAIL] source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {resolved_source}，可能传错（如多了子目录）"}],
-                        "isError": True
-                    }
-                test_dir.mkdir(parents=True, exist_ok=True)
-
-                # 【M1 归拢】插件产物集中放 _war3_tester/ 子目录
-                wt_dir = self._get_war3_tester_dir(test_dir)
-
-                # 1. 注入插件产物（inspect_handler + assertions + jass_mock）
-                self._inject_war3_tester_assets(wt_dir)
-
-                # 2. 写 inspect-only 的 run_auto_test.lua（只启动 inspect_handler，不跑测试）
-                run_auto_test_path = test_dir / 'run_auto_test.lua'
-                _prefix = config.test_module_prefix
-                inspect_only_content = (
-                    "-- inspect-only bootstrap（run_game 注入，仅启动运行时查询，不跑测试）\n"
-                    "pcall(function()\n"
-                    f"    local ih = require('{_prefix}_war3_tester.inspect_handler')\n"
-                    "    if ih and ih.start then ih.start() end\n"
-                    "end)\n"
-                )
-                try:
-                    with open(run_auto_test_path, 'w', encoding='utf-8') as f:
-                        f.write(inspect_only_content)
-                    self.logger.info(f"[run_game] 已写入 inspect-only run_auto_test.lua → {run_auto_test_path}")
-                except (IOError, OSError) as e:
-                    self.logger.warning(f"[run_game] 写入 run_auto_test.lua 失败（graceful）: {e}")
-
-                # 3. 删 _test_off.lua（若存在），让 auto-test 模块加载 run_auto_test
-                # v0.15.0: 委托 test_mode_flag.enable（内部已含 _test_off 删除 + legacy 清理）
-                self.test_mode_flag.enable(test_dir)
-                self.logger.info(f"[run_game] 已删除 _war3_tester/_test_off.lua（启用 inspect_handler）")
-
-                # 4. 编译地图（把 inspect_handler + run_auto_test 打包进 w3x）
-                compile_result = self.executor.compile(source_dir)
-                if not compile_result.get("success"):
-                    return {
-                        "content": [{"type": "text", "text": f"[FAIL] 地图编译失败（inject_inspect 启用）\n\n时间：{timestamp}\n\n{compile_result.get('error', '未知错误')}"}],
-                        "isError": True
-                    }
-                self.logger.info(f"[run_game] 编译成功，准备启动游戏（inject_inspect 已注入）")
-
-            # 启动游戏（保留原有逻辑）
-            result = self.executor.run_game(map_path, platform)
-
-            if result.get("success"):
-                msg = f"[OK] 游戏已启动\n\n{result.get('message', '')}"
-                if inject_inspect:
-                    msg += "\n\n（inspect_handler 已注入，可使用 inspect_game 运行时查询）"
-                return {
-                    "content": [{"type": "text", "text": msg}]
-                }
-            else:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] 游戏启动失败\n\n{result.get('error', '未知错误')}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "stop_game":
-            result = self.executor.stop_game()
-
-            if result.get("success"):
-                return {
-                    "content": [{"type": "text", "text": f"[OK] {result.get('message', '游戏已关闭')}"}]
-                }
-            else:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] {result.get('error', '游戏关闭失败')}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "send_key":
-            key = arguments.get("key", "enter")
-            result = self.executor.send_key(key)
-
-            if result.get("success"):
-                return {
-                    "content": [{"type": "text", "text": f"[OK] 已发送 {key} 键\n\n{result.get('message', '')}"}]
-                }
-            else:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] 发送按键失败\n\n{result.get('error', '未知错误')}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "take_screenshot":
-            # 【F1 修复】调用 executor.take_screenshot 实现真实截图
-            test_name = arguments.get("test_name", "unknown")
-            filename = arguments.get("filename")
-            window_title = arguments.get("window_title")
-
-            result = self.executor.take_screenshot(test_name, filename, window_title)
-
-            if result.get("success"):
-                base_text = (f"[OK] 截图已保存\n\n{result.get('message', '')}\n\n"
-                             f"WSL 路径：{result.get('path_wsl', '')}\nWindows 路径：{result.get('path', '')}")
-                # 默认自动 VLM 判读(graceful:VLM 未配/失败不阻塞,截图仍成功)
-                if getattr(config, 'take_screenshot_auto_analyze', True):
-                    png_path = result.get('path') or result.get('path_wsl')
-                    try:
-                        analysis = self.analyze_screenshot(png_path)
-                        base_text += f"\n\n--- VLM 判读 ---\n{analysis}"
-                    except Exception as e:
-                        base_text += (f"\n\n--- VLM 判读失败(不影响截图使用) ---\n{e}"
-                                      f"\n(关闭自动判读:config.json 设 take_screenshot_auto_analyze=false)")
-                return {
-                    "content": [{"type": "text", "text": base_text}]
-                }
-            else:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] 截图失败\n\n{result.get('error', '未知错误')}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "analyze_screenshot":
-            png_path = arguments.get("png_path")
-            prompt = arguments.get("prompt", "")
-            if not png_path:
-                return {
-                    "content": [{"type": "text", "text": "[FAIL] 缺少 png_path 参数"}],
-                    "isError": True
-                }
-            try:
-                analysis_text = self.analyze_screenshot(png_path, prompt)
-                return {
-                    "content": [{"type": "text", "text": f"[OK] 截图分析完成\n\n时间：{timestamp}\n\n{analysis_text}"}]
-                }
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] 截图分析失败\n\n{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "stop_http_server":
-            self.http_receiver.stop()
-            return {
-                "content": [{"type": "text", "text": "[OK] HTTP 服务器将随主进程退出自动关闭"}]
-            }
-
-        elif tool_name == "cleanup_all":
-            stop_result = self.executor.stop_game()
-            self.http_receiver.stop()
-            return {
-                "content": [{"type": "text", "text": f"[OK] 清理完成\n\n{stop_result.get('message', '')}"}]
-            }
-
-        elif tool_name == "toggle_test":
-            enabled = arguments.get("enabled", True)
-            source_dir = arguments.get("source_dir")
-            if not source_dir:
-                source_dir = str(config.compile_source_dir)
-            else:
-                source_dir = str(config._resolve_path(source_dir))
-
-            result = self.toggle_test(enabled, source_dir)
-            if result.get("success"):
-                return {
-                    "content": [{"type": "text",
-                                 "text": f"[OK] 测试模式{result.get('action', '')}\n\n时间：{timestamp}"}]
-                }
-            else:
-                msg = f"[FAIL] toggle_test 未完成\n\n时间：{timestamp}\n"
-                if result.get("compile_error"):
-                    msg += f"编译失败：{result['compile_error']}"
-                return {"content": [{"type": "text", "text": msg}], "isError": True}
-
-        elif tool_name == "get_project_info":
-            try:
-                source_dir = arguments.get("source_dir")
-                if not source_dir:
-                    source_dir = str(config.compile_source_dir)
-                else:
-                    source_dir = str(config._resolve_path(source_dir))
-                max_depth = arguments.get("max_depth", 3)
-                result = self._get_project_info(source_dir, max_depth)
-                return {"content": [{"type": "text", "text": result}]}
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] get_project_info 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "inspect_game":
-            expr = arguments.get("expr")
-            timeout = arguments.get("timeout", 5)
-
-            if not expr:
-                return {
-                    "content": [{"type": "text", "text": "[FAIL] 缺少 expr 参数"}],
-                    "isError": True
-                }
-
-            # v0.14.0: 委托 store 管理 inspect 协议（消除直插私有字段）
-            try:
-                query_id = self.store.submit_inspect(expr)
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] 加入查询队列失败：{e}"}],
-                    "isError": True
-                }
-
-            # 轮询等待结果（store.take_inspect 内部 0.2s 间隔轮询）
-            result = self.store.take_inspect(query_id, timeout=timeout)
-            if result:
-                if "error" in result:
-                    return {
-                        "content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}],
-                        "isError": True
-                    }
-                else:
-                    value = result.get("value", "")
-                    return {
-                        "content": [{"type": "text", "text": f"[OK] 查询结果：\n{value}"}]
-                    }
-
-            # 超时
-            return {
-                "content": [{"type": "text", "text": f"[FAIL] 超时（{timeout}秒）：游戏端未回传结果"}],
-                "isError": True
-            }
-
-        elif tool_name == "get_debug_output":
-            try:
-                limit = arguments.get("limit", 50)
-                level = arguments.get("level", "all")
-                source_dir = arguments.get("source_dir")
-                result = self._get_debug_output(limit, level, source_dir)
-                return {"content": [{"type": "text", "text": result}]}
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] get_debug_output 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "run_unit_test":
-            # M2: 桌面纯逻辑单测（不启动游戏，秒级反馈）
-            test_name = arguments.get("test_name", "unknown")
-            source_dir = arguments.get("source_dir")
-            timeout = arguments.get("timeout", 10)
-
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-
-            try:
-                result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
-
-                # 构建返回消息
-                messages = [f"## 桌面单测\n\n时间：{timestamp}"]
-                messages.append(f"测试名称：{result.get('test_name', test_name)}")
-                messages.append(f"结果：{'通过' if result.get('success') else '失败'}")
-                messages.append(f"耗时：{result.get('elapsed', 0):.2f}s")
-
-                if result.get('failure_type'):
-                    messages.append(f"failure_type: {result.get('failure_type')}")
-                if result.get('error'):
-                    messages.append(f"错误：{result.get('error')}")
-                if result.get('details'):
-                    messages.append(f"\n详情：\n{result.get('details')}")
-                if result.get('cases'):
-                    messages.append(f"\n用例：{result.get('cases')}")
-
-                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] run_unit_test 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "scaffold_test":
-            # M3: 生成 TDD 测试骨架
-            module = arguments.get("module")
-            layer = arguments.get("layer", "unit")
-            name = arguments.get("name")
-            source_dir = arguments.get("source_dir")
-
-            if not module:
-                return {
-                    "content": [{"type": "text", "text": "[FAIL] 缺少 module 参数"}],
-                    "isError": True
-                }
-
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-            else:
-                source_dir = str(config.compile_source_dir)
-
-            try:
-                result = self._scaffold_test(module, layer, name, source_dir)
-                if result.get("success"):
-                    messages = [f"## 测试骨架生成\n\n时间：{timestamp}"]
-                    messages.append(f"模块：{module}")
-                    messages.append(f"层：{layer}")
-                    messages.append(f"文件：{result.get('file')}")
-                    messages.append(f"\n{result.get('message')}")
-                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-                else:
-                    return {
-                        "content": [{"type": "text", "text": f"[FAIL] {result.get('error', '生成失败')}"}],
-                        "isError": True
-                    }
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] scaffold_test 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "tdd_red":
-            # M3: TDD Red 阶段 - 预期失败
-            test_name = arguments.get("test_name", "unknown")
-            layer = arguments.get("layer", "unit")
-            source_dir = arguments.get("source_dir")
-            timeout = arguments.get("timeout", 60)
-
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-
-            try:
-                result = self._tdd_red(test_name, layer, source_dir, timeout)
-
-                messages = [f"## TDD Red 阶段\n\n时间：{timestamp}"]
-                messages.append(f"测试：{test_name}")
-                messages.append(f"层：{layer}")
-                messages.append(f"状态：{result.get('status')}")
-                messages.append(f"failure_type: {result.get('failure_type')}")
-
-                if result.get('status') == 'red_valid':
-                    messages.append("\n✅ Red 成立：测试预期失败，测试有效")
-                elif result.get('status') == 'red_invalid':
-                    messages.append("\n❌ Red 不成立：测试写错或环境问题")
-                    messages.append(f"原因：{result.get('reason')}")
-                elif result.get('status') == 'green':
-                    messages.append("\n⚠️ 测试通过了，但预期应该失败")
-
-                if result.get('error'):
-                    messages.append(f"\n错误：{result.get('error')}")
-
-                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] tdd_red 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "tdd_green":
-            # M3: TDD Green 阶段 - 预期通过
-            test_name = arguments.get("test_name", "unknown")
-            layer = arguments.get("layer", "unit")
-            source_dir = arguments.get("source_dir")
-            timeout = arguments.get("timeout", 60)
-
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-
-            try:
-                result = self._tdd_green(test_name, layer, source_dir, timeout)
-
-                messages = [f"## TDD Green 阶段\n\n时间：{timestamp}"]
-                messages.append(f"测试：{test_name}")
-                messages.append(f"层：{layer}")
-                messages.append(f"结果：{'通过' if result.get('success') else '失败'}")
-                messages.append(f"耗时：{result.get('elapsed', 0):.2f}s")
-
-                if result.get('success'):
-                    messages.append("\n✅ Green 成立：测试通过")
-                else:
-                    messages.append("\n❌ Green 不成立：测试仍失败")
-                    messages.append(f"failure_type: {result.get('failure_type')}")
-                    if result.get('error'):
-                        messages.append(f"错误：{result.get('error')}")
-
-                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] tdd_green 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "watch_unit_tests":
-            # M4 方向 F: 启动文件监控模式
-            test_name = arguments.get("test_name", "unknown")
-            source_dir = arguments.get("source_dir")
-            poll_interval = arguments.get("poll_interval", 1.0)
-            debounce_delay = arguments.get("debounce_delay", 0.5)
-
-            if source_dir:
-                source_dir = str(config._resolve_path(source_dir))
-
-            try:
-                result = self.file_watcher.start_watch(
-                    test_name, source_dir, poll_interval, debounce_delay)
-
-                if result.get('success'):
-                    messages = [f"## 文件监控已启动\n\n时间：{timestamp}"]
-                    messages.append(result.get('message', ''))
-                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-                else:
-                    return {
-                        "content": [{"type": "text", "text": f"[FAIL] {result.get('message', '启动失败')}"}],
-                        "isError": True
-                    }
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] watch_unit_tests 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "stop_watch":
-            # M4 方向 F: 停止文件监控
-            try:
-                result = self.file_watcher.stop_watch()
-                if result.get('success'):
-                    messages = [f"## 文件监控已停止\n\n时间：{timestamp}"]
-                    messages.append(result.get('message', ''))
-                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-                else:
-                    return {
-                        "content": [{"type": "text", "text": f"[FAIL] {result.get('message', '停止失败')}"}],
-                        "isError": True
-                    }
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] stop_watch 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "get_watch_results":
-            # M4 方向 F: 获取文件监控累积结果
-            try:
-                result = self.file_watcher.get_results()
-                messages = [f"## 文件监控结果\n\n时间：{timestamp}"]
-                messages.append(f"监控状态：{'运行中' if result.get('watching') else '已停止'}")
-                messages.append(f"测试名称：{result.get('test_name', 'N/A')}")
-                messages.append(f"总运行次数：{result.get('count', 0)}")
-                if result.get('log_file'):
-                    messages.append(f"日志文件：{result.get('log_file')}")
-
-                results = result.get('results', [])
-                if results:
-                    messages.append("\n### 最近 10 次运行：")
-                    for r in results[-10:]:
-                        status = "✅" if r.get('success') else "❌"
-                        messages.append(f"{status} {r.get('timestamp', '')} | "
-                                       f"触发：{r.get('trigger', '')} | "
-                                       f"结果：{'通过' if r.get('success') else r.get('failure_type', '失败')} | "
-                                       f"耗时：{r.get('elapsed', 0):.2f}s")
-                        if r.get('error'):
-                            messages.append(f"   错误：{r.get('error')}")
-
-                return {"content": [{"type": "text", "text": "\n".join(messages)}]}
-            except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"[FAIL] get_watch_results 失败：{e}"}],
-                    "isError": True
-                }
-
-        elif tool_name == "setup_environment":
-            # 一键部署测试环境组件
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            source_dir = arguments.get("source_dir")
-            components = arguments.get("components", ["socket", "http", "nopause"])
-            war3_dir = arguments.get("war3_dir")
-
-            # 确定项目根目录
-            if source_dir:
-                project_root = Path(source_dir)
-            elif config.project_root:
-                project_root = config.project_root
-            else:
-                project_root = None
-
-            # 确定 war3 安装目录（从 config.war3_log_dir 反推）
-            if not war3_dir and config.war3_log_dir:
-                # war3_log_dir 通常是 "D:/war3/logs" 形式，parent 是 "D:/war3"
-                try:
-                    inferred_war3_dir = Path(config.war3_log_dir).parent
-                    if inferred_war3_dir.exists():
-                        war3_dir = str(inferred_war3_dir)
-                except Exception:
-                    pass
-
-            # 插件根目录（bin/ 在插件根下）
-            plugin_root = SERVER_DIR.parent  # server/ → war3-tester/
-
-            results = []
-
-            # 1. socket 组件
-            if "socket" in components:
-                try:
-                    if not project_root:
-                        results.append({
-                            "component": "socket",
-                            "status": "failed",
-                            "message": "未指定 source_dir 且 WAR3_PROJECT_ROOT 未设置"
-                        })
-                    else:
-                        socket_src_dir = plugin_root / "bin" / "socket"
-                        socket_dst_dir = project_root / "map"
-
-                        if not socket_src_dir.exists():
-                            results.append({
-                                "component": "socket",
-                                "status": "failed",
-                                "message": f"插件 bin/socket 目录不存在：{socket_src_dir}"
-                            })
-                        else:
-                            socket_dst_dir.mkdir(parents=True, exist_ok=True)
-
-                            copied_files = []
-                            for dll_name in ["socket.dll", "libwinpthread-1.dll"]:
-                                src = socket_src_dir / dll_name
-                                dst = socket_dst_dir / dll_name
-                                if src.exists():
-                                    shutil.copy2(src, dst)
-                                    copied_files.append(str(dst))
-
-                            if copied_files:
-                                results.append({
-                                    "component": "socket",
-                                    "status": "success",
-                                    "message": f"已拷贝 {len(copied_files)} 个文件到 {socket_dst_dir}",
-                                    "files": copied_files
-                                })
-                            else:
-                                results.append({
-                                    "component": "socket",
-                                    "status": "failed",
-                                    "message": "未找到 socket.dll 或 libwinpthread-1.dll"
-                                })
-                except Exception as e:
-                    results.append({
-                        "component": "socket",
-                        "status": "failed",
-                        "message": f"部署失败：{e}"
-                    })
-
-            # 2. http 组件（pip install）
-            if "http" in components:
-                try:
-                    proc = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "flask", "werkzeug"],
-                        capture_output=True,
-                        text=True,
-                        timeout=120
-                    )
-                    if proc.returncode == 0:
-                        results.append({
-                            "component": "http",
-                            "status": "success",
-                            "message": "flask + werkzeug 已安装（或已是最新）"
-                        })
-                    else:
-                        results.append({
-                            "component": "http",
-                            "status": "failed",
-                            "message": f"pip install 失败：{proc.stderr}"
-                        })
-                except subprocess.TimeoutExpired:
-                    results.append({
-                        "component": "http",
-                        "status": "failed",
-                        "message": "pip install 超时（120秒）"
-                    })
-                except Exception as e:
-                    results.append({
-                        "component": "http",
-                        "status": "failed",
-                        "message": f"pip install 异常：{e}"
-                    })
-
-            # 3. nopause 组件
-            if "nopause" in components:
-                try:
-                    if not war3_dir:
-                        results.append({
-                            "component": "nopause",
-                            "status": "skipped",
-                            "message": "未指定 war3_dir 且无法从 config.war3_log_dir 反推，请传参 war3_dir"
-                        })
-                    else:
-                        nopause_src = plugin_root / "bin" / "nopause.asi"
-                        nopause_dst = Path(war3_dir) / "nopause.asi"
-
-                        if not nopause_src.exists():
-                            results.append({
-                                "component": "nopause",
-                                "status": "failed",
-                                "message": f"插件 bin/nopause.asi 不存在：{nopause_src}"
-                            })
-                        else:
-                            shutil.copy2(nopause_src, nopause_dst)
-                            results.append({
-                                "component": "nopause",
-                                "status": "success",
-                                "message": f"已拷贝 nopause.asi 到 {nopause_dst}"
-                            })
-                except Exception as e:
-                    results.append({
-                        "component": "nopause",
-                        "status": "failed",
-                        "message": f"部署失败：{e}"
-                    })
-
-            # 汇总结果
-            messages = [f"## 环境部署结果\n\n时间：{timestamp}"]
-            if project_root:
-                messages.append(f"项目根目录：{project_root}")
-            if war3_dir:
-                messages.append(f"War3 安装目录：{war3_dir}")
-            messages.append("")
-
-            success_count = sum(1 for r in results if r.get("status") == "success")
-            failed_count = sum(1 for r in results if r.get("status") == "failed")
-            skipped_count = sum(1 for r in results if r.get("status") == "skipped")
-
-            messages.append(f"总计：{len(results)} 个组件（成功 {success_count} / 失败 {failed_count} / 跳过 {skipped_count}）\n")
-
-            for r in results:
-                status_icon = "✅" if r.get("status") == "success" else ("❌" if r.get("status") == "failed" else "⚠️")
-                messages.append(f"{status_icon} {r.get('component')}: {r.get('status')}")
-                messages.append(f"   {r.get('message')}")
-                if r.get("files"):
-                    for f in r["files"]:
-                        messages.append(f"   - {f}")
-                messages.append("")
-
-            is_error = failed_count > 0
-            return {
-                "content": [{"type": "text", "text": "\n".join(messages)}],
-                "isError": is_error
-            }
-
-        else:
-            return {
-                "content": [{"type": "text", "text": f"未知工具：{tool_name}"}],
-                "isError": True
-            }
 
     async def handle_resource_read(self, uri: str) -> dict:
         """处理资源读取"""
