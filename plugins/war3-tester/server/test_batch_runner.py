@@ -340,6 +340,15 @@ class TestBatchRunner:
         self.executor.stop_game()
         time.sleep(3)
 
+        # 0.1 预清理后复查：进程退出需要时间，sleep 后复查比 stop_game 内立即复查更准
+        # 残留则报错(env_error)不自启新游戏，避免旧进程没死透时新游戏在脏环境卡住
+        clean_check = self.executor.is_war3_clean()
+        if not clean_check.get('success'):
+            return self._build_result(
+                test_name, success=False, failure_type='env_error',
+                error=f'预清理后仍有 war3 进程残留: {clean_check.get("remaining")};请 stop_game 重试或手动清理',
+                elapsed=0)
+
         try:
             # 0.5 准备测试入口（写 _target_test.lua + run_auto_test.lua）
             # v0.15.0: 委托 TestEntryPreparer.prepare（消除 mcp_server 反向依赖）

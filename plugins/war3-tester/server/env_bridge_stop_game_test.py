@@ -223,6 +223,90 @@ def test_check_war3_remaining_case_insensitive():
     print("  PASS test_check_war3_remaining_case_insensitive")
 
 
+# ---------- is_war3_clean tests (ExecutorBase 共享方法) ----------
+
+def test_executorbase_is_war3_clean_no_remaining():
+    """ExecutorBase.is_war3_clean: 无残留 → success:True"""
+    exe = _make_local_executor(is_windows=True)
+    exe.execute = MagicMock(return_value={
+        'success': True,
+        'stdout': '"Image Name","PID"\n"System",4\n"python.exe",1234\n',
+    })
+
+    result = exe.is_war3_clean()
+    assert result['success'] is True, f"期望 success:True，得到 {result}"
+    assert result.get('message') == '游戏进程已全部清除', \
+        f"message 不符：{result.get('message')}"
+    # 验证调用了 tasklist.exe
+    exe.execute.assert_called_once()
+    call_args = exe.execute.call_args
+    assert call_args[0][0] == 'tasklist.exe', \
+        f"应调用 tasklist.exe，实际调用 {call_args[0][0]}"
+    print("  PASS test_executorbase_is_war3_clean_no_remaining")
+
+
+def test_executorbase_is_war3_clean_with_remaining():
+    """ExecutorBase.is_war3_clean: 有残留 → success:False + remaining"""
+    exe = _make_local_executor(is_windows=True)
+    tasklist_csv = (
+        '"Image Name","PID"\n'
+        '"war3.exe",1234\n'
+        '"KKWE.exe",5678\n'
+    )
+    exe.execute = MagicMock(return_value={
+        'success': True,
+        'stdout': tasklist_csv,
+    })
+
+    result = exe.is_war3_clean()
+    assert result['success'] is False, f"期望 success:False，得到 {result}"
+    assert 'remaining' in result and len(result['remaining']) == 2, \
+        f"应有 2 项 remaining：{result}"
+    assert any('war3.exe' in r.lower() for r in result['remaining']), \
+        f"remaining 应包含 war3.exe：{result['remaining']}"
+    assert any('kkwe.exe' in r.lower() for r in result['remaining']), \
+        f"remaining 应包含 KKWE.exe：{result['remaining']}"
+    print("  PASS test_executorbase_is_war3_clean_with_remaining")
+
+
+def test_executorbase_is_war3_clean_empty_stdout():
+    """ExecutorBase.is_war3_clean: stdout 为空 → success:True"""
+    exe = _make_local_executor(is_windows=True)
+    exe.execute = MagicMock(return_value={'success': True, 'stdout': ''})
+
+    result = exe.is_war3_clean()
+    assert result['success'] is True, f"期望 success:True，得到 {result}"
+    print("  PASS test_executorbase_is_war3_clean_empty_stdout")
+
+
+def test_executorbase_is_war3_clean_none_stdout():
+    """ExecutorBase.is_war3_clean: stdout 为 None → success:True（防御性）"""
+    exe = _make_local_executor(is_windows=True)
+    exe.execute = MagicMock(return_value={'success': True, 'stdout': None})
+
+    result = exe.is_war3_clean()
+    assert result['success'] is True, f"期望 success:True，得到 {result}"
+    print("  PASS test_executorbase_is_war3_clean_none_stdout")
+
+
+def test_winproxy_is_war3_clean_inherited():
+    """WinProxyExecutor.is_war3_clean: 继承自 ExecutorBase，不覆盖"""
+    exe = _make_winproxy_executor()
+    exe.execute = MagicMock(return_value={
+        'success': True,
+        'stdout': '"Image Name"\n"System"\n',
+    })
+
+    result = exe.is_war3_clean()
+    assert result['success'] is True, f"期望 success:True，得到 {result}"
+    # 验证调用了 tasklist.exe
+    exe.execute.assert_called_once()
+    call_args = exe.execute.call_args
+    assert call_args[0][0] == 'tasklist.exe', \
+        f"应调用 tasklist.exe，实际调用 {call_args[0][0]}"
+    print("  PASS test_winproxy_is_war3_clean_inherited")
+
+
 if __name__ == "__main__":
     print("=== stop_game 单测 ===")
     tests = [
@@ -237,6 +321,11 @@ if __name__ == "__main__":
         test_check_war3_remaining_empty,
         test_check_war3_remaining_detects_all_keywords,
         test_check_war3_remaining_case_insensitive,
+        test_executorbase_is_war3_clean_no_remaining,
+        test_executorbase_is_war3_clean_with_remaining,
+        test_executorbase_is_war3_clean_empty_stdout,
+        test_executorbase_is_war3_clean_none_stdout,
+        test_winproxy_is_war3_clean_inherited,
     ]
 
     passed = 0

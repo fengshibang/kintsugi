@@ -78,6 +78,18 @@ class ExecutorBase:
         """检查执行器是否就绪"""
         raise NotImplementedError
 
+    def is_war3_clean(self) -> dict:
+        """
+        复查 war3 进程残留（共享实现，依赖 self.execute 多态）。
+
+        调用 tasklist.exe 列出当前进程，用 _check_war3_remaining 解析。
+        返回：
+          无残留 → {'success': True, 'message': '游戏进程已全部清除'}
+          有残留 → {'success': False, 'message': '...', 'remaining': [...]}
+        """
+        verify = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
+        return _check_war3_remaining(verify.get('stdout', ''))
+
 
 class WinProxyExecutor(ExecutorBase):
     """

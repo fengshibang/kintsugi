@@ -1,5 +1,12 @@
 # Changelog — war3-tester
 
+## 0.19.7 — 2026-07-24
+
+### 新增（W2 进程清理防御 + TDD 闭环设计沉淀）
+
+- **W2 进程清理防御（决策4a）**：`ExecutorBase.is_war3_clean()`（共享复查 war3 进程残留：`execute tasklist /FO CSV` + `_check_war3_remaining`）；`run_single_test` 预清理 `stop_game + sleep(3)` 后复查，残留 → `env_error` 报错不自启新游戏（避免旧进程没死透时新游戏在脏环境卡住，8766 单活+抢资源）。新增 `env_bridge_stop_game_test` 5 个 is_war3_clean case + `test_batch_runner_test`（3 case）。
+- **TDD 闭环设计沉淀（grilling 三轮演进）**：`CONTEXT.md`（术语 + 注入式/项目感知适配生成原则）+ `docs/plans/2026-07-23-tdd-loop-spec.md`（W1 exec_game + W2[完成] + W3 项目适配生成）+ ADR-0001（难度屏蔽由项目适配生成产出，非硬编码 patch）+ ADR-0002（继续 HTTP）。方向：war3-tester 升级为**项目感知的适配生成器**（通用能力 + 分析项目→生成项目特定适配→持久化→加载）。
+
 ## 0.19.6 — 2026-07-23
 
 ### 重构（第二轮架构审查候选③⑤：mcp_server 方法外提 module）
