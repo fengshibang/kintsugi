@@ -58,10 +58,7 @@ for _p in _patches:
 # 上面的 patch('config.Config') 只拦构造函数调用，对模块级全局赋值无效——
 # 直接赋 mock 覆盖模块级全局，War3TesterMCP.__init__ 读到的就是 mock。
 import mcp_server
-mcp_server.config = _mock_config
-mcp_server.executor = _mock_executor
-mcp_server.store = _mock_store
-mcp_server.http_receiver = _mock_http_receiver
+# v0.19.5(候选④): 模块级全局/init_runtime 废弃,patch 拦截构造,War3TesterMCP() 用 mock
 from mcp_server import War3TesterMCP
 
 

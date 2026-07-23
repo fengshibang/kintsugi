@@ -73,6 +73,30 @@ function resolvePython() {
   return 'python3';
 }
 
+// --- 自动清理端口占用(避免多 Claude Code 实例 war3-tester MCP 8766 冲突) ---
+// v0.19.5(候选④配套): spawn mcp_server 前,netstat 找占 8766 LISTENING 的旧进程并 taskkill。
+// 这样多开 Claude Code 时,新实例自动接管 8766,旧实例 MCP 被 kill(单活,游戏端 8766 写死无法多实例)。
+function cleanupPortOccupiers(port) {
+  if (process.platform !== 'win32') return;
+  try {
+    const out = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`,
+      { encoding: 'utf8', shell: 'cmd.exe' });
+    const myPid = process.pid;
+    out.trim().split(/\r?\n/).forEach(line => {
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[parts.length - 1];
+      if (pid && /^\d+$/.test(pid) && parseInt(pid, 10) !== myPid) {
+        try {
+          execSync(`taskkill /PID ${pid} /F`, { shell: 'cmd.exe' });
+          console.error(`[war3-tester] 自动清理占用 ${port} 的旧 MCP 进程 PID=${pid}`);
+        } catch (e) { /* 进程可能已退出,忽略 */ }
+      }
+    });
+  } catch (e) {
+    // netstat 无 LISTENING 输出(端口空闲)正常,忽略
+  }
+}
+
 // --- Main -----------------------------------------------------------------
 
 const pythonBin = resolvePython();
@@ -85,6 +109,9 @@ const isPyLauncher = binLower === 'py';
 const args = isPyLauncher
   ? ['-3', serverScript]
   : [serverScript];
+
+// spawn mcp_server 前,清理 8766 旧占用(多实例自动接管,不用手动杀进程)
+cleanupPortOccupiers(8766);
 
 const proc = spawn(pythonBin, args, {
   stdio: ['pipe', 'pipe', 'pipe'],

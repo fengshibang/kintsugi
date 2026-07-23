@@ -47,27 +47,39 @@ def test_import_no_side_effects():
     print("  PASS test_import_no_side_effects")
 
 
-def test_init_runtime_initializes_globals():
-    """init_runtime() 调用后四个全局有值（非 None）"""
+def test_init_initializes_instance_attrs():
+    """War3TesterMCP.__init__ 构造后四实例属性有值(非 None)
+
+    v0.19.5(候选④): init_runtime/模块级全局废弃,四对象改 __init__ 构造存 self。
+    """
+    from unittest.mock import patch, MagicMock
     import mcp_server
 
-    # 调用 init_runtime（实际构造全局对象）
-    mcp_server.init_runtime()
+    with patch.object(mcp_server, 'Config', return_value=MagicMock(http_host='127.0.0.1', http_port=0, project_root=None)) as mock_config, \
+         patch.object(mcp_server, 'create_executor', return_value=MagicMock()) as mock_executor, \
+         patch.object(mcp_server, 'TestStateStore', return_value=MagicMock()) as mock_store, \
+         patch.object(mcp_server, 'HTTPReceiver', return_value=MagicMock()) as mock_http:
+        server = mcp_server.War3TesterMCP()
 
-    # 断言四个全局有值
-    assert mcp_server.config is not None, "init_runtime() 后 config 应有值"
-    assert mcp_server.executor is not None, "init_runtime() 后 executor 应有值"
-    assert mcp_server.store is not None, "init_runtime() 后 store 应有值"
-    assert mcp_server.http_receiver is not None, "init_runtime() 后 http_receiver 应有值"
+    # 四构造函数被调用(__init__ 构造四全局)
+    assert mock_config.called, "Config() 应在 __init__ 被调用"
+    assert mock_executor.called, "create_executor() 应在 __init__ 被调用"
+    assert mock_store.called, "TestStateStore() 应在 __init__ 被调用"
+    assert mock_http.called, "HTTPReceiver() 应在 __init__ 被调用"
+    # 四实例属性有值
+    assert server.config is not None, "__init__ 后 self.config 应有值"
+    assert server.executor is not None, "__init__ 后 self.executor 应有值"
+    assert server.store is not None, "__init__ 后 self.store 应有值"
+    assert server.http_receiver is not None, "__init__ 后 self.http_receiver 应有值"
 
-    print("  PASS test_init_runtime_initializes_globals")
+    print("  PASS test_init_initializes_instance_attrs")
 
 
 if __name__ == "__main__":
     print("=== mcp_server import 副作用测试 ===")
     tests = [
         test_import_no_side_effects,
-        test_init_runtime_initializes_globals,
+        test_init_initializes_instance_attrs,
     ]
 
     passed = 0

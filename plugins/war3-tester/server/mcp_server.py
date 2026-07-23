@@ -51,36 +51,9 @@ from test_mode_flag import TestModeFlag
 from test_entry_preparer import TestEntryPreparer
 from diagnostics_collector import DiagnosticsCollector
 
-# v0.19.0: 延迟初始化（消除 import 副作用）
-# 模块级只占位，不实例化。实际构造在 init_runtime() 中完成，由 run_server() 调用。
-# 这样 import mcp_server 不会触发配置读取/端口扫描/目录创建等副作用。
-config = None
-executor = None
-store = None
-http_receiver = None
-
-
-def init_runtime():
-    """初始化运行时全局对象（config/executor/store/http_receiver）。
-
-    v0.19.0: 从模块级延迟到 run_server() 启动时调用，消除 import 副作用。
-    必须在 run_server() 构造 War3TesterMCP() 前调用。
-    """
-    global config, executor, store, http_receiver
-
-    # 初始化配置：project_root 优先取 start_mcp.js 注入的 WAR3_PROJECT_ROOT（项目目录），
-    # 缺省传 None 回退插件目录（向后兼容）。让 config.json/.env 读取回归项目目录。
-    _war3_project_root = os.getenv('WAR3_PROJECT_ROOT')
-    config = Config(project_root=Path(_war3_project_root) if _war3_project_root else None)
-
-    # 创建执行器（按 is_wsl() 自动选择）
-    executor = create_executor(config)
-
-    # v0.14.0: 创建唯一 TestStateStore（跨线程状态 owner）
-    store = TestStateStore()
-
-    # HTTP 接收端（注入 store）
-    http_receiver = HTTPReceiver(host=config.http_host, port=config.http_port, store=store)
+# v0.19.5(候选④): 模块级全局已废弃,四对象(config/executor/store/http_receiver)改由
+# War3TesterMCP.__init__ 构造并存 self。import mcp_server 不触发构造(__init__ 在实例化时调),
+# 保留"消除 import 副作用"(v0.19.0 目标)。
 
 
 class ToolSpec:
@@ -101,31 +74,35 @@ class War3TesterMCP:
     """War3 Tester MCP Server"""
 
     def __init__(self):
-        self.project_root = config.project_root
+        # v0.19.5(候选④): 构造四全局(废弃 init_runtime/模块级全局),存 self。
+        # import mcp_server 不触发构造(__init__ 在 War3TesterMCP() 时调),保留消除 import 副作用。
+        _war3_project_root = os.getenv('WAR3_PROJECT_ROOT')
+        self.config = Config(project_root=Path(_war3_project_root) if _war3_project_root else None)
         self.logger = setup_logger('war3-mcp')
-        self.executor = executor
-        self.http_receiver = http_receiver
-        self.store = store  # v0.14.0: 跨线程状态 owner
+        self.executor = create_executor(self.config)
+        self.store = TestStateStore()  # v0.14.0: 跨线程状态 owner
+        self.http_receiver = HTTPReceiver(host=self.config.http_host, port=self.config.http_port, store=self.store)
+        self.project_root = self.config.project_root
 
         # v0.15.0: 三 module（消除 mcp_server↔batch_runner 循环依赖）
         self.test_mode_flag = TestModeFlag(logger=self.logger)
-        self.diagnostics_collector = DiagnosticsCollector(store, config, logger=self.logger)
+        self.diagnostics_collector = DiagnosticsCollector(self.store, self.config, logger=self.logger)
         self.test_entry_preparer = TestEntryPreparer(
-            self.test_mode_flag, SERVER_DIR, config, logger=self.logger
+            self.test_mode_flag, SERVER_DIR, self.config, logger=self.logger
         )
 
         # v2: 批量测试编排器（注入 store + 三 module，与 http_receiver 共享状态访问）
         self.batch_runner = TestBatchRunner(
-            config, executor, http_receiver,
+            self.config, self.executor, self.http_receiver,
             test_mode_flag=self.test_mode_flag,
             test_entry_preparer=self.test_entry_preparer,
             diagnostics_collector=self.diagnostics_collector,
-            store=store
+            store=self.store
         )
         # M2: 桌面纯逻辑单测运行器（不启动游戏，秒级反馈）
-        self.desktop_runner = DesktopRunner(config, executor)
+        self.desktop_runner = DesktopRunner(self.config, self.executor)
         # M4: 文件监控器（watch 模式）
-        self.file_watcher = FileWatcher(self.desktop_runner, config)
+        self.file_watcher = FileWatcher(self.desktop_runner, self.config)
 
         # v0.17.0: 工具注册表（单源）。capabilities["tools"] 与 handle_tool_call 都从这里派生。
         self._tool_registry = self._register_tools()
@@ -174,7 +151,7 @@ class War3TesterMCP:
         # 1. compile_map / compile_only（合并：同一 handler 服务两个 name）
         def _handle_compile(arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
+            source_dir = self.config.resolve_source_dir(arguments.get("source_dir"))
             result = self.executor.compile(source_dir)
             if result.get("success"):
                 return {
@@ -207,10 +184,10 @@ class War3TesterMCP:
             test_file = arguments.get("test_file")
             timeout = arguments.get("timeout", 60)
             platform = arguments.get("platform")
-            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
+            source_dir = self.config.resolve_source_dir(arguments.get("source_dir"))
             auto_screenshot_on_failure = arguments.get("auto_screenshot_on_failure", True)
             if not platform:
-                run_mode, _ = config.get_run_mode_with_source()
+                run_mode, _ = self.config.get_run_mode_with_source()
                 platform = run_mode
             result = self.test_commit(test_name, test_file, timeout, platform, source_dir,
                                       auto_screenshot_on_failure)
@@ -245,9 +222,9 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             layer = arguments.get("layer")
             if source_dir:
-                source_dir = str(config.resolve_path(source_dir))
+                source_dir = str(self.config.resolve_path(source_dir))
             if not platform:
-                run_mode, _ = config.get_run_mode_with_source()
+                run_mode, _ = self.config.get_run_mode_with_source()
                 platform = run_mode
             batch_result = self.batch_runner.run_test_batch(
                 test_filter=test_filter, stop_on_first_failure=stop_on_first_failure,
@@ -287,7 +264,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             layer = arguments.get("layer")
             if source_dir:
-                source_dir = str(config.resolve_path(source_dir))
+                source_dir = str(self.config.resolve_path(source_dir))
             discovery = self.batch_runner.discover_tests(source_dir, filter_pattern=flt, layer=layer)
             if discovery.get("success"):
                 tests = discovery.get("tests", [])
@@ -309,15 +286,15 @@ class War3TesterMCP:
         # 5. launch_only / run_game（合并：同一 handler，通过 tool_name 区分 inject_inspect 行为）
         def _handle_launch_or_run(tool_name, arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            map_path = arguments.get("map_path", str(config.compile_output_path / config.compile_output_name))
+            map_path = arguments.get("map_path", str(self.config.compile_output_path / self.config.compile_output_name))
             platform = arguments.get("platform")
             inject_inspect = arguments.get("inject_inspect", True) if tool_name == "run_game" else False
             if not platform:
-                run_mode, _ = config.get_run_mode_with_source()
+                run_mode, _ = self.config.get_run_mode_with_source()
                 platform = run_mode
             if inject_inspect:
                 # v0.19.3: 收敛 source_dir 归一化(×3 复用)
-                resolved_source = config.resolve_source_dir(arguments.get("source_dir"))
+                resolved_source = self.config.resolve_source_dir(arguments.get("source_dir"))
                 test_dir = self.test_entry_preparer.prepare_inspect_only(resolved_source)
                 if test_dir is None:
                     return {
@@ -468,7 +445,7 @@ class War3TesterMCP:
         def _handle_toggle_test(arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             enabled = arguments.get("enabled", True)
-            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
+            source_dir = self.config.resolve_source_dir(arguments.get("source_dir"))
             result = self.toggle_test(enabled, source_dir)
             if result.get("success"):
                 return {"content": [{"type": "text", "text": f"[OK] 测试模式{result.get('action', '')}\n\n时间：{timestamp}"}]}
@@ -489,7 +466,7 @@ class War3TesterMCP:
         # 13. get_project_info
         def _handle_get_project_info(arguments):
             try:
-                source_dir = config.resolve_source_dir(arguments.get("source_dir"))
+                source_dir = self.config.resolve_source_dir(arguments.get("source_dir"))
                 max_depth = arguments.get("max_depth", 3)
                 result = self._get_project_info(source_dir, max_depth)
                 return {"content": [{"type": "text", "text": result}]}
@@ -558,7 +535,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             timeout = arguments.get("timeout", 10)
             if source_dir:
-                source_dir = str(config.resolve_path(source_dir))
+                source_dir = str(self.config.resolve_path(source_dir))
             try:
                 result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
                 messages = [f"## 桌面单测\n\n时间：{timestamp}"]
@@ -594,7 +571,7 @@ class War3TesterMCP:
             name = arguments.get("name")
             if not module:
                 return {"content": [{"type": "text", "text": "[FAIL] 缺少 module 参数"}], "isError": True}
-            source_dir = config.resolve_source_dir(arguments.get("source_dir"))
+            source_dir = self.config.resolve_source_dir(arguments.get("source_dir"))
             try:
                 result = self._scaffold_test(module, layer, name, source_dir)
                 if result.get("success"):
@@ -627,7 +604,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             timeout = arguments.get("timeout", 60)
             if source_dir:
-                source_dir = str(config.resolve_path(source_dir))
+                source_dir = str(self.config.resolve_path(source_dir))
             try:
                 result = self._tdd_red(test_name, layer, source_dir, timeout)
                 messages = [f"## TDD Red 阶段\n\n时间：{timestamp}"]
@@ -666,7 +643,7 @@ class War3TesterMCP:
             source_dir = arguments.get("source_dir")
             timeout = arguments.get("timeout", 60)
             if source_dir:
-                source_dir = str(config.resolve_path(source_dir))
+                source_dir = str(self.config.resolve_path(source_dir))
             try:
                 result = self._tdd_green(test_name, layer, source_dir, timeout)
                 messages = [f"## TDD Green 阶段\n\n时间：{timestamp}"]
@@ -703,7 +680,7 @@ class War3TesterMCP:
             poll_interval = arguments.get("poll_interval", 1.0)
             debounce_delay = arguments.get("debounce_delay", 0.5)
             if source_dir:
-                source_dir = str(config.resolve_path(source_dir))
+                source_dir = str(self.config.resolve_path(source_dir))
             try:
                 result = self.file_watcher.start_watch(test_name, source_dir, poll_interval, debounce_delay)
                 if result.get('success'):
@@ -783,13 +760,13 @@ class War3TesterMCP:
             war3_dir = arguments.get("war3_dir")
             if source_dir:
                 project_root = Path(source_dir)
-            elif config.project_root:
-                project_root = config.project_root
+            elif self.config.project_root:
+                project_root = self.config.project_root
             else:
                 project_root = None
-            if not war3_dir and config.war3_log_dir:
+            if not war3_dir and self.config.war3_log_dir:
                 try:
-                    inferred_war3_dir = Path(config.war3_log_dir).parent
+                    inferred_war3_dir = Path(self.config.war3_log_dir).parent
                     if inferred_war3_dir.exists():
                         war3_dir = str(inferred_war3_dir)
                 except Exception:
@@ -962,7 +939,7 @@ class War3TesterMCP:
         开启(true)：删除 _war3_tester/_test_off.lua，恢复 auto-test 模块默认加载。
         注：跑测试本身仍需 test_commit（它写入 _war3_tester/_target_test.lua，并会自动删除 _test_off.lua）。
         """
-        test_dir = config.get_test_dir_path(config.resolve_path(source_dir))
+        test_dir = self.config.get_test_dir_path(self.config.resolve_path(source_dir))
         if test_dir is None:
             return {'success': False, 'enabled': enabled,
                     'action': '失败：source_dir 非有效 w2l 项目根',
@@ -1157,8 +1134,8 @@ class War3TesterMCP:
             {'success': bool, 'file': str, 'message': str, 'error': str | None}
         """
         # v0.19.3: 收敛 source_dir 归一化
-        resolved = config.resolve_source_dir(source_dir)
-        test_dir = config.get_test_dir_path(resolved)
+        resolved = self.config.resolve_source_dir(source_dir)
+        test_dir = self.config.get_test_dir_path(resolved)
         if test_dir is None:
             return {
                 'success': False,
@@ -1469,14 +1446,14 @@ end
             return {"contents": [{"uri": uri, "text": "日志文件不存在"}]}
 
         elif uri == "war3://logs/game":
-            log_path = config.get_war3_log_file_path(player_id=1)
+            log_path = self.config.get_war3_log_file_path(player_id=1)
             if log_path and log_path.exists():
                 content = log_path.read_text(encoding="utf-8", errors="ignore")[-10000:]
                 return {"contents": [{"uri": uri, "text": content}]}
             return {"contents": [{"uri": uri, "text": "日志文件不存在"}]}
 
         elif uri == "war3://logs/game/list":
-            log_dir = config.war3_log_dir
+            log_dir = self.config.war3_log_dir
             if log_dir and log_dir.exists():
                 log_files = sorted(log_dir.glob("玩家*.log"))
                 file_list = "\n".join([f.name for f in log_files[-20:]])
@@ -1488,16 +1465,14 @@ end
 
 async def run_server():
     """运行 MCP 服务器（stdio JSON-RPC 主循环）"""
-    # v0.19.0: 启动时初始化运行时全局对象（消除 import 副作用）
-    init_runtime()
-
+    # v0.19.5(候选④): init_runtime 废弃,War3TesterMCP.__init__ 构造四全局
     server = War3TesterMCP()
 
     # 检测执行器连通性
     if not server.executor.check_connectivity():
         print(file=sys.stderr)
         print("=" * 60, file=sys.stderr)
-        if config.is_wsl:
+        if self.config.is_wsl:
             print("[ERROR] 无法连接到 Windows 代理", file=sys.stderr)
             print("请确保 Windows 代理已启动:", file=sys.stderr)
             print("  python win_proxy.py start", file=sys.stderr)
@@ -1511,7 +1486,7 @@ async def run_server():
     # 启动 HTTP 接收端
     http_result = server.http_receiver.start()
     if http_result:
-        server.logger.info(f"HTTP 服务器已启动（端口 {config.http_port}）")
+        server.logger.info(f"HTTP 服务器已启动（端口 {server.config.http_port}）")
     else:
         server.logger.warning("HTTP 服务器启动失败")
 
@@ -1526,8 +1501,8 @@ async def run_server():
             server.logger.warning(f"退出清理 http_receiver.stop 异常：{e}")
 
         # war3 是 Windows 游戏，仅 Windows 执行 taskkill；Linux/macOS 跳过
-        if config.is_windows or config.is_wsl:
-            for proc_name in config.war3_process_names:
+        if server.config.is_windows or server.config.is_wsl:
+            for proc_name in server.config.war3_process_names:
                 try:
                     subprocess.run(
                         ['taskkill', '/IM', proc_name, '/F'],
