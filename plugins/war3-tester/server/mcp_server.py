@@ -4,7 +4,6 @@
 War3 Tester 通用 MCP Server
 
 提供地图编译、游戏测试的 MCP 工具接口（stdio JSON-RPC）。
-从基线 scripts/mcp_war3_tester.py 剥离框架耦合。
 
 工具：
 - compile_map / compile_only: 编译地图
