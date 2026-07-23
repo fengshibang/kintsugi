@@ -52,19 +52,36 @@ from test_mode_flag import TestModeFlag
 from test_entry_preparer import TestEntryPreparer
 from diagnostics_collector import DiagnosticsCollector
 
-# 初始化配置：project_root 优先取 start_mcp.js 注入的 WAR3_PROJECT_ROOT（项目目录），
-# 缺省传 None 回退插件目录（向后兼容）。让 config.json/.env 读取回归项目目录。
-_war3_project_root = os.getenv('WAR3_PROJECT_ROOT')
-config = Config(project_root=Path(_war3_project_root) if _war3_project_root else None)
+# v0.19.0: 延迟初始化（消除 import 副作用）
+# 模块级只占位，不实例化。实际构造在 init_runtime() 中完成，由 run_server() 调用。
+# 这样 import mcp_server 不会触发配置读取/端口扫描/目录创建等副作用。
+config = None
+executor = None
+store = None
+http_receiver = None
 
-# 创建执行器（按 is_wsl() 自动选择）
-executor = create_executor(config)
 
-# v0.14.0: 创建唯一 TestStateStore（跨线程状态 owner）
-store = TestStateStore()
+def init_runtime():
+    """初始化运行时全局对象（config/executor/store/http_receiver）。
 
-# HTTP 接收端（注入 store）
-http_receiver = HTTPReceiver(host=config.http_host, port=config.http_port, store=store)
+    v0.19.0: 从模块级延迟到 run_server() 启动时调用，消除 import 副作用。
+    必须在 run_server() 构造 War3TesterMCP() 前调用。
+    """
+    global config, executor, store, http_receiver
+
+    # 初始化配置：project_root 优先取 start_mcp.js 注入的 WAR3_PROJECT_ROOT（项目目录），
+    # 缺省传 None 回退插件目录（向后兼容）。让 config.json/.env 读取回归项目目录。
+    _war3_project_root = os.getenv('WAR3_PROJECT_ROOT')
+    config = Config(project_root=Path(_war3_project_root) if _war3_project_root else None)
+
+    # 创建执行器（按 is_wsl() 自动选择）
+    executor = create_executor(config)
+
+    # v0.14.0: 创建唯一 TestStateStore（跨线程状态 owner）
+    store = TestStateStore()
+
+    # HTTP 接收端（注入 store）
+    http_receiver = HTTPReceiver(host=config.http_host, port=config.http_port, store=store)
 
 
 class ToolSpec:
@@ -1557,6 +1574,9 @@ end
 
 async def run_server():
     """运行 MCP 服务器（stdio JSON-RPC 主循环）"""
+    # v0.19.0: 启动时初始化运行时全局对象（消除 import 副作用）
+    init_runtime()
+
     server = War3TesterMCP()
 
     # 检测执行器连通性
