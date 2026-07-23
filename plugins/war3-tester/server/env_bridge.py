@@ -24,6 +24,31 @@ from config import Config, to_windows_path, is_port_available, find_available_po
 from logger import setup_logger
 
 
+def _check_war3_remaining(tasklist_stdout: str) -> dict:
+    """
+    共享：解析 tasklist /FO CSV 输出，检查 war3 相关进程残留。
+
+    与 WinProxyExecutor.stop_game 的验证逻辑完全等价（单一来源）。
+    返回：
+      无残留 → {'success': True, 'message': '游戏进程已全部清除'}
+      有残留 → {'success': False, 'message': '进程仍未清除：...', 'remaining': [...]}
+    """
+    lines = tasklist_stdout.split('\n')
+    remaining = []
+    for line in lines:
+        lower = line.lower()
+        if any(x in lower for x in ['war3.exe', 'war3loader', 'kkwe.exe', 'ydwe.exe', 'frozen', 'warcraft iii']):
+            remaining.append(line.strip())
+
+    if remaining:
+        return {
+            'success': False,
+            'message': f'进程仍未清除：{", ".join(remaining)}',
+            'remaining': remaining
+        }
+    return {'success': True, 'message': '游戏进程已全部清除'}
+
+
 class ExecutorBase:
     """执行器基类（接口定义）"""
 
@@ -330,20 +355,7 @@ class WinProxyExecutor(ExecutorBase):
         result = self.execute('powershell.exe', ['-NoProfile', '-Command', ps_cmd], kwargs={'timeout': 10})
 
         verify = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
-        lines = verify.get('stdout', '').split('\n')
-        remaining = []
-        for line in lines:
-            lower = line.lower()
-            if any(x in lower for x in ['war3.exe', 'war3loader', 'kkwe.exe', 'ydwe.exe', 'frozen', 'warcraft iii']):
-                remaining.append(line.strip())
-
-        if remaining:
-            return {
-                'success': False,
-                'message': f'进程仍未清除：{", ".join(remaining)}',
-                'remaining': remaining
-            }
-        return {'success': True, 'message': '游戏进程已全部清除'}
+        return _check_war3_remaining(verify.get('stdout', ''))
 
     # 完整 VK 映射表（Win32 Virtual-Key Codes）
     VK_MAP = {
@@ -797,6 +809,10 @@ class LocalExecutor(ExecutorBase):
                 )
                 result = self.execute('powershell.exe', ['-NoProfile', '-Command', ps_cmd],
                                       kwargs={'timeout': 10})
+
+                # 杀后验证：tasklist 复查残留（对齐 WinProxy 行为）
+                verify = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
+                return _check_war3_remaining(verify.get('stdout', ''))
             else:
                 # Linux/Mac 下尝试 pkill
                 result = self.execute('pkill', ['-f', 'war3|KKWE|YDWE'], kwargs={'timeout': 10})
