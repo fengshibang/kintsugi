@@ -1,0 +1,29 @@
+
+log = require 'jass.log'
+local jass = require 'jass.common'
+local console = require 'jass.console'
+local log = log
+
+local function split(str, p)
+	local rt = {}
+	string.gsub(str, '[^]' .. p .. ']+', function (w) table.insert(rt, w) end)
+	return rt
+end
+
+log.path = '绿圈色循环圈外传\\玩家' .. tostring(jass.GetPlayerId(jass.GetLocalPlayer()) + 1) .. '_' .. split(log.path, '\\')[2]
+log.debug '日志系统装载完毕'
+
+local std_print = print
+function print(...)
+	log.info(...)
+	console.write(...)
+end
+
+local log_error = log.error
+function log.error(...)
+	local trc = debug.traceback()
+	log_error(...)
+	log_error(trc)
+	std_print(...)
+	std_print(trc)
+end

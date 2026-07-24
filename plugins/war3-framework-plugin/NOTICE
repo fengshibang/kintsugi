@@ -1,0 +1,29 @@
+# NOTICE — 第三方资源来源
+
+本插件 `assets/` 下打包的框架文件源自 `rouge_lua`(MoeHero 地图)的 `map/` 目录,
+经清洗(剥本地开发路径硬编码、剥 war3-tester 测试钩子)后分发。
+
+## 二进制 / 可选资源(本票尚未打包,后续票按需加入)
+
+- `socket.dll` / `libwinpthread-1.dll` — 来自 rouge_lua map/,用于 HTTP/远程数据可选模块。
+- `fonts.ttf` — 文泉驿正黑,用于字体可选模块。
+- `wenhao_plugin.tga` — 品牌图,用于品牌可选模块。
+
+二进制资源授权由使用者自负;本插件仅作 courtesy 标注来源,不对授权合规作保证。
+
+## 源码
+
+- `lib/ac/*`、`lib/ecs/*`、`lib/ui/*`、`lib/util/*`、`lib/Fsm/*`、`lib/CleanMemory.lua`、
+  `lib/重载函数.lua`、`lib/重载平台函数.lua` — 源自 rouge_lua `map/script/lib/`,原样拷贝。
+- `plugin_main.lua`、`path.lua`、`script/init.lua` — 源自 rouge_lua `map/` 与 `map/script/`,
+  `path.lua` 已剥 `D:\war3项目\wjsg\map\` 硬编码本地分支,
+  `script/init.lua` 已剥 `test_runner` / `test_reporter` war3-tester 钩子。
+- `script/src/init.lua` — 本插件新写的极简哨兵(设 `_G.__framework_booted = true`),
+  不携带 rouge_lua 游戏内容。
+- `jass/initializePlugin.j` — 本插件新写的 JASS 注入片段,
+  函数体结构参考 rouge_lua `war3map.j:38019-38025` 的 `initializePlugin`。
+
+## 使用
+
+导入流程由 `/war3-import-framework` 命令驱动,Claude 按 `skills/import-framework/`
+下的指令执行检测 / 注入 / 拷贝 / 校验。
