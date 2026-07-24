@@ -35,7 +35,16 @@ def _check_war3_remaining(tasklist_stdout: str) -> dict:
     """
     # 防御 stdout=None：subprocess 在某些环境（疑似 Python 3.14）返回 stdout=None，
     # 不防御则 split crash 导致 stop_game 整体失败（尽管 powershell 杀进程已执行）
-    lines = (tasklist_stdout or '').split('\n')
+    # 防御 stdout=''：PYTHONUTF8=1（.mcp.json env）下 subprocess text=True 用 UTF-8 解码
+    # tasklist /FO CSV 的 cp936 中文列头 → UnicodeDecodeError → execute except → verify 无 stdout。
+    # 空输出绝不能当"无残留"，否则误判"已清除"（实测 War3.exe 还在却报已清除）。
+    if not tasklist_stdout or not tasklist_stdout.strip():
+        return {
+            'success': False,
+            'message': 'tasklist 复查失败（输出为空，疑似 execute 解码异常：PYTHONUTF8+cp936）',
+            'remaining': ['<tasklist 输出为空>']
+        }
+    lines = tasklist_stdout.split('\n')
     remaining = []
     for line in lines:
         lower = line.lower()
@@ -718,10 +727,15 @@ class LocalExecutor(ExecutorBase):
 
         if wait:
             try:
+                # errors='replace'：PYTHONUTF8=1（.mcp.json env）下 text=True 用 UTF-8 解码，
+                # tasklist/w2l 等中文 Windows 命令输出 cp936，解码失败会 UnicodeDecodeError
+                # 让 execute 整体失败（stop_game 复查 verify 无 stdout → 误判"已清除"）。
+                # replace：解码失败用 ? 替代不崩，ASCII 内容（进程名 war3.exe 等）完整保留。
                 proc = subprocess.run(
                     full_cmd,
                     capture_output=True,
                     text=True,
+                    errors='replace',
                     cwd=cwd,
                     timeout=timeout,
                 )
@@ -809,30 +823,128 @@ class LocalExecutor(ExecutorBase):
         return self.execute(game_exe, ['-war3', '-loadfile', map_path],
                             kwargs={'cwd': str(platform_path), 'timeout': 10, 'wait': False})
 
-    def stop_game(self) -> dict:
-        """停止游戏进程"""
+    def _parse_war3_pids(self, tasklist_stdout: str) -> list:
+        """
+        从 tasklist /FO CSV 输出解析 war3 相关进程的 PID 列表。
+
+        用于 stop_game 按 PID 杀进程（taskkill /PID /F 比按进程名的 Stop-Process 强）。
+        execute 已加 errors='replace'，tasklist cp936 中文输出解码不崩（ASCII 进程名完整保留）。
+
+        Args:
+            tasklist_stdout: tasklist /FO CSV 的 stdout
+
+        Returns:
+            list[int]: war3 相关进程 PID 列表
+        """
+        if not tasklist_stdout:
+            return []
+        pids = []
+        for line in tasklist_stdout.split('\n'):
+            lower = line.lower()
+            if any(x in lower for x in ['war3.exe', 'war3loader', 'kkwe.exe', 'ydwe.exe', 'frozen', 'warcraft iii']):
+                # CSV 行格式："War3.exe","20108","RDP-Tcp#8","1","498,668 K"
+                parts = line.split(',')
+                if len(parts) >= 2:
+                    pid_str = parts[1].strip().strip('"').strip()
+                    if pid_str.isdigit():
+                        pids.append(int(pid_str))
+        return pids
+
+    def _close_war3_windows(self) -> int:
+        """
+        向所有 war3 相关窗口发 WM_CLOSE，让游戏自退出。
+
+        实测 taskkill /F 和 Stop-Process 都被 War3.exe "拒绝访问"（进程保护），
+        但任务管理器"结束任务"（WM_CLOSE）能让游戏正常退出——本方法模拟该路径，
+        绕过强杀保护。
+
+        安全：全 argtypes 声明（避免 64 位 HWND 作 c_int 截断）；不调用
+        GetWindowThreadProcessId（它写 byref(pid) 指针，HWND 截断会访问违例 segfault
+        杀整个 server 进程，已实测）；PostMessageW 只传消息不写指针，安全。
+
+        Returns:
+            int: 发送 WM_CLOSE 的窗口数
+        """
         try:
-            if self.config.is_windows:
-                ps_cmd = (
-                    'Stop-Process -Name War3 -Force -ErrorAction SilentlyContinue; '
-                    'Stop-Process -Name War3Loader -Force -ErrorAction SilentlyContinue; '
-                    'Stop-Process -Name KKWE -Force -ErrorAction SilentlyContinue; '
-                    'Stop-Process -Name YDWE -Force -ErrorAction SilentlyContinue; '
-                    'Stop-Process -Name "Frozen Throne" -Force -ErrorAction SilentlyContinue; '
-                    'Stop-Process -Name "Warcraft III" -Force -ErrorAction SilentlyContinue; '
-                    'echo Done'
-                )
-                result = self.execute('powershell.exe', ['-NoProfile', '-Command', ps_cmd],
-                                      kwargs={'timeout': 10})
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            # 全 argtypes/restype 声明（避免 64 位 HWND 截断致访问违例）
+            user32.EnumWindows.argtypes = [wintypes.WNDENUMPROC, wintypes.LPARAM]
+            user32.EnumWindows.restype = wintypes.BOOL
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            user32.IsWindowVisible.restype = wintypes.BOOL
+            user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+            user32.GetWindowTextLengthW.restype = ctypes.c_int
+            user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+            user32.PostMessageW.restype = wintypes.BOOL
+        except (ImportError, OSError, AttributeError):
+            return 0
 
-                # 杀后验证：tasklist 复查残留（对齐 WinProxy 行为）
-                verify = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
-                return _check_war3_remaining(verify.get('stdout', ''))
-            else:
-                # Linux/Mac 下尝试 pkill
-                result = self.execute('pkill', ['-f', 'war3|KKWE|YDWE'], kwargs={'timeout': 10})
+        WM_CLOSE = 0x0010
+        keywords = ['魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
+        count = [0]
 
-            return {'success': True, 'message': '游戏进程清理完成'}
+        @wintypes.WNDENUMPROC
+        def enum_callback(hwnd, lparam):
+            try:
+                if user32.IsWindowVisible(hwnd):
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buf, length + 1)
+                        title = buf.value
+                        for kw in keywords:
+                            if kw and kw.lower() in title.lower():
+                                user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+                                count[0] += 1
+                                return True  # 继续枚举找其他窗口
+            except Exception:
+                pass
+            return True
+
+        try:
+            user32.EnumWindows(enum_callback, 0)
+        except Exception:
+            pass
+        return count[0]
+
+    def stop_game(self) -> dict:
+        """
+        停止游戏进程（根治三重问题：PYTHONUTF8 解码误判 + segfault + War3.exe 拒绝强杀）。
+
+        策略：
+        1. WM_CLOSE 让游戏自退出（治 A：实测 taskkill /F/Stop-Process 都被 War3.exe
+           "拒绝访问"，但任务管理器"结束任务"(WM_CLOSE) 能让游戏正常退出——模拟它）。
+        2. taskkill /PID /F + Stop-Process 兜底（杀无保护的启动器 KKWE/YDWE + 残留）。
+        3. tasklist 复查（解码已修复 errors='replace' + 防御 stdout='' 杜绝误判，治 B）。
+        """
+        try:
+            if not self.config.is_windows:
+                # Linux/Mac 下 pkill
+                self.execute('pkill', ['-f', 'war3|KKWE|YDWE'], kwargs={'timeout': 10})
+                return {'success': True, 'message': '游戏进程清理完成'}
+
+            # 1. WM_CLOSE 让游戏自退出（治 A：绕过 War3.exe 拒绝强杀）
+            self._close_war3_windows()
+            time.sleep(2)  # 等 WM_CLOSE 处理 + 游戏退出
+
+            # 2. taskkill /PID + Stop-Process 兜底（启动器 KKWE/YDWE 无保护，强杀可成）
+            probe = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
+            war3_pids = self._parse_war3_pids(probe.get('stdout', ''))
+            for pid in war3_pids:
+                self.execute('taskkill.exe', ['/PID', str(pid), '/F'], kwargs={'timeout': 10})
+            ps_cmd = (
+                'Stop-Process -Name War3,War3Loader,KKWE,YDWE -Force -ErrorAction SilentlyContinue; '
+                'echo Done'
+            )
+            self.execute('powershell.exe', ['-NoProfile', '-Command', ps_cmd], kwargs={'timeout': 10})
+
+            # 3. 复查：等进程退出 + tasklist（解码已修复 + 防御 stdout=''）
+            time.sleep(0.5)
+            verify = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
+            return _check_war3_remaining(verify.get('stdout', ''))
         except Exception as e:
             return {'success': False, 'error': f'停止游戏失败：{e}'}
 

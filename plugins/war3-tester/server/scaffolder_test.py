@@ -147,6 +147,68 @@ def test_scaffold_test_normal():
     print("  PASS test_scaffold_test_normal")
 
 
+def test_get_project_info_startup_interaction_analysis():
+    """get_project_info: 启动交互分析 section 能识别 states/systems/auto-test 特征文件"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        # 造 states/SelectState.lua（含 'SelectState'）
+        states_dir = root / 'states'
+        states_dir.mkdir()
+        (states_dir / 'SelectState.lua').write_text('-- SelectState class\n')
+        # 造 systems/DifficultySelectSystem.lua（含 'DifficultySelectSystem'）
+        systems_dir = root / 'systems'
+        systems_dir.mkdir()
+        (systems_dir / 'DifficultySelectSystem.lua').write_text('-- DifficultySelectSystem\n')
+        # 造 auto-test/wzns_auto_test.lua（含 '__auto_test_mode' 和 '_war3_tester'）
+        auto_test_dir = root / 'auto-test'
+        auto_test_dir.mkdir()
+        (auto_test_dir / 'wzns_auto_test.lua').write_text(
+            '__auto_test_mode = true\nrequire("_war3_tester.inspect_handler")\n'
+        )
+
+        cfg = MockConfig()
+        scaffolder = ProjectScaffolder(cfg, logger=_make_logger())
+
+        result = scaffolder.get_project_info(str(root))
+        assert '启动交互分析' in result, f"应含 '启动交互分析'，实际前 500 字: {result[:500]}"
+        assert 'SelectState' in result, f"应含 'SelectState'，实际: {result}"
+        assert 'DifficultySelectSystem' in result, f"应含 'DifficultySelectSystem'，实际: {result}"
+        assert '__auto_test_mode' in result, f"应含 '__auto_test_mode'，实际: {result}"
+        assert 'wzns_auto_test.lua' in result, f"应含 'wzns_auto_test.lua'，实际: {result}"
+
+    print("  PASS test_get_project_info_startup_interaction_analysis")
+
+
+def test_save_adapter_hook_normal():
+    """save_adapter_hook: 正常 → 生成 adapters/<name>.lua 文件"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_dir = Path(tmpdir) / 'auto-test'
+        cfg = MockConfig(test_dir_path=test_dir)
+        scaffolder = ProjectScaffolder(cfg, logger=_make_logger())
+
+        result = scaffolder.save_adapter_hook('difficulty_skip', '-- skip hook\n', source_dir=tmpdir)
+        assert result['success'] is True, f"应 success=True，实际: {result}"
+        assert result['file'] is not None, "file 字段应非 None"
+        assert result['file'].endswith('difficulty_skip.lua'), f"文件名应为 difficulty_skip.lua，实际: {result['file']}"
+        assert Path(result['file']).exists(), f"文件应实际存在: {result['file']}"
+
+    print("  PASS test_save_adapter_hook_normal")
+
+
+def test_save_adapter_hook_invalid_name():
+    """save_adapter_hook: 非法 name（含路径穿越）→ success=False"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_dir = Path(tmpdir) / 'auto-test'
+        cfg = MockConfig(test_dir_path=test_dir)
+        scaffolder = ProjectScaffolder(cfg, logger=_make_logger())
+
+        result = scaffolder.save_adapter_hook('../evil', '-- evil\n', source_dir=tmpdir)
+        assert result['success'] is False, f"非法 name 应 success=False，实际: {result}"
+        assert result['error'] is not None, "error 字段应非 None"
+
+    print("  PASS test_save_adapter_hook_invalid_name")
+
+
 if __name__ == "__main__":
     print("=== ProjectScaffolder 单测 ===")
     tests = [
@@ -156,6 +218,9 @@ if __name__ == "__main__":
         test_generate_test_skeleton_integration_layer,
         test_scaffold_test_get_test_dir_path_returns_none,
         test_scaffold_test_normal,
+        test_get_project_info_startup_interaction_analysis,
+        test_save_adapter_hook_normal,
+        test_save_adapter_hook_invalid_name,
     ]
 
     passed = 0

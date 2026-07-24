@@ -352,7 +352,12 @@ class War3TesterMCP:
             if result.get("success"):
                 return {"content": [{"type": "text", "text": f"[OK] {result.get('message', '游戏已关闭')}"}]}
             else:
-                return {"content": [{"type": "text", "text": f"[FAIL] {result.get('error', '游戏关闭失败')}"}], "isError": True}
+                # 显示 _check_war3_remaining 的 message/remaining 诚实细节（它返回 message 非 error，
+                # 旧版只报默认"游戏关闭失败"，掩盖"仍未清除"或"复查失败"的真实原因）
+                detail = result.get('message') or result.get('error') or '游戏关闭失败'
+                if result.get('remaining'):
+                    detail += f"\n残留: {result['remaining']}"
+                return {"content": [{"type": "text", "text": f"[FAIL] {detail}"}], "isError": True}
 
         _add("stop_game",
              "关闭魔兽争霸 3 游戏进程",
@@ -630,6 +635,38 @@ class War3TesterMCP:
                  "source_dir": {"type": "string", "description": "源码目录路径（默认 config.compile_source_dir）"}
              }, "required": ["module", "layer"]},
              _handle_scaffold_test)
+
+        # 17.5 save_adapter_hook
+        def _handle_save_adapter_hook(arguments):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            name = arguments.get("name")
+            content = arguments.get("content")
+            source_dir = arguments.get("source_dir")
+            if not name:
+                return {"content": [{"type": "text", "text": "[FAIL] 缺少 name 参数"}], "isError": True}
+            if not content:
+                return {"content": [{"type": "text", "text": "[FAIL] 缺少 content 参数"}], "isError": True}
+            try:
+                result = self._save_adapter_hook(name, content, source_dir)
+                if result.get("success"):
+                    messages = [f"## 适配钩子保存\n\n时间：{timestamp}"]
+                    messages.append(f"钩子名：{name}")
+                    messages.append(f"文件：{result.get('file')}")
+                    messages.append(f"\n{result.get('message')}")
+                    return {"content": [{"type": "text", "text": "\n".join(messages)}]}
+                else:
+                    return {"content": [{"type": "text", "text": f"[FAIL] {result.get('error', '保存失败')}"}], "isError": True}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] save_adapter_hook 失败：{e}"}], "isError": True}
+
+        _add("save_adapter_hook",
+             "保存 AI 生成的适配钩子 - 持久化到 _war3_tester/adapters/ 目录，test_entry_preparer 自动生成 adapter_loader.lua，inspect_handler 启动时自动加载。",
+             {"type": "object", "properties": {
+                 "name": {"type": "string", "description": "钩子名（不含 .lua 后缀，如 'difficulty_skip'）"},
+                 "content": {"type": "string", "description": "钩子 lua 内容"},
+                 "source_dir": {"type": "string", "description": "源码目录路径（默认 config.compile_source_dir）"}
+             }, "required": ["name", "content"]},
+             _handle_save_adapter_hook)
 
         # 18. tdd_red
         def _handle_tdd_red(arguments):
@@ -942,6 +979,14 @@ class War3TesterMCP:
         v0.19.6(候选③): thin delegate，委托 project_scaffolder.scaffold_test
         """
         return self.project_scaffolder.scaffold_test(module, layer, name, source_dir)
+
+    def _save_adapter_hook(self, name: str, content: str, source_dir: str = None) -> dict:
+        """
+        保存 AI 生成的适配钩子
+
+        v0.19.10: thin delegate，委托 project_scaffolder.save_adapter_hook
+        """
+        return self.project_scaffolder.save_adapter_hook(name, content, source_dir)
 
     def _generate_test_skeleton(self, module: str, layer: str, test_name: str) -> str:
         """生成测试骨架内容（通用，不硬编码项目路径）

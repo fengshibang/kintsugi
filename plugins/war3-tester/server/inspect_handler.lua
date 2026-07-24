@@ -25,6 +25,7 @@ local MAX_RESULT_LEN = 2000
 
 local _timer_handle = nil
 local _started = false
+local moduleName = ...
 
 --- 截断字符串到指定长度
 local function truncate(s, max_len)
@@ -109,6 +110,12 @@ local function start()
     _started = true
 
     print("[InspectHandler] 启动运行时查询轮询（200ms 间隔）")
+
+    -- 加载项目适配钩子(adapter_loader 若存在则 require 各 hook;通用加载机制,不改项目加载入口)
+    if moduleName then
+        local adapterName = moduleName:gsub('%.inspect_handler$', '.adapter_loader')
+        pcall(require, adapterName)
+    end
 
     -- ac.loop(interval_ms, callback)：callback 接收 timer 句柄 t
     -- 额外 pcall 包裹 poll_once，确保任何异常不影响游戏循环

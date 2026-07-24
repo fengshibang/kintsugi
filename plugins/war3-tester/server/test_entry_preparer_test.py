@@ -299,6 +299,64 @@ def test_prepare_returns_false_when_no_bootstrap():
     print("  PASS test_prepare_returns_false_when_no_bootstrap")
 
 
+def test_prepare_generates_adapter_loader_with_hooks():
+    """prepare: adapters/ 有钩子文件时生成 adapter_loader.lua"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        project_root = tmpdir / 'project'
+        project_root.mkdir()
+        (project_root / 'w3x2lni').mkdir()
+
+        config = _make_mock_config(tmpdir)
+        server_dir = _make_mock_server_dir(tmpdir)
+        flag = TestModeFlag(logger=_make_logger())
+        preparer = TestEntryPreparer(flag, server_dir, config, logger=_make_logger())
+
+        # 创建 adapters/ 目录并添加钩子文件
+        wt_dir = project_root / 'auto-test' / '_war3_tester'
+        adapters_dir = wt_dir / 'adapters'
+        adapters_dir.mkdir(parents=True)
+        (adapters_dir / 'difficulty_skip.lua').write_text('-- difficulty skip hook', encoding='utf-8')
+
+        preparer.prepare('test_skill', 'test_skill.lua', str(project_root))
+
+        # 检查 adapter_loader.lua 是否生成
+        loader_path = wt_dir / 'adapter_loader.lua'
+        assert loader_path.exists(), "adapter_loader.lua 应被生成"
+
+        loader_content = loader_path.read_text(encoding='utf-8')
+        assert 'difficulty_skip' in loader_content, "应包含 difficulty_skip 钩子"
+        assert 'pcall' in loader_content, "应使用 pcall 包裹"
+        assert '_war3_tester.adapters.difficulty_skip' in loader_content, "应包含完整模块路径"
+
+    print("  PASS test_prepare_generates_adapter_loader_with_hooks")
+
+
+def test_prepare_skips_adapter_loader_without_adapters():
+    """prepare: adapters/ 不存在时不生成 adapter_loader.lua"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        project_root = tmpdir / 'project'
+        project_root.mkdir()
+        (project_root / 'w3x2lni').mkdir()
+
+        config = _make_mock_config(tmpdir)
+        server_dir = _make_mock_server_dir(tmpdir)
+        flag = TestModeFlag(logger=_make_logger())
+        preparer = TestEntryPreparer(flag, server_dir, config, logger=_make_logger())
+
+        preparer.prepare('test_skill', 'test_skill.lua', str(project_root))
+
+        # 检查 adapter_loader.lua 不应生成
+        wt_dir = project_root / 'auto-test' / '_war3_tester'
+        loader_path = wt_dir / 'adapter_loader.lua'
+        assert not loader_path.exists(), "adapters/ 不存在时不应生成 adapter_loader.lua"
+
+    print("  PASS test_prepare_skips_adapter_loader_without_adapters")
+
+
 if __name__ == "__main__":
     print("=== TestEntryPreparer 单测 ===")
     tests = [
@@ -310,6 +368,8 @@ if __name__ == "__main__":
         test_prepare_injects_assets,
         test_prepare_returns_false_when_not_w2l_root,
         test_prepare_returns_false_when_no_bootstrap,
+        test_prepare_generates_adapter_loader_with_hooks,
+        test_prepare_skips_adapter_loader_without_adapters,
     ]
 
     passed = 0

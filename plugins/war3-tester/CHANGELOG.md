@@ -1,5 +1,32 @@
 # Changelog — war3-tester
 
+## 0.19.10 - 2026-07-24
+
+### 新增（W3-implement 项目适配生成通用化）
+
+prototype（wzns 特定手动）-> implement（通用自动化：分析->生成->持久化->加载）。通用流程，钩子产物项目特定（AI 生成）。
+
+- **加载机制（通用，不改项目加载入口）**：inspect_handler.lua start() 末尾 pcall(require adapter_loader)（用 module 顶层 ... 推导 path：moduleName:gsub('%.inspect_handler$', '.adapter_loader')）；adapter_loader.lua 由 test_entry_preparer._generate_adapter_loader 生成（扫 _war3_tester/adapters/ hooks，pcall require）。加载链：加载入口 require inspect_handler+start -> start require adapter_loader -> hooks。inspect_handler 通用模块，所有项目都 require，故加载通用。
+- **启动交互分析**（scaffolder.get_project_info 增强）：扫 states/systems/auto-test 找 SelectState/DifficultySelectSystem/DialogSystem/__auto_test_mode/加载入口，输出给 AI 生成钩子。
+- **钩子生成**：AI 主会话（调 get_project_info -> 生成 hook lua，difficulty_skip 范例）。不在 MCP 自动化。
+- 单测：scaffolder_test +1（7 通过）；test_entry_preparer_test +2（10 通过）。mentor 两弱模型并行一次过，师傅独立核对数字。
+- 运行层：待重启 0.19.10 + run_game inspect 验证。
+
+## 0.19.9 — 2026-07-24
+
+### 修复（stop_game 双 bug 根治：PYTHONUTF8 解码误判 + Stop-Process 杀不掉）
+
+W3 实测时发现 stop_game 报"已清除"但 War3.exe 残留，代码层定位双独立 bug：
+
+- **B（误判"已清除"，铁证链）**：`.mcp.json` 设 `PYTHONUTF8=1`，`LocalExecutor.execute` 的 `subprocess.run(text=True)` 用 UTF-8 解码 `tasklist /FO CSV` 的 cp936 中文列头（"映像名称"）→ `UnicodeDecodeError` → execute except → `verify` 无 stdout 键 → `_check_war3_remaining('')` = success=True **误判"已清除"**（实测 War3.exe PID=20108 还在却报已清除）。同根因解释 memory 记的 0.15.0 `_cleanup_port_occupiers` NoneType splitlines。
+  - 修复：`execute` subprocess 加 `errors='replace'`（UTF-8 解码 cp936 失败用 ? 替代不崩，ASCII 进程名 war3.exe 完整保留）；`_check_war3_remaining` 防御 `stdout=''`（空输出报"复查失败"而非"已清除"，杜绝误判）。
+- **A（漏杀 War3.exe）**：`Stop-Process -Name War3` 实测没杀掉游戏进程，但旧 `stop_game` 不检查 `result.success` + 复查又误判"已清除"，故静默漏杀。
+  - 根因（实测三层）：① taskkill /PID /F 和 Stop-Process 都被 War3.exe **"拒绝访问"**（进程保护，连手动 taskkill 也拒）；② "手动能关"是用任务管理器"结束任务"(WM_CLOSE) 让游戏自退出，非强杀；③ 复查误判"已清除"掩盖漏杀。
+  - 修复：`stop_game` 改多层兜底——① **`_close_war3_windows`（主路径）**：ctypes `PostMessageW(WM_CLOSE)` 向 war3 窗口发关闭消息，让游戏自退出（模拟任务管理器"结束任务"，绕过强杀保护）；全 argtypes 声明 + 不调写指针的 `GetWindowThreadProcessId`（避免 segfault）；② `taskkill /PID /F` + `Stop-Process` 兜底杀无保护的启动器 KKWE/YDWE；③ tasklist 复查。`_handle_stop_game` FAIL 分支改显示 message/remaining 诚实细节（不再只报默认"游戏关闭失败"）。
+  - 演进：初版 ctypes 窗口枚举（`_find_war3_window_pids` + `GetWindowThreadProcessId`）segfault 杀 server → 改 tasklist 解析（纯 subprocess）→ 但 taskkill 仍被拒绝访问 → 终版加 WM_CLOSE 主路径（让游戏自退出）。
+- 范围：仅 `LocalExecutor`（原生 Windows，当前环境）。`WinProxyExecutor`（WSL）经 win_proxy TCP 转发不受 PYTHONUTF8 解码影响，`_check_war3_remaining` 防御对其无害；WSL 等价待该场景再补。
+- 验证：待重启加载 0.19.9 后，stop_game 杀 W3 实测残留的 War3.exe PID=20108 确认（运行层 pending）。
+
 ## 0.19.8 — 2026-07-24
 
 ### 新增（W1 exec_game 通用操控工具）

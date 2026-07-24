@@ -170,6 +170,69 @@ class ProjectScaffolder:
             out.append(f"  ... 已截断（共 {len(dir_tree_lines)} 行，显示前 {max_tree_lines} 行）")
         else:
             out.extend(dir_tree_lines)
+        out.append("")
+
+        # === 5. 启动交互分析（纯静态只读扫描）===
+        out.append("### 启动交互分析")
+
+        def _scan_files_for_patterns(directory: Path, patterns: list) -> list:
+            """扫描目录下 .lua 文件，返回内容包含任一 pattern 的文件相对路径列表"""
+            matched = []
+            if not directory.exists() or not directory.is_dir():
+                return matched
+            try:
+                for lua_file in sorted(directory.glob('*.lua')):
+                    if not lua_file.is_file():
+                        continue
+                    try:
+                        content = lua_file.read_text(encoding='utf-8', errors='ignore')
+                    except (OSError, PermissionError):
+                        continue
+                    for pat in patterns:
+                        if pat in content:
+                            matched.append(str(lua_file.relative_to(root)))
+                            break
+            except (OSError, PermissionError):
+                pass
+            return matched
+
+        # 5.1 启动状态机: states/ 下含 'SelectState' 或 'LoadingState'
+        states_dir = root / 'states'
+        state_machines = _scan_files_for_patterns(states_dir, ['SelectState', 'LoadingState'])
+        out.append(f"  启动状态机: {', '.join(state_machines) if state_machines else '未发现'}")
+
+        # 5.2 难度/对话框系统: systems/ 下含 'DifficultySelectSystem' 或 'DialogSystem'
+        systems_dir = root / 'systems'
+        dialog_systems = _scan_files_for_patterns(systems_dir, ['DifficultySelectSystem', 'DialogSystem'])
+        out.append(f"  难度/对话框系统: {', '.join(dialog_systems) if dialog_systems else '未发现'}")
+
+        # 5.3 测试模式标志: auto-test/ 下含 '__auto_test_mode'
+        auto_test_dir = root / 'auto-test'
+        test_mode_flags = _scan_files_for_patterns(auto_test_dir, ['__auto_test_mode'])
+        out.append(f"  测试模式标志(__auto_test_mode): {', '.join(test_mode_flags) if test_mode_flags else '未发现'}")
+
+        # 5.4 加载入口: auto-test/ 下含 'require' 且 '_war3_tester'
+        def _scan_files_for_combined_patterns(directory: Path, required_patterns: list) -> list:
+            """扫描目录下 .lua 文件，返回内容同时包含所有 required_patterns 的文件相对路径列表"""
+            matched = []
+            if not directory.exists() or not directory.is_dir():
+                return matched
+            try:
+                for lua_file in sorted(directory.glob('*.lua')):
+                    if not lua_file.is_file():
+                        continue
+                    try:
+                        content = lua_file.read_text(encoding='utf-8', errors='ignore')
+                    except (OSError, PermissionError):
+                        continue
+                    if all(pat in content for pat in required_patterns):
+                        matched.append(str(lua_file.relative_to(root)))
+            except (OSError, PermissionError):
+                pass
+            return matched
+
+        load_entries = _scan_files_for_combined_patterns(auto_test_dir, ['require', '_war3_tester'])
+        out.append(f"  加载入口(require _war3_tester): {', '.join(load_entries) if load_entries else '未发现'}")
 
         return "\n".join(out)
 
@@ -404,3 +467,86 @@ end
 '''
 
         return header + skeleton + result_reporting
+
+    def save_adapter_hook(self, name: str, content: str, source_dir: str = None) -> dict:
+        """
+        持久化 AI 生成的适配钩子到 <test_dir>/_war3_tester/adapters/<name>.lua。
+
+        通用机制：AI 生成项目适配钩子（如 difficulty_skip.lua、dialog_skip.lua 等），
+        持久化后由 test_entry_preparer._generate_adapter_loader 自动生成 adapter_loader.lua，
+        inspect_handler 启动时自动 require 各钩子。
+
+        Args:
+            name: 钩子名（不含 .lua 后缀，如 'difficulty_skip'）
+            content: 钩子 lua 内容
+            source_dir: 源码目录（默认 config.compile_source_dir）
+
+        Returns:
+            {'success': bool, 'file': str, 'message': str, 'error': str | None}
+        """
+        if not name or not name.strip():
+            return {
+                'success': False,
+                'file': None,
+                'message': '',
+                'error': '钩子名不能为空',
+            }
+        if not content:
+            return {
+                'success': False,
+                'file': None,
+                'message': '',
+                'error': '钩子内容不能为空',
+            }
+
+        # 校验 name：只允许字母数字下划线（防路径穿越）
+        import re
+        if not re.match(r'^[A-Za-z0-9_]+$', name):
+            return {
+                'success': False,
+                'file': None,
+                'message': '',
+                'error': f'钩子名非法: {name}（只允许字母数字下划线）',
+            }
+
+        resolved = self.config.resolve_source_dir(source_dir)
+        test_dir = self.config.get_test_dir_path(resolved)
+        if test_dir is None:
+            return {
+                'success': False,
+                'file': None,
+                'message': '',
+                'error': f'source_dir 非有效 w2l 项目根: {resolved}',
+            }
+
+        adapters_dir = test_dir / '_war3_tester' / 'adapters'
+        try:
+            adapters_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return {
+                'success': False,
+                'file': None,
+                'message': '',
+                'error': f'创建 adapters 目录失败: {e}',
+            }
+
+        target_path = adapters_dir / f'{name}.lua'
+        try:
+            with open(target_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return {
+                'success': True,
+                'file': str(target_path),
+                'message': f'已保存适配钩子: {name}.lua\n\n'
+                           f'下一步:\n'
+                           f'1. 运行 test_commit 时，adapter_loader.lua 会自动生成\n'
+                           f'2. inspect_handler 启动时会 require 此钩子',
+                'error': None,
+            }
+        except OSError as e:
+            return {
+                'success': False,
+                'file': None,
+                'message': '',
+                'error': f'写入文件失败: {e}',
+            }
