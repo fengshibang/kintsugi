@@ -62,15 +62,15 @@ import mcp_server
 from mcp_server import War3TesterMCP
 
 
-# ── 精确 25 个工具名（禁止弱断言）────────────────────────────────────
-EXPECTED_25_TOOLS = {
+# ── 精确 26 个工具名（禁止弱断言）────────────────────────────────────
+EXPECTED_26_TOOLS = {
     'compile_map', 'compile_only', 'test_commit', 'run_test_batch',
     'discover_tests', 'launch_only', 'run_game', 'stop_game',
     'stop_http_server', 'cleanup_all', 'take_screenshot', 'analyze_screenshot',
     'send_key', 'toggle_test', 'get_project_info', 'inspect_game',
     'get_debug_output', 'run_unit_test', 'scaffold_test', 'tdd_red',
     'tdd_green', 'watch_unit_tests', 'stop_watch', 'get_watch_results',
-    'setup_environment',
+    'setup_environment', 'exec_game',
 }
 
 
@@ -80,28 +80,28 @@ def _make_instance():
 
 
 def test_single_source_consistency():
-    """① _tool_registry.keys() == capabilities['tools'] name 集合 == 精确 25 个"""
+    """① _tool_registry.keys() == capabilities['tools'] name 集合 == 精确 26 个"""
     instance = _make_instance()
 
     registry_keys = set(instance._tool_registry.keys())
     capability_names = {t['name'] for t in instance.capabilities['tools']}
 
-    assert registry_keys == EXPECTED_25_TOOLS, (
-        f"_tool_registry.keys() 与期望 25 个工具不一致\n"
-        f"  缺: {EXPECTED_25_TOOLS - registry_keys}\n"
-        f"  多: {registry_keys - EXPECTED_25_TOOLS}"
+    assert registry_keys == EXPECTED_26_TOOLS, (
+        f"_tool_registry.keys() 与期望 26 个工具不一致\n"
+        f"  缺: {EXPECTED_26_TOOLS - registry_keys}\n"
+        f"  多: {registry_keys - EXPECTED_26_TOOLS}"
     )
-    assert capability_names == EXPECTED_25_TOOLS, (
-        f"capabilities['tools'] name 集合与期望 25 个工具不一致\n"
-        f"  缺: {EXPECTED_25_TOOLS - capability_names}\n"
-        f"  多: {capability_names - EXPECTED_25_TOOLS}"
+    assert capability_names == EXPECTED_26_TOOLS, (
+        f"capabilities['tools'] name 集合与期望 26 个工具不一致\n"
+        f"  缺: {EXPECTED_26_TOOLS - capability_names}\n"
+        f"  多: {capability_names - EXPECTED_26_TOOLS}"
     )
     assert registry_keys == capability_names, (
         f"_tool_registry 与 capabilities['tools'] 不一致（双源漂移）\n"
         f"  registry 有但 capabilities 无: {registry_keys - capability_names}\n"
         f"  capabilities 有但 registry 无: {capability_names - registry_keys}"
     )
-    assert len(EXPECTED_25_TOOLS) == 25, "期望集合本身应为 25 个（测试写错时捕获）"
+    assert len(EXPECTED_26_TOOLS) == 26, "期望集合本身应为 26 个（测试写错时捕获）"
 
     print("  PASS test_single_source_consistency")
 
@@ -180,6 +180,24 @@ def test_registry_handler_is_callable():
     print("  PASS test_registry_handler_is_callable")
 
 
+def test_exec_game_routes_to_store():
+    """exec_game 路由：handle_tool_call('exec_game', {code}) 调 store.submit_inspect(code, mode='exec') + take_inspect"""
+    instance = _make_instance()
+    instance.store = MagicMock()
+    instance.store.submit_inspect.return_value = 'q_exec_1'
+    instance.store.take_inspect.return_value = {'id': 'q_exec_1', 'value': '999'}
+
+    result = asyncio.run(instance.handle_tool_call('exec_game', {'code': 'return 1+2'}))
+
+    instance.store.submit_inspect.assert_called_once_with('return 1+2', mode='exec')
+    instance.store.take_inspect.assert_called_once()
+    assert isinstance(result, dict), f"返回值应为 dict，实际: {type(result)}"
+    text = result['content'][0]['text']
+    assert '999' in text, f"exec_game 应回传 value，实际: {text}"
+
+    print("  PASS test_exec_game_routes_to_store")
+
+
 if __name__ == "__main__":
     print("=== dispatch registrar 单测（候选④收尾）===")
     tests = [
@@ -188,6 +206,7 @@ if __name__ == "__main__":
         test_stop_game_routes_to_executor,
         test_send_key_routes_to_executor,
         test_registry_handler_is_callable,
+        test_exec_game_routes_to_store,
     ]
 
     passed = 0

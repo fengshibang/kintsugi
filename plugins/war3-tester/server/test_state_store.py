@@ -74,16 +74,20 @@ class TestStateStore:
 
     # ── inspect 协议 ─────────────────────────────────────────────
 
-    def submit_inspect(self, expr):
+    def submit_inspect(self, expr, mode='inspect'):
         """
         提交一个运行时查询，返回唯一 id。
 
         id 格式：q_{int(time.time()*1000)}_{os.getpid()}
         入队到 _inspect_pending，游戏端 take_pending_inspect 取走执行。
+
+        mode:
+          - 'inspect'（默认）：只读表达式，游戏端 load('return ' .. expr)
+          - 'exec'：语句块（可带副作用、可改游戏态），游戏端 load(expr)
         """
         with self._lock:
             id = f"q_{int(time.time() * 1000)}_{os.getpid()}"
-            self._inspect_pending.append({"id": id, "expr": expr})
+            self._inspect_pending.append({"id": id, "expr": expr, "mode": mode})
             return id
 
     def take_inspect(self, id, timeout):

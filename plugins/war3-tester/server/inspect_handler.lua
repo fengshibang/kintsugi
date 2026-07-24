@@ -68,9 +68,17 @@ local function poll_once()
         return
     end
 
-    -- 4. 用 load 求值 Lua 表达式（pcall 包裹，求值失败不崩游戏）
+    -- 4. 根据 mode 选择执行方式
+    -- mode='exec': 语句块（可带副作用、可改游戏态），用 load(expr)
+    -- mode='inspect'（默认）: 只读表达式，用 load('return ' .. expr)
+    local mode = data.mode or 'inspect'
     local eval_ok, result = pcall(function()
-        local fn = load('return ' .. expr)
+        local fn
+        if mode == 'exec' then
+            fn = load(expr)
+        else
+            fn = load('return ' .. expr)
+        end
         if not fn then
             error('load() returned nil for expression: ' .. expr)
         end

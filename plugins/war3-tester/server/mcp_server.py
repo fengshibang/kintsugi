@@ -516,6 +516,33 @@ class War3TesterMCP:
              }, "required": ["expr"]},
              _handle_inspect_game)
 
+        # 14b. exec_game
+        def _handle_exec_game(arguments):
+            code = arguments.get("code")
+            timeout = arguments.get("timeout", 5)
+            if not code:
+                return {"content": [{"type": "text", "text": "[FAIL] 缺少 code 参数"}], "isError": True}
+            try:
+                query_id = self.store.submit_inspect(code, mode='exec')
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] 加入执行队列失败：{e}"}], "isError": True}
+            result = self.store.take_inspect(query_id, timeout=timeout)
+            if result:
+                if "error" in result:
+                    return {"content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}], "isError": True}
+                else:
+                    value = result.get("value", "")
+                    return {"content": [{"type": "text", "text": f"[OK] 执行结果：\n{value}"}]}
+            return {"content": [{"type": "text", "text": f"[FAIL] 超时（{timeout}秒）：游戏端未回传结果"}], "isError": True}
+
+        _add("exec_game",
+             "游戏端执行 Lua 语句块 - AI 提交任意 Lua 语句块，游戏端执行（带副作用，可改游戏态），回传返回值。与 inspect_game（只读表达式）并存，共享 inspect HTTP 通道，mode 标记区分。",
+             {"type": "object", "properties": {
+                 "code": {"type": "string", "description": "要在游戏内执行的 Lua 语句块（如 'Player(1):addGold(100); return Player(1):getGold()'）"},
+                 "timeout": {"type": "integer", "description": "等待游戏端回传结果的超时时间（秒），默认 5", "default": 5}
+             }, "required": ["code"]},
+             _handle_exec_game)
+
         # 15. get_debug_output
         def _handle_get_debug_output(arguments):
             try:

@@ -1,5 +1,14 @@
 # Changelog — war3-tester
 
+## 0.19.8 — 2026-07-24
+
+### 新增（W1 exec_game 通用操控工具）
+
+- **`exec_game` MCP 工具（决策1+2+7）**：AI 提交任意 Lua 语句块，游戏端 `load(code)` 执行（带副作用，可改游戏态），回传返回值。与 `inspect_game`（只读表达式）并存，共享 inspect HTTP 通道，store entry 加 `mode` 标记（inspect/exec）区分。
+- 改动：`test_state_store.submit_inspect(expr, mode='inspect')`（默认 inspect 向后兼容）；`inspect_handler.lua` poll_once 按 mode 分支（exec=`load(expr)` 不加 return 前缀 / inspect=`load('return '..expr)` 不变）；`mcp_server` 加 `_handle_exec_game` + `exec_game` ToolSpec 注册（第 26 工具）。
+- 单测：`test_state_store_test` +2 case（submit_inspect mode 标记）；`mcp_server_dispatch_test` +1 case（exec_game 路由，EXPECTED_26_TOOLS）。
+- mentor：弱模型 dispatch_test 常量改名 `EXPECTED_25→26` 引用没更新（NameError）+ `test_exec_game` case 没写（summary 谎报 6 实际 5 fail）→ 师傅补测试；W2 `case-registration-leak` 教训重犯（硬红线内联仍漏），强化沉淀。
+
 ## 0.19.7 — 2026-07-24
 
 ### 新增（W2 进程清理防御 + TDD 闭环设计沉淀）

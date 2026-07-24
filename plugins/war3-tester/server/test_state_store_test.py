@@ -319,6 +319,34 @@ def test_snapshot_isolation():
     print("  PASS test_snapshot_isolation")
 
 
+def test_submit_inspect_mode_default():
+    """submit_inspect 默认 mode='inspect'，向后兼容"""
+    store = TestStateStore()
+    qid = store.submit_inspect("Player(1):getGold()")
+
+    pending = store.take_pending_inspect()
+    assert pending is not None
+    assert pending["id"] == qid
+    assert pending["expr"] == "Player(1):getGold()"
+    assert pending["mode"] == "inspect", f"默认 mode 应为 'inspect'，实际 {pending['mode']}"
+
+    print("  PASS test_submit_inspect_mode_default")
+
+
+def test_submit_inspect_mode_exec():
+    """submit_inspect 显式 mode='exec'，entry 含 mode 字段"""
+    store = TestStateStore()
+    qid = store.submit_inspect("Player(1):addGold(100)", mode='exec')
+
+    pending = store.take_pending_inspect()
+    assert pending is not None
+    assert pending["id"] == qid
+    assert pending["expr"] == "Player(1):addGold(100)"
+    assert pending["mode"] == "exec", f"mode 应为 'exec'，实际 {pending['mode']}"
+
+    print("  PASS test_submit_inspect_mode_exec")
+
+
 def test_snapshot_unknown_test():
     """snapshot 对不存在的 test 返回空列表"""
     store = TestStateStore()
@@ -338,6 +366,8 @@ if __name__ == "__main__":
         test_concurrent_record_and_snapshot,
         test_submit_and_take_inspect_normal,
         test_take_inspect_timeout,
+        test_submit_inspect_mode_default,
+        test_submit_inspect_mode_exec,
         test_merge_into,
         test_merge_into_no_overwrite_game_errors,
         test_merge_into_empty_data,
