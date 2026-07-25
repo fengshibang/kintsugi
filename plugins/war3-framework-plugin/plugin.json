@@ -2,21 +2,6 @@
   "name": "war3-lua-framework",
   "version": "0.1.0",
   "description": "把 rouge_lua 的 Lua+JASS 协作框架(lib/ 层 + 引导链)提取为可复用插件,往无框架或框架不全的 war3 自定义地图里导入。",
-  "author": "rouge_lua team",
-  "license": "MIT",
-  "commands": [
-    "commands/war3-import-framework.md"
-  ],
-  "skills": [
-    "skills/import-framework"
-  ],
-  "assets": [
-    "assets/framework",
-    "assets/lib",
-    "assets/bin",
-    "assets/fonts",
-    "assets/brand",
-    "assets/tools",
-    "jass"
-  ]
+  "author": { "name": "rouge_lua team" },
+  "license": "MIT"
 }
