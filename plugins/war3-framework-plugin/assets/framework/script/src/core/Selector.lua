@@ -45,7 +45,7 @@ function Selector:inRange(center, radius, comps, call)
                 break
             end
         end
-        if self.isEnemy and v:getTeam and v:getTeam() == 1 then
+        if self.isEnemy and v:getTeam() == 1 then
             flag = false
         end
         if flag then
