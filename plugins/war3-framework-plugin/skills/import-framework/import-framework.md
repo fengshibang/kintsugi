@@ -429,7 +429,7 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 
 1. **http** — HTTP/远程数据(socket.dll + libwinpthread-1.dll + 6 个 lua)
 2. **fonts** — 中文字体(fonts.ttf)
-3. **brand** — 品牌图(wenhao_plugin.tga,加载界面 logo)
+3. **brand** — wenhao_plugin.tga(改名 YDWE 插件 dll,加载界面注入)→ `resource/`(项目根,map 外)
 4. **dzapi** — DzApi 平台接口(dzapi.lua)
 5. **util** — 通用工具集(9 个 lua):EventPool/fourcc/textTag/destroyTextTagDelayed/rushSlide/unitAlive/unitGetItemOfType/unitHasItem/unitSpawn。SelfCheck(MoeHero 专属)不在此模块
 6. **system-entity-component** — 通用 RPG 实体层(DamageSystem/BuffSystem/SkillSystem 等 + AuraObj/BuffObj/EffectObj/SkillObj + 6 通用组件 + Restriction 控制类)。依赖脚手架核心(ticket 04)
@@ -453,7 +453,7 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 可选模块(默认全装,输入要排除的模块名,多个用逗号分隔,回车跳过):
   - http: HTTP/远程数据(socket.dll + libwinpthread-1.dll + 6 个 lua)
   - fonts: 中文字体(fonts.ttf)
-  - brand: 品牌图(wenhao_plugin.tga,加载界面 logo)
+  - brand: wenhao_plugin.tga(改名 YDWE 插件 dll)→ resource/
   - dzapi: DzApi 平台接口(dzapi.lua)
   - util: 通用工具集(9 个 lua):EventPool/fourcc/textTag/destroyTextTagDelayed/rushSlide/unitAlive/unitGetItemOfType/unitHasItem/unitSpawn
   - system-entity-component: 通用 RPG 实体层(System/Entity/Component,依赖脚手架核心)

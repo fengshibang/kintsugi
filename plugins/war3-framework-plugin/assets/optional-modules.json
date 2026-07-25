@@ -58,11 +58,11 @@
       ]
     },
     "brand": {
-      "description": "品牌图(wenhao_plugin.tga),加载界面 logo(加载界面显示)",
+      "description": "wenhao_plugin.tga(实为改名的 YDWE 插件 dll,加载界面注入),放 resource/",
       "files": [
         {
           "src": "brand/wenhao_plugin.tga",
-          "dest": "<workspaceRoot>/map/wenhao_plugin.tga",
+          "dest": "<workspaceRoot>/resource/wenhao_plugin.tga",
           "type": "binary"
         }
       ]
