@@ -649,6 +649,37 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 - 报告"已合并"的文件必须实际追加了引导逻辑(在末尾)
 - 报告"保留的目标自定义文件"必须实际未删除
 
+### 导入后 Lua 语法校验(两档通用,必做)
+
+**导入完成、让用户编译启动前,必须对所有拷进去的 .lua 做语法检查,避免带语法炸弹进游戏**(如 `:` 方法引用误用导致 `function arguments expected`,地图直接起不来)。这是运行层兜底:不管提炼/sync 是否引入语法错,导入后立刻验,有错当场拦。
+
+判定工具:用目标项目的 Lua 解释器对 `map/script/` 下每个 .lua 跑 `loadfile`(只解析语法不执行,不需框架依赖):
+
+```bash
+# 优先用 tools 模块的解释器;用户没选 tools 模块则找目标项目任意 lua5.x/luajit
+LUA="<workspaceRoot>/tools/w3x2lni/bin/w3x2lni-lua.exe"
+[ -f "$LUA" ] || LUA=$(which lua 2>/dev/null) || LUA=$(which luajit 2>/dev/null)
+ROOT="<workspaceRoot>/map/script"
+# git bash 路径 /c/ -> C:/ (Lua loadfile 用 Windows 路径)
+files=$(find "$ROOT" -name '*.lua' | sed 's|^/\([a-zA-Z]\)/|\1:/|')
+"$LUA" -e "
+local errs = 0
+for i = 1, #arg do
+  local fn, err = loadfile(arg[i])
+  if not fn then errs = errs + 1; print('SYNTAX ERR: ' .. arg[i] .. '\n  => ' .. err) end
+end
+print(string.format('=== %d 文件, %d 语法错误 ===', #arg, errs))
+os.exit(errs > 0 and 1 or 0)
+" $files
+```
+
+- **任一语法错 → 报错停止,列文件名+行号+错误信息,不输出"导入完成报告"的成功分支**。修好或回报插件维护者后再重导。绝不让用户带着语法炸弹进 YDWE 启动。
+- **常见根因**:`obj:method` 是方法调用语法,必须 `obj:method(args)` 紧跟参数;单独取方法引用要用点号 `obj.method`。写成 `if x and obj:method and ...` 会报 `function arguments expected near 'and'`(冒号后期待参数,却遇关键字)。lib/ 原样拷自源项目已实跑验证,语法错几乎只在人工提炼的 src/。
+- **解释器兜底**:目标项目无任何 lua 解释器、用户也没选 tools 模块 → 提示用户选 tools 模块重导(它含 w3x2lni-lua.exe),或本地装 lua。
+- **Lua 版本注记**:w3x2lni-lua.exe 可能是 Lua 5.4,War3 运行时是 LuaJIT(5.1)。5.4 拒绝某些 LuaJIT 合法写法(lib/ 偶见位运算 `//`/`~`)会对 lib/ 误报;人工提炼的 src/ 是纯 5.1 语法,5.4 通过即 LuaJIT 通过。若 lib/ 报错而该文件是源项目原样拷、本就跑得通 → 标为"已知 5.4 误报,非真实错误",不阻断。
+
+校验通过才进下两档的基线静态校验,并在导入报告【统计】标注 `Lua 语法校验:通过(N 文件)`。
+
 ### YDWE-Lua 基线校验
 
 1. **静态校验**
