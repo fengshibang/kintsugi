@@ -6,10 +6,22 @@
 
 ## 前置检查
 
-1. **确认目标是 lni 源码目录**
-   - 必须含 `war3map.j`(可编辑文本)
+1. **确认目标是项目根(workspaceRoot)**
+   - **目标语义**:目标是**项目根**(workspaceRoot),不是 `map/` 子目录
+   - 必须含 `map/war3map.j`(可编辑文本)——地图源码在 `map/` 子目录内
    - 若目标是 `.w3x` 二进制,提示用户先用 `w2l.exe lni <file.w3x>` 解包(若目标已有 `tools/` 可直接用 `tools/w3x2lni/w2l.exe`,见下文「工具链捆绑」)
-   - 若 `war3map.j` 不存在或为二进制,停止并报错
+   - 若 `map/war3map.j` 不存在或为二进制,停止并报错
+   - **兼容旧结构**:若目标根直接有 `war3map.j`(无 `map/` 子目录),提示用户"建议结构:将 war3map.j 等地图文件移入 `map/` 子目录,tools/.vscode 放项目根"。仍可继续导入(此时 `map/` 等同于项目根),但在预览中标注"非标准结构,建议迁移"
+   - 正确结构:
+     ```
+     workspaceRoot/(= 项目根 = 插件目标)
+       map/                  # 地图源码(war3map.j + framework/lib/plugin_main/script)
+         war3map.j
+         plugin_main.lua
+         script/
+       tools/                # 工具链(map 外,项目根)
+       .vscode/              # VS Code 任务(map 外,项目根)
+     ```
 
 2. **读取 CONTEXT.md 与 docs/adr/**
    - 术语表 `CONTEXT.md`
@@ -20,23 +32,23 @@
 
 ## 基线检测
 
-读目标 `war3map.j`,判断基线类型。
+读目标 `map/war3map.j`,判断基线类型。
 
 ### 检测锚点(三组 grep)
 
 ```bash
 # A 组:initializePlugin 函数定义(非调用)
-grep -nE "^function[[:space:]]+initializePlugin[[:space:]]+takes" war3map.j
+grep -nE "^function[[:space:]]+initializePlugin[[:space:]]+takes" map/war3map.j
 
 # B 组:exec-lua 桥调用(YDWE 运行时 hook AbilityId 加载 plugin_main.lua)
-grep -nE 'AbilityId\("exec-lua:plugin_main"\)' war3map.j
+grep -nE 'AbilityId\("exec-lua:plugin_main"\)' map/war3map.j
 
 # C 组:callback 加载(YDWE 触发器混淆 JASS,与 exec-lua 桥配对)
-grep -nE 'StartCampaignAI\(.*"callback"\)' war3map.j
+grep -nE 'StartCampaignAI\(.*"callback"\)' map/war3map.j
 
 # 辅助锚点(定位 main 函数,注入用)
-grep -nE "^function[[:space:]]+main[[:space:]]+takes" war3map.j
-grep -nE "call[[:space:]]+InitBlizzard\(\)" war3map.j
+grep -nE "^function[[:space:]]+main[[:space:]]+takes" map/war3map.j
+grep -nE "call[[:space:]]+InitBlizzard\(\)" map/war3map.j
 ```
 
 ### 基线判定规则(组合判定,非单 grep)
@@ -86,36 +98,37 @@ grep -nE "call[[:space:]]+InitBlizzard\(\)" war3map.j
 ### 检测锚点(四组)
 
 ```bash
-# D 组:lib/ 框架层 — 检测关键框架文件是否存在
-ls <target>/script/lib/ac/init.lua        # ac 框架核心
-ls <target>/script/lib/ecs/Engine.lua     # ecs 框架核心
-ls <target>/script/lib/ui/init.lua        # ui 框架核心
-ls <target>/script/lib/ac/native.lua      # JASS↔Lua 桥
-ls <target>/script/lib/util/middleclass.lua  # 第三方依赖
+# D 组:lib/ 框架层 — 检测关键框架文件是否存在(map/ 子目录内)
+ls <workspaceRoot>/map/script/lib/ac/init.lua        # ac 框架核心
+ls <workspaceRoot>/map/script/lib/ecs/Engine.lua     # ecs 框架核心
+ls <workspaceRoot>/map/script/lib/ui/init.lua        # ui 框架核心
+ls <workspaceRoot>/map/script/lib/ac/native.lua      # JASS↔Lua 桥
+ls <workspaceRoot>/map/script/lib/util/middleclass.lua  # 第三方依赖
 # 统计 lib/ 下文件数
-find <target>/script/lib/ -type f -name '*.lua' | wc -l
+find <workspaceRoot>/map/script/lib/ -type f -name '*.lua' | wc -l
 
-# E 组:src/ 脚手架/游戏逻辑 — 检测脚手架与用户定制
-ls <target>/script/src/init.lua           # src 入口(脚手架 or 用户定制)
-ls <target>/script/src/core/Game.lua      # 脚手架核心
-ls <target>/script/src/entities/          # 脚手架/用户实体
-ls <target>/script/src/components/        # 用户组件(脚手架不含)
-ls <target>/script/src/systems/           # 用户系统(脚手架不含)
+# E 组:src/ 脚手架/游戏逻辑 — 检测脚手架与用户定制(map/ 子目录内)
+ls <workspaceRoot>/map/script/src/init.lua           # src 入口(脚手架 or 用户定制)
+ls <workspaceRoot>/map/script/src/core/Game.lua      # 脚手架核心
+ls <workspaceRoot>/map/script/src/entities/          # 脚手架/用户实体
+ls <workspaceRoot>/map/script/src/components/        # 用户组件(脚手架不含)
+ls <workspaceRoot>/map/script/src/systems/           # 用户系统(脚手架不含)
 # 统计 src/ 下文件数
-find <target>/script/src/ -type f -name '*.lua' | wc -l
+find <workspaceRoot>/map/script/src/ -type f -name '*.lua' | wc -l
 
-# F 组:入口文件 — 检测引导链文件
-ls <target>/plugin_main.lua               # Lua 入口
-ls <target>/path.lua                      # package.path 设置
-ls <target>/script/init.lua               # 脚本引导
-ls <target>/callback                      # YDWE 触发器
-ls <target>/'(key)'                       # YDWE key
+# F 组:入口文件 — 检测引导链文件(map/ 子目录内)
+ls <workspaceRoot>/map/plugin_main.lua               # Lua 入口
+ls <workspaceRoot>/map/path.lua                      # package.path 设置
+ls <workspaceRoot>/map/script/init.lua               # 脚本引导
+ls <workspaceRoot>/map/callback                      # YDWE 触发器
+ls <workspaceRoot>/map/'(key)'                       # YDWE key
 
-# G 组:assets — 检测二进制/可选资源
-ls <target>/socket.dll                    # HTTP socket
-ls <target>/libwinpthread-1.dll           # socket 依赖
-ls <target>/fonts.ttf                     # 中文字体
-ls <target>/tools/w3x2lni/w2l.exe        # 工具链
+# G 组:assets — 检测二进制/可选资源(map/ 子目录内) + 工具链(项目根)
+ls <workspaceRoot>/map/socket.dll                    # HTTP socket
+ls <workspaceRoot>/map/libwinpthread-1.dll           # socket 依赖
+ls <workspaceRoot>/map/fonts.ttf                     # 中文字体
+ls <workspaceRoot>/tools/w3x2lni/w2l.exe             # 工具链(项目根,非 map/)
+ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 ```
 
 ### 部分框架状态判定
@@ -125,7 +138,7 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 | 状态 | 特征 | 典型场景 |
 |---|---|---|
 | **全新地图** | D/E/F/G 全空 | 从未导入过框架 |
-| **仅入口** | F 部分有(plugin_main + path)，D/E/G 空 | 用户手动写过引导 |
+| **仅入口** | F 部分有(map/plugin_main + map/path)，D/E/G 空 | 用户手动写过引导 |
 | **仅 lib/** | D 有，E/F 空 | 导入过 lib/ 但未完成引导链 |
 | **仅 src/** | E 有，D/F 空 | 用户写过游戏逻辑但没用框架 |
 | **入口 + lib/** | D + F 有，E 空 | 框架导入过但没写游戏逻辑 |
@@ -167,40 +180,43 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 完整改动计划(执行前确认)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-目标地图:<target_path>
+目标项目:<workspaceRoot>
 基线类型:YDWE-Lua / 纯 JASS
 部分框架状态:<状态名，如"入口 + lib/" / "部分 lib/" / "完整框架">
 
 【war3map.j 处理】
-  war3map.j — [保持不变(跳过 JASS 注入)] / [注入 initializePlugin 定义 + 调用]
+  map/war3map.j — [保持不变(跳过 JASS 注入)] / [注入 initializePlugin 定义 + 调用]
 
 【入口文件处理】
-  plugin_main.lua — [已存在 → 合并:追加 require 'script'] / [不存在 → 新建]
-  path.lua — [已存在 → 覆盖(框架权威)] / [不存在 → 新建]
-  script/init.lua — [已存在 → 合并:追加 require('script.lib') + require('script.src')] / [不存在 → 新建]
+  map/plugin_main.lua — [已存在 → 合并:追加 require 'script'] / [不存在 → 新建]
+  map/path.lua — [已存在 → 覆盖(框架权威)] / [不存在 → 新建]
+  map/script/init.lua — [已存在 → 合并:追加 require('script.lib') + require('script.src')] / [不存在 → 新建]
 
 【框架层处理】
-  script/lib/* — 整目录覆盖(框架权威，<N> 文件)
+  map/script/lib/* — 整目录覆盖(框架权威，<N> 文件)
     - 若目标 lib/ 有自定义文件 → 保留不删除(报告标注)
 
 【脚手架/游戏逻辑处理】
-  script/src/init.lua — [已存在 → 跳过] / [不存在 → 新建]
-  script/src/core/ — [已存在 → 跳过整个目录] / [不存在 → 新建脚手架]
-  script/src/entities/ — [已存在 → 跳过] / [不存在 → 新建]
-  script/src/components/ — [已存在 → 跳过] / [不存在 → 新建]
-  script/src/systems/ — [已存在 → 跳过] / [不存在 → 新建]
+  map/script/src/init.lua — [已存在 → 跳过] / [不存在 → 新建]
+  map/script/src/core/ — [已存在 → 跳过整个目录] / [不存在 → 新建脚手架]
+  map/script/src/entities/ — [已存在 → 跳过] / [不存在 → 新建]
+  map/script/src/components/ — [已存在 → 跳过] / [不存在 → 新建]
+  map/script/src/systems/ — [已存在 → 跳过] / [不存在 → 新建]
 
 【YDWE 触发器处理】
-  callback — [已存在 → 跳过] / [不存在 → 新建]
-  (key) — [已存在 → 跳过] / [不存在 → 新建]
+  map/callback — [已存在 → 跳过] / [不存在 → 新建]
+  map/(key) — [已存在 → 跳过] / [不存在 → 新建]
 
 【assets 处理】
-  socket.dll — [已存在 → 跳过] / [不存在 → 拷贝]
-  libwinpthread-1.dll — [已存在 → 跳过] / [不存在 → 拷贝]
-  fonts.ttf — [已存在 → 跳过] / [不存在 → 拷贝]
+  map/socket.dll — [已存在 → 跳过] / [不存在 → 拷贝]
+  map/libwinpthread-1.dll — [已存在 → 跳过] / [不存在 → 拷贝]
+  map/fonts.ttf — [已存在 → 跳过] / [不存在 → 拷贝]
 
 【工具链处理】
   tools/ — [已存在 → 跳过整个目录] / [不存在 → 拷贝]
+
+【VS Code 配置处理】
+  .vscode/ — [已存在 → 跳过] / [不存在 → 拷贝]
 
 【可选模块处理】
   默认全装，排除:<用户指定排除的模块> / 无
@@ -219,45 +235,47 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 ### YDWE-Lua 基线预览模板(简化版)
 
 ```
-检测到 YDWE-Lua 基线(war3map.j 已含 initializePlugin + exec-lua:plugin_main)
-✓ war3map.j 保持不变(跳过 JASS 注入,复用目标已有引导链)
+检测到 YDWE-Lua 基线(map/war3map.j 已含 initializePlugin + exec-lua:plugin_main)
+✓ map/war3map.j 保持不变(跳过 JASS 注入,复用目标已有引导链)
 
-将拷贝以下文件到目标目录:
-  - plugin_main.lua — [已存在 → 合并引导逻辑] / [不存在 → 新建]
-  - path.lua — [已存在 → 覆盖(框架权威)] / [不存在 → 新建]
-  - script/init.lua — [已存在 → 合并引导逻辑] / [不存在 → 新建]
-  - script/src/init.lua — [已存在 → 跳过] / [不存在 → 新建]
-  - script/lib/* — 覆盖(框架层,75 文件)
-  - callback — [已存在 → 跳过] / [不存在 → 新建]
-  - (key) — [已存在 → 跳过] / [不存在 → 新建]
+将拷贝以下文件到目标项目:
+  - map/plugin_main.lua — [已存在 → 合并引导逻辑] / [不存在 → 新建]
+  - map/path.lua — [已存在 → 覆盖(框架权威)] / [不存在 → 新建]
+  - map/script/init.lua — [已存在 → 合并引导逻辑] / [不存在 → 新建]
+  - map/script/src/init.lua — [已存在 → 跳过] / [不存在 → 新建]
+  - map/script/lib/* — 覆盖(框架层,75 文件)
+  - map/callback — [已存在 → 跳过] / [不存在 → 新建]
+  - map/(key) — [已存在 → 跳过] / [不存在 → 新建]
   - 可选模块(默认全装,见下文「可选模块」节)
   - 工具链 tools/ — [已存在 → 跳过] / [不存在 → 新建]
+  - VS Code 配置 .vscode/ — [已存在 → 跳过] / [不存在 → 新建]
 
 入口合并策略(见下文「入口合并具体实现」节):
-  - plugin_main.lua 已存在:追加 require 'script' 引导(若缺失)
-  - script/init.lua 已存在:追加 require('script.lib') + require('script.src')(若缺失)
+  - map/plugin_main.lua 已存在:追加 require 'script' 引导(若缺失)
+  - map/script/init.lua 已存在:追加 require('script.lib') + require('script.src')(若缺失)
 ```
 
 ### 纯 JASS 基线预览模板(简化版)
 
 ```
-检测到纯 JASS 基线(war3map.j 无 initializePlugin + exec-lua 桥)
-⚠ 将注入 JASS 引导函数到 war3map.j
+检测到纯 JASS 基线(map/war3map.j 无 initializePlugin + exec-lua 桥)
+⚠ 将注入 JASS 引导函数到 map/war3map.j
 
-将往 war3map.j 注入:
+将往 map/war3map.j 注入:
   - initializePlugin 函数定义(在 main 之前)
   - call initializePlugin() 调用(在 main 的 call InitBlizzard() 之后)
 
-将拷贝以下文件到目标目录:
-  - plugin_main.lua — 新建
-  - path.lua — 新建
-  - script/init.lua — 新建
-  - script/src/init.lua — 新建
-  - script/lib/* — 新建(框架层,75 文件)
-  - callback — 新建
-  - (key) — 新建
+将拷贝以下文件到目标项目:
+  - map/plugin_main.lua — 新建
+  - map/path.lua — 新建
+  - map/script/init.lua — 新建
+  - map/script/src/init.lua — 新建
+  - map/script/lib/* — 新建(框架层,75 文件)
+  - map/callback — 新建
+  - map/(key) — 新建
   - 可选模块(默认全装,见下文「可选模块」节)
   - 工具链 tools/ — [已存在 → 跳过] / [不存在 → 新建]
+  - VS Code 配置 .vscode/ — [已存在 → 跳过] / [不存在 → 新建]
 ```
 
 等待用户确认后继续。
@@ -266,33 +284,33 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 
 ### 步骤 1:插入函数定义
 
-在目标 `war3map.j` 中找到 `function main takes nothing returns nothing` 行,
+在目标 `map/war3map.j` 中找到 `function main takes nothing returns nothing` 行,
 在该行**之前**插入 `jass/initializePlugin.j` 的内容(含前后空行分隔)。
 
 ### 步骤 2:插入调用
 
-在目标 `war3map.j` 中找到 `main` 函数体内的 `call InitBlizzard()` 行,
+在目标 `map/war3map.j` 中找到 `main` 函数体内的 `call InitBlizzard()` 行,
 在该行**之后**插入 `    call initializePlugin()`(4 空格缩进)。
 
 ### 锚点找不到时
 
-- 找不到 `function main`:报错"目标 war3map.j 缺 main 函数,非标准 WE 生成地图",停止
+- 找不到 `function main`:报错"目标 map/war3map.j 缺 main 函数,非标准 WE 生成地图",停止
 - 找不到 `call InitBlizzard()`:报错"目标 main 缺 InitBlizzard 调用,非标准 WE 生成地图",停止
 - 已存在 `initializePlugin`:按 YDWE-Lua 基线处理(跳过注入)
 
 ## 拷贝框架文件
 
-从插件 `assets/` 拷贝到目标目录:
+从插件 `assets/` 拷贝到目标项目:
 
-| 源(插件 assets/) | 目标(目标地图目录) |
+| 源(插件 assets/) | 目标(目标项目) |
 |---|---|
-| `framework/plugin_main.lua` | `plugin_main.lua` |
-| `framework/path.lua` | `path.lua` |
-| `framework/script/init.lua` | `script/init.lua` |
-| `framework/script/src/init.lua` | `script/src/init.lua` |
-| `lib/*` | `script/lib/*`(全量 75 文件) |
-| `framework/callback` | `callback` |
-| `framework/(key)` | `(key)` |
+| `framework/plugin_main.lua` | `map/plugin_main.lua` |
+| `framework/path.lua` | `map/path.lua` |
+| `framework/script/init.lua` | `map/script/init.lua` |
+| `framework/script/src/init.lua` | `map/script/src/init.lua` |
+| `lib/*` | `map/script/lib/*`(全量 75 文件) |
+| `framework/callback` | `map/callback` |
+| `framework/(key)` | `map/(key)` |
 
 ### 分层冲突策略(按 CONTEXT.md layered 策略)
 
@@ -342,7 +360,7 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 
 1. **检测是否已含框架引导**:
    ```bash
-   grep -nE "require\s+['\"]script['\"]" <target>/plugin_main.lua
+   grep -nE "require\s+['\"]script['\"]" <workspaceRoot>/map/plugin_main.lua
    ```
    - 若已含 `require 'script'` → 跳过合并(目标已引导框架)
    - 若不含 → 进入追加流程
@@ -374,8 +392,8 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 
 1. **检测是否已含框架引导**:
    ```bash
-   grep -nE "require\(['\"]script\.lib['\"]\)" <target>/script/init.lua
-   grep -nE "require\(['\"]script\.src['\"]\)" <target>/script/init.lua
+   grep -nE "require\(['\"]script\.lib['\"]\)" <workspaceRoot>/map/script/init.lua
+   grep -nE "require\(['\"]script\.src['\"]\)" <workspaceRoot>/map/script/init.lua
    ```
    - 若已含 `require('script.lib')` + `require('script.src')` → 跳过合并
    - 若不含 → 进入追加流程
@@ -459,8 +477,8 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 
 1. 遍历 `files` 数组
 2. 对每个文件:
-   - `type: "binary"` → 从 `assets/<src>` 拷贝到目标 `<map_root>/<dest>`
-   - `type: "lua"` → 从 `assets/<src>` 拷贝到目标 `<map_root>/<dest>`
+   - `type: "binary"` → 从 `assets/<src>` 拷贝到目标 `<workspaceRoot>/map/<dest>`
+   - `type: "lua"` → 从 `assets/<src>` 拷贝到目标 `<workspaceRoot>/map/<dest>`
 3. 冲突策略:
    - `binary` — **存在则跳过**(assets 定义)
    - `lua` — **存在则覆盖**(框架层权威)
@@ -468,19 +486,19 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 ### 关键约束
 
 **二进制 dll 位置**:
-- `socket.dll` / `libwinpthread-1.dll` **必须**放目标 map 根(与 `war3map.j` 同级)
+- `socket.dll` / `libwinpthread-1.dll` **必须**放目标 `map/`(与 `map/war3map.j` 同级)
 - **不能**放 `script/` 下,否则 HTTP/socket 静默失效(ticket 01 运行层卡住根因之一)
-- `fonts.ttf` 同理,放 map 根
+- `fonts.ttf` 同理,放 `map/`
 
 ## 工具链捆绑
 
-插件捆绑了完整的 w3x2lni 工具链(见 ADR-0002 修订 + ADR-0004 自包含),导入时拷到目标 `tools/`,让目标无需另备 w2l 即可自编译。
+插件捆绑了完整的 w3x2lni 工具链(见 ADR-0002 修订 + ADR-0004 自包含),导入时拷到目标 `tools/`(项目根,非 map/ 内),让目标无需另备 w2l 即可自编译。
 
 ### 捆绑内容
 
-从插件 `assets/tools/` 拷到目标 `<map_root>/tools/`:
+从插件 `assets/tools/` 拷到目标 `<workspaceRoot>/tools/`(项目根,map 外):
 
-| 源(插件 assets/tools/) | 目标(目标地图目录) | 说明 |
+| 源(插件 assets/tools/) | 目标(目标项目) | 说明 |
 |---|---|---|
 | `w3x2lni/` | `tools/w3x2lni/` | w2l.exe + bin/ + config.ini + data/ + script/ + template/ |
 | `jasshelper/` | `tools/jasshelper/` | 4 exe + sfmpq.dll + blizzard.j + common.j + jasshelper.conf |
@@ -500,17 +518,64 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 
 ### 拷贝步骤
 
-1. 检查目标 `<map_root>/tools/w3x2lni/w2l.exe` 是否存在
+1. 检查目标 `<workspaceRoot>/tools/w3x2lni/w2l.exe` 是否存在
 2. 若存在 → 报告"目标已有 tools/,跳过工具链拷贝(用户可手动删除后重导)"
-3. 若不存在 → 从 `assets/tools/` 全量拷到 `<map_root>/tools/`
+3. 若不存在 → 从 `assets/tools/` 全量拷到 `<workspaceRoot>/tools/`
 4. 报告拷贝的文件清单 + 大小
 
 ### 关键约束
 
 **工具链位置**:
-- **必须**放目标 `<map_root>/tools/`(与 `war3map.j` 同级)
-- **不能**放 `script/` 下,否则路径引用失败(运行.lua/语法检查.lua 硬编码 `tools/` 相对路径)
+- **必须**放目标 `<workspaceRoot>/tools/`(项目根,与 `map/` 平级,**不**在 map/ 内)
+- **不能**放 `map/tools/` 或 `script/` 下,否则路径引用失败(运行.lua/语法检查.lua 硬编码 `tools/` 相对路径,VS Code tasks.json 用 `${workspaceRoot}/tools/`)
 - `w3x2lni/config.ini` 含通用配置(无项目特定路径),可直接用
+
+## VS Code 配置捆绑
+
+插件捆绑了 VS Code 配置(extensions.json/launch.json/settings.json/tasks.json),导入时拷到目标 `.vscode/`(项目根,非 map/ 内),让目标开箱即用 VS Code 任务。
+
+### 捆绑内容
+
+从插件 `assets/.vscode/` 拷到目标 `<workspaceRoot>/.vscode/`(项目根,map 外):
+
+| 源(插件 assets/.vscode/) | 目标(目标项目) | 说明 |
+|---|---|---|
+| `extensions.json` | `.vscode/extensions.json` | 推荐扩展(lua-debug/中文语言包/tasks) |
+| `launch.json` | `.vscode/launch.json` | Lua 调试配置(attach 4279 端口) |
+| `settings.json` | `.vscode/settings.json` | Lua diagnostics 全局变量(ac/fs/base/war3) |
+| `tasks.json` | `.vscode/tasks.json` | VS Code 任务(运行/语法检查/Obj/Lni/Slk/🔍 watch) |
+
+### 清洗 MoeHero 硬编码
+
+`assets/.vscode/tasks.json` 已清洗 MoeHero 硬编码:
+- `MoeHero.w3x` → `<地图名>.w3x`(参数化占位符,用户导入后按实际地图名替换)
+- `运行.lua` 已参数化(扫 `${workspaceRoot}` 下 `*.w3x`,无需硬编码)
+- `Obj`/`Lni`/`Slk` 任务用 `for /f %f in ('dir /b *.w3x')` 自动发现
+
+**导入后提示**:
+- 若 `.vscode/tasks.json` 中仍有 `<地图名>.w3x` 占位符,提示用户替换为实际地图名(如 `MoeHero.w3x`)
+- 或保持占位符,运行.lua 会自动发现第一个 `.w3x`
+
+### 冲突策略
+
+- **目标 `.vscode/` 已存在**:
+  - 若已含 `tasks.json` → **跳过**(用户可能已自定义任务)
+  - 若不含 → **全量拷贝**
+- **部分存在**:按文件粒度跳过已存在的(避免覆盖用户定制)
+
+### 拷贝步骤
+
+1. 检查目标 `<workspaceRoot>/.vscode/tasks.json` 是否存在
+2. 若存在 → 报告"目标已有 .vscode/,跳过 VS Code 配置拷贝(用户可手动删除后重导)"
+3. 若不存在 → 从 `assets/.vscode/` 全量拷到 `<workspaceRoot>/.vscode/`
+4. 报告拷贝的文件清单
+
+### 关键约束
+
+**VS Code 配置位置**:
+- **必须**放目标 `<workspaceRoot>/.vscode/`(项目根,与 `map/` 平级,**不**在 map/ 内)
+- **不能**放 `map/.vscode/`,否则 VS Code 无法识别任务
+- tasks.json 中 `${workspaceRoot}` 由 VS Code 自动解析为项目根
 
 ## 校验
 
@@ -525,52 +590,53 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 导入完成报告
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-目标地图:<target_path>
+目标项目:<workspaceRoot>
 基线类型:YDWE-Lua / 纯 JASS
 部分框架状态:<状态名>
 
 【注入】
-  war3map.j — [已注入 initializePlugin] / [保持不变(YDWE-Lua 基线)]
+  map/war3map.j — [已注入 initializePlugin] / [保持不变(YDWE-Lua 基线)]
 
 【拷贝】
-  plugin_main.lua — [已新建] / [已合并:追加 require 'script']
-  path.lua — [已新建] / [已覆盖(框架权威)]
-  script/init.lua — [已新建] / [已合并:追加 require('script.lib') + require('script.src')]
-  script/lib/* — 已拷贝 <N> 文件(框架权威)
-  callback — [已新建] / [已存在,跳过]
-  (key) — [已新建] / [已存在,跳过]
-  socket.dll — [已拷贝] / [已存在,跳过]
-  libwinpthread-1.dll — [已拷贝] / [已存在,跳过]
-  fonts.ttf — [已拷贝] / [已存在,跳过]
+  map/plugin_main.lua — [已新建] / [已合并:追加 require 'script']
+  map/path.lua — [已新建] / [已覆盖(框架权威)]
+  map/script/init.lua — [已新建] / [已合并:追加 require('script.lib') + require('script.src')]
+  map/script/lib/* — 已拷贝 <N> 文件(框架权威)
+  map/callback — [已新建] / [已存在,跳过]
+  map/(key) — [已新建] / [已存在,跳过]
+  map/socket.dll — [已拷贝] / [已存在,跳过]
+  map/libwinpthread-1.dll — [已拷贝] / [已存在,跳过]
+  map/fonts.ttf — [已拷贝] / [已存在,跳过]
 
 【跳过】
-  script/src/init.lua — [已存在,跳过(目标定制)] / [已新建脚手架]
-  script/src/core/ — [已存在,跳过整个目录] / [已新建脚手架]
-  script/src/entities/ — [已存在,跳过] / [已新建]
-  script/src/components/ — [已存在,跳过] / [已新建]
-  script/src/systems/ — [已存在,跳过] / [已新建]
+  map/script/src/init.lua — [已存在,跳过(目标定制)] / [已新建脚手架]
+  map/script/src/core/ — [已存在,跳过整个目录] / [已新建脚手架]
+  map/script/src/entities/ — [已存在,跳过] / [已新建]
+  map/script/src/components/ — [已存在,跳过] / [已新建]
+  map/script/src/systems/ — [已存在,跳过] / [已新建]
   tools/ — [已存在,跳过] / [已拷贝]
+  .vscode/ — [已存在,跳过] / [已拷贝]
 
 【合并】
-  plugin_main.lua — [已追加 require 'script' 引导] / [已含引导,跳过合并]
-  script/init.lua — [已追加 require('script.lib') + require('script.src')] / [已含引导,跳过合并]
+  map/plugin_main.lua — [已追加 require 'script' 引导] / [已含引导,跳过合并]
+  map/script/init.lua — [已追加 require('script.lib') + require('script.src')] / [已含引导,跳过合并]
 
 【保留的目标自定义文件】
-  script/lib/<自定义文件> — 保留(框架不包含,未删除)
+  map/script/lib/<自定义文件> — 保留(框架不包含,未删除)
   (若无则标注"无")
 
 【统计】
-  注入:1 文件(war3map.j) / 0 文件(YDWE-Lua 基线)
+  注入:1 文件(map/war3map.j) / 0 文件(YDWE-Lua 基线)
   拷贝:<N> 文件
   跳过:<M> 文件(目标已有)
   合并:<K> 文件(入口追加引导)
 
 【后续步骤】
-  1. 用 w2l.exe slk <target_path> 编译地图
+  1. 用 w2l.exe slk <workspaceRoot> 编译地图
   2. 用 YDWE 启动测试
   3. inspect 读 _G.__framework_booted == true 或 _G.__framework_scaffold_loaded == true 应为真
 
-⚠ 若目标 plugin_main.lua 有特殊定制(如 japi.SetOwner / 自定义 console),
+⚠ 若目标 map/plugin_main.lua 有特殊定制(如 japi.SetOwner / 自定义 console),
   框架追加的引导逻辑在文件末尾,不影响现有逻辑。
   若启动后框架未加载,检查 xpcall 错误输出。
 ```
@@ -584,35 +650,35 @@ ls <target>/tools/w3x2lni/w2l.exe        # 工具链
 ### YDWE-Lua 基线校验
 
 1. **静态校验**
-   - `grep -nE "^function[[:space:]]+initializePlugin[[:space:]]+takes" war3map.j` 应有结果(目标原有,未删除)
-   - `grep -nE 'AbilityId\("exec-lua:plugin_main"\)' war3map.j` 应有结果(目标原有,未删除)
-   - `war3map.j` 文件 hash 应与导入前一致(未修改)
-   - 目标目录应存在 `plugin_main.lua` / `path.lua` / `script/init.lua` / `script/src/init.lua` / `script/lib/` / `callback` / `(key)`
-   - `plugin_main.lua` 应含 `require 'script'` 引导(若合并则追加在末尾)
-   - `script/init.lua` 应含 `require('script.lib')` + `require('script.src')`(若合并则追加在末尾)
-   - `path.lua` 不应含 `D:\war3项目` 硬编码
-   - `script/src/init.lua` 应含 `_G.__framework_scaffold_loaded = true`(脚手架)或 `_G.__framework_booted = true`(极简)
+   - `grep -nE "^function[[:space:]]+initializePlugin[[:space:]]+takes" map/war3map.j` 应有结果(目标原有,未删除)
+   - `grep -nE 'AbilityId\("exec-lua:plugin_main"\)' map/war3map.j` 应有结果(目标原有,未删除)
+   - `map/war3map.j` 文件 hash 应与导入前一致(未修改)
+   - 目标项目应存在 `map/plugin_main.lua` / `map/path.lua` / `map/script/init.lua` / `map/script/src/init.lua` / `map/script/lib/` / `map/callback` / `map/(key)` / `tools/` / `.vscode/`
+   - `map/plugin_main.lua` 应含 `require 'script'` 引导(若合并则追加在末尾)
+   - `map/script/init.lua` 应含 `require('script.lib')` + `require('script.src')`(若合并则追加在末尾)
+   - `map/path.lua` 不应含 `D:\war3项目` 硬编码
+   - `map/script/src/init.lua` 应含 `_G.__framework_scaffold_loaded = true`(脚手架)或 `_G.__framework_booted = true`(极简)
 
 2. **报告**
    - 列出所有新增 / 修改的文件
-   - 明确标注:"war3map.j 保持不变(YDWE-Lua 基线)"
-   - 提示用户用 `w2l.exe slk <目标目录>` 编译,再用 YDWE 启动
+   - 明确标注:"map/war3map.j 保持不变(YDWE-Lua 基线)"
+   - 提示用户用 `w2l.exe slk <workspaceRoot>` 编译,再用 YDWE 启动
    - 启动后 inspect 读 `_G.__framework_booted == true` 或 `_G.__framework_scaffold_loaded == true` 应为真
 
 ### 纯 JASS 基线校验
 
 1. **静态校验**
-   - `grep -nE "^function[[:space:]]+initializePlugin[[:space:]]+takes" war3map.j` 应有结果(新注入)
-   - `grep -nE "call[[:space:]]+initializePlugin\(\)" war3map.j` 应有结果(新注入,在 main 内)
-   - 目标目录应存在 `plugin_main.lua` / `path.lua` / `script/init.lua` / `script/src/init.lua` / `script/lib/` / `callback` / `(key)`
-   - `script/src/init.lua` 应含 `_G.__framework_scaffold_loaded = true`(脚手架)或 `_G.__framework_booted = true`(极简)
-   - `path.lua` 不应含 `D:\war3项目` 硬编码
-   - `script/init.lua` 不应含 `test_runner` / `test_reporter`
+   - `grep -nE "^function[[:space:]]+initializePlugin[[:space:]]+takes" map/war3map.j` 应有结果(新注入)
+   - `grep -nE "call[[:space:]]+initializePlugin\(\)" map/war3map.j` 应有结果(新注入,在 main 内)
+   - 目标项目应存在 `map/plugin_main.lua` / `map/path.lua` / `map/script/init.lua` / `map/script/src/init.lua` / `map/script/lib/` / `map/callback` / `map/(key)` / `tools/` / `.vscode/`
+   - `map/script/src/init.lua` 应含 `_G.__framework_scaffold_loaded = true`(脚手架)或 `_G.__framework_booted = true`(极简)
+   - `map/path.lua` 不应含 `D:\war3项目` 硬编码
+   - `map/script/init.lua` 不应含 `test_runner` / `test_reporter`
 
 2. **报告**
    - 列出所有新增 / 修改的文件
-   - 明确标注:"war3map.j 已注入 initializePlugin(纯 JASS 基线)"
-   - 提示用户用 `w2l.exe slk <目标目录>` 编译,再用 YDWE 启动
+   - 明确标注:"map/war3map.j 已注入 initializePlugin(纯 JASS 基线)"
+   - 提示用户用 `w2l.exe slk <workspaceRoot>` 编译,再用 YDWE 启动
    - 启动后 inspect 读 `_G.__framework_booted == true` 或 `_G.__framework_scaffold_loaded == true` 应为真
 
 ## 错误处理
