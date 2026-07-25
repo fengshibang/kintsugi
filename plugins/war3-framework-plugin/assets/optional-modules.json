@@ -4,92 +4,333 @@
     "http": {
       "description": "HTTP/远程数据(socket.dll + libwinpthread-1.dll + http/http_socket/pcrypt/remote_data/11api/skyapi)",
       "files": [
-        { "src": "bin/socket.dll",              "dest": "<workspaceRoot>/map/socket.dll",              "type": "binary" },
-        { "src": "bin/libwinpthread-1.dll",     "dest": "<workspaceRoot>/map/libwinpthread-1.dll",     "type": "binary" },
-        { "src": "lib/util/http.lua",           "dest": "<workspaceRoot>/map/script/lib/util/http.lua",           "type": "lua" },
-        { "src": "lib/util/http_socket.lua",    "dest": "<workspaceRoot>/map/script/lib/util/http_socket.lua",    "type": "lua" },
-        { "src": "lib/util/pcrypt.lua",         "dest": "<workspaceRoot>/map/script/lib/util/pcrypt.lua",         "type": "lua" },
-        { "src": "lib/util/remote_data.lua",    "dest": "<workspaceRoot>/map/script/lib/util/remote_data.lua",    "type": "lua" },
-        { "src": "lib/util/11api.lua",          "dest": "<workspaceRoot>/map/script/lib/util/11api.lua",          "type": "lua" },
-        { "src": "lib/util/skyapi.lua",         "dest": "<workspaceRoot>/map/script/lib/util/skyapi.lua",         "type": "lua" }
+        {
+          "src": "bin/socket.dll",
+          "dest": "<workspaceRoot>/map/socket.dll",
+          "type": "binary"
+        },
+        {
+          "src": "bin/libwinpthread-1.dll",
+          "dest": "<workspaceRoot>/map/libwinpthread-1.dll",
+          "type": "binary"
+        },
+        {
+          "src": "lib/util/http.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/http.lua",
+          "type": "lua"
+        },
+        {
+          "src": "lib/util/http_socket.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/http_socket.lua",
+          "type": "lua"
+        },
+        {
+          "src": "lib/util/pcrypt.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/pcrypt.lua",
+          "type": "lua"
+        },
+        {
+          "src": "lib/util/remote_data.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/remote_data.lua",
+          "type": "lua"
+        },
+        {
+          "src": "lib/util/11api.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/11api.lua",
+          "type": "lua"
+        },
+        {
+          "src": "lib/util/skyapi.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/skyapi.lua",
+          "type": "lua"
+        }
       ],
       "note": "二进制 dll 必须放 map 根(与 war3map.j 同级),不能放 script/ 下,否则 socket 静默失效"
     },
     "fonts": {
       "description": "中文字体(fonts.ttf),用于自定义 UI 文字渲染",
       "files": [
-        { "src": "fonts/fonts.ttf", "dest": "<workspaceRoot>/map/fonts.ttf", "type": "binary" }
+        {
+          "src": "fonts/fonts.ttf",
+          "dest": "<workspaceRoot>/map/fonts.ttf",
+          "type": "binary"
+        }
       ]
     },
     "brand": {
-      "description": "品牌图(wenhao_plugin.tga),加载界面 logo",
-      "files": [],
-      "note": "wenhao_plugin.tga 在 rouge_lua 源不存在,本模块为空占位;如用户有品牌图可自行放入 assets/brand/ 并补 files 数组"
+      "description": "品牌图(wenhao_plugin.tga),加载界面 logo(加载界面显示)",
+      "files": [
+        {
+          "src": "brand/wenhao_plugin.tga",
+          "dest": "<workspaceRoot>/map/wenhao_plugin.tga",
+          "type": "binary"
+        }
+      ]
     },
     "dzapi": {
       "description": "DzApi 平台接口(dzapi.lua),平台排行榜/存档等功能",
       "files": [
-        { "src": "lib/util/dzapi.lua", "dest": "<workspaceRoot>/map/script/lib/util/dzapi.lua", "type": "lua" }
+        {
+          "src": "lib/util/dzapi.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/dzapi.lua",
+          "type": "lua"
+        }
       ]
     },
     "util": {
       "description": "通用工具集(9 个 lua):EventPool/fourcc/textTag/destroyTextTagDelayed/rushSlide/unitAlive/unitGetItemOfType/unitHasItem/unitSpawn。默认装,可排除。SelfCheck(MoeHero 专属,require jass.code+data.selfcheck_manifest)不在此模块",
       "files": [
-        { "src": "framework/script/src/util/EventPool.lua",              "dest": "<workspaceRoot>/map/script/src/util/EventPool.lua",              "type": "lua" },
-        { "src": "framework/script/src/util/fourcc.lua",                 "dest": "<workspaceRoot>/map/script/src/util/fourcc.lua",                 "type": "lua" },
-        { "src": "framework/script/src/util/textTag.lua",                "dest": "<workspaceRoot>/map/script/src/util/textTag.lua",                "type": "lua" },
-        { "src": "framework/script/src/util/destroyTextTagDelayed.lua",  "dest": "<workspaceRoot>/map/script/src/util/destroyTextTagDelayed.lua",  "type": "lua" },
-        { "src": "framework/script/src/util/rushSlide.lua",              "dest": "<workspaceRoot>/map/script/src/util/rushSlide.lua",              "type": "lua" },
-        { "src": "framework/script/src/util/unitAlive.lua",              "dest": "<workspaceRoot>/map/script/src/util/unitAlive.lua",              "type": "lua" },
-        { "src": "framework/script/src/util/unitGetItemOfType.lua",      "dest": "<workspaceRoot>/map/script/src/util/unitGetItemOfType.lua",      "type": "lua" },
-        { "src": "framework/script/src/util/unitHasItem.lua",            "dest": "<workspaceRoot>/map/script/src/util/unitHasItem.lua",            "type": "lua" },
-        { "src": "framework/script/src/util/unitSpawn.lua",              "dest": "<workspaceRoot>/map/script/src/util/unitSpawn.lua",              "type": "lua" }
+        {
+          "src": "framework/script/src/util/EventPool.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/EventPool.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/fourcc.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/fourcc.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/textTag.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/textTag.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/destroyTextTagDelayed.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/destroyTextTagDelayed.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/rushSlide.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/rushSlide.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/unitAlive.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/unitAlive.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/unitGetItemOfType.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/unitGetItemOfType.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/unitHasItem.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/unitHasItem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/util/unitSpawn.lua",
+          "dest": "<workspaceRoot>/map/script/src/util/unitSpawn.lua",
+          "type": "lua"
+        }
       ],
       "note": "SelfCheck.lua 是 MoeHero 专属(require jass.code + jass.globals + data.selfcheck_manifest + gen_selfcheck_manifest.py),不提炼到框架。rushSlide 依赖 script.lib.util.Easing(框架 lib 已有) + 全局 Types/EffectObj/TweenComp/Game/AnyUnitAboutToDie(脚手架 entities/core 提供),目标需有完整脚手架才能用"
     },
     "system-entity-component": {
       "description": "通用 RPG 实体层(System/Entity/Component 提炼):伤害/英雄/技能/Buff/子弹/装备/Tween/特效/控制等通用机制。默认装,可排除。依赖脚手架核心(04 core/model/types + PlayerObj/UnitObj 桩)。EffectObj + TweenComp 必含(rushSlide 依赖)",
       "files": [
-        { "src": "framework/script/src/entities/init.lua",              "dest": "<workspaceRoot>/map/script/src/entities/init.lua",              "type": "lua" },
-        { "src": "framework/script/src/entities/AuraObj.lua",           "dest": "<workspaceRoot>/map/script/src/entities/AuraObj.lua",           "type": "lua" },
-        { "src": "framework/script/src/entities/BuffObj.lua",           "dest": "<workspaceRoot>/map/script/src/entities/BuffObj.lua",           "type": "lua" },
-        { "src": "framework/script/src/entities/EffectObj.lua",         "dest": "<workspaceRoot>/map/script/src/entities/EffectObj.lua",         "type": "lua" },
-        { "src": "framework/script/src/entities/SkillObj.lua",          "dest": "<workspaceRoot>/map/script/src/entities/SkillObj.lua",          "type": "lua" },
-        { "src": "framework/script/src/components/init.lua",            "dest": "<workspaceRoot>/map/script/src/components/init.lua",            "type": "lua" },
-        { "src": "framework/script/src/components/BulletComp.lua",      "dest": "<workspaceRoot>/map/script/src/components/BulletComp.lua",      "type": "lua" },
-        { "src": "framework/script/src/components/EffectDamageComp.lua","dest": "<workspaceRoot>/map/script/src/components/EffectDamageComp.lua","type": "lua" },
-        { "src": "framework/script/src/components/EquipComp.lua",       "dest": "<workspaceRoot>/map/script/src/components/EquipComp.lua",       "type": "lua" },
-        { "src": "framework/script/src/components/HeroComp.lua",        "dest": "<workspaceRoot>/map/script/src/components/HeroComp.lua",        "type": "lua" },
-        { "src": "framework/script/src/components/OnDamageComp.lua",    "dest": "<workspaceRoot>/map/script/src/components/OnDamageComp.lua",    "type": "lua" },
-        { "src": "framework/script/src/components/TweenComp.lua",       "dest": "<workspaceRoot>/map/script/src/components/TweenComp.lua",       "type": "lua" },
-        { "src": "framework/script/src/components/Restriction/init.lua",        "dest": "<workspaceRoot>/map/script/src/components/Restriction/init.lua",        "type": "lua" },
-        { "src": "framework/script/src/components/Restriction/AbunComp.lua",    "dest": "<workspaceRoot>/map/script/src/components/Restriction/AbunComp.lua",    "type": "lua" },
-        { "src": "framework/script/src/components/Restriction/AvoidDeathComp.lua","dest": "<workspaceRoot>/map/script/src/components/Restriction/AvoidDeathComp.lua","type": "lua" },
-        { "src": "framework/script/src/components/Restriction/ControlFreeComp.lua","dest": "<workspaceRoot>/map/script/src/components/Restriction/ControlFreeComp.lua","type": "lua" },
-        { "src": "framework/script/src/components/Restriction/HideComp.lua",    "dest": "<workspaceRoot>/map/script/src/components/Restriction/HideComp.lua",    "type": "lua" },
-        { "src": "framework/script/src/components/Restriction/InvulnerableComp.lua","dest": "<workspaceRoot>/map/script/src/components/Restriction/InvulnerableComp.lua","type": "lua" },
-        { "src": "framework/script/src/components/Restriction/OneDamageComp.lua","dest": "<workspaceRoot>/map/script/src/components/Restriction/OneDamageComp.lua","type": "lua" },
-        { "src": "framework/script/src/components/Restriction/StealthComp.lua", "dest": "<workspaceRoot>/map/script/src/components/Restriction/StealthComp.lua", "type": "lua" },
-        { "src": "framework/script/src/components/Restriction/StopMoveComp.lua","dest": "<workspaceRoot>/map/script/src/components/Restriction/StopMoveComp.lua","type": "lua" },
-        { "src": "framework/script/src/components/Restriction/StunComp.lua",    "dest": "<workspaceRoot>/map/script/src/components/Restriction/StunComp.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/init.lua",               "dest": "<workspaceRoot>/map/script/src/systems/init.lua",               "type": "lua" },
-        { "src": "framework/script/src/systems/BuffSystem.lua",         "dest": "<workspaceRoot>/map/script/src/systems/BuffSystem.lua",         "type": "lua" },
-        { "src": "framework/script/src/systems/BulletSystem.lua",       "dest": "<workspaceRoot>/map/script/src/systems/BulletSystem.lua",       "type": "lua" },
-        { "src": "framework/script/src/systems/DamageSystem.lua",       "dest": "<workspaceRoot>/map/script/src/systems/DamageSystem.lua",       "type": "lua" },
-        { "src": "framework/script/src/systems/EffectSystem.lua",       "dest": "<workspaceRoot>/map/script/src/systems/EffectSystem.lua",       "type": "lua" },
-        { "src": "framework/script/src/systems/EquipSystem.lua",        "dest": "<workspaceRoot>/map/script/src/systems/EquipSystem.lua",        "type": "lua" },
-        { "src": "framework/script/src/systems/SkillSystem.lua",        "dest": "<workspaceRoot>/map/script/src/systems/SkillSystem.lua",        "type": "lua" },
-        { "src": "framework/script/src/systems/TweenSystem.lua",        "dest": "<workspaceRoot>/map/script/src/systems/TweenSystem.lua",        "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/init.lua",   "dest": "<workspaceRoot>/map/script/src/systems/Restriction/init.lua",   "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/定身.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/定身.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/缴械.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/缴械.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/免死.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/免死.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/隐身.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/隐身.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/隐藏.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/隐藏.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/免控.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/免控.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/晕眩.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/晕眩.lua",    "type": "lua" },
-        { "src": "framework/script/src/systems/Restriction/无敌.lua",    "dest": "<workspaceRoot>/map/script/src/systems/Restriction/无敌.lua",    "type": "lua" },
-        { "src": "framework/script/lib/util/IdHelp.lua",               "dest": "<workspaceRoot>/map/script/lib/util/IdHelp.lua",               "type": "lua" }
+        {
+          "src": "framework/script/src/entities/init.lua",
+          "dest": "<workspaceRoot>/map/script/src/entities/init.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/entities/AuraObj.lua",
+          "dest": "<workspaceRoot>/map/script/src/entities/AuraObj.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/entities/BuffObj.lua",
+          "dest": "<workspaceRoot>/map/script/src/entities/BuffObj.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/entities/EffectObj.lua",
+          "dest": "<workspaceRoot>/map/script/src/entities/EffectObj.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/entities/SkillObj.lua",
+          "dest": "<workspaceRoot>/map/script/src/entities/SkillObj.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/init.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/init.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/BulletComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/BulletComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/EffectDamageComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/EffectDamageComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/EquipComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/EquipComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/HeroComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/HeroComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/OnDamageComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/OnDamageComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/TweenComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/TweenComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/init.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/init.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/AbunComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/AbunComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/AvoidDeathComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/AvoidDeathComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/ControlFreeComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/ControlFreeComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/HideComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/HideComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/InvulnerableComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/InvulnerableComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/OneDamageComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/OneDamageComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/StealthComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/StealthComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/StopMoveComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/StopMoveComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/components/Restriction/StunComp.lua",
+          "dest": "<workspaceRoot>/map/script/src/components/Restriction/StunComp.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/init.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/init.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/BuffSystem.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/BuffSystem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/BulletSystem.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/BulletSystem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/DamageSystem.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/DamageSystem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/EffectSystem.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/EffectSystem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/EquipSystem.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/EquipSystem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/SkillSystem.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/SkillSystem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/TweenSystem.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/TweenSystem.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/init.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/init.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/定身.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/定身.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/缴械.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/缴械.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/免死.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/免死.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/隐身.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/隐身.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/隐藏.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/隐藏.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/免控.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/免控.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/晕眩.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/晕眩.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/src/systems/Restriction/无敌.lua",
+          "dest": "<workspaceRoot>/map/script/src/systems/Restriction/无敌.lua",
+          "type": "lua"
+        },
+        {
+          "src": "framework/script/lib/util/IdHelp.lua",
+          "dest": "<workspaceRoot>/map/script/lib/util/IdHelp.lua",
+          "type": "lua"
+        }
       ],
       "note": "依赖脚手架核心(04):core/(Game/GameEvent/Selector/state/AssetsManager) + entities/(PlayerObj/UnitObj 桩) + model/(UnitModelComp/UnitNumeric/UnitNumericMap/enum) + types/(Attribute/point/init)。EffectObj + TweenComp 必含(rushSlide 依赖)。SkillObj/BuffSystem 用 IdHelp.Str2Id(已含在本模块 files 末尾)。DamageObj/ItemObj 未提炼(DamageObj 耦合 UnitModelComp 大量 MoeHero 属性名/元素/暴击;ItemObj 耦合 slk.item 物编数据)。HeroSystem 未提炼(硬编码 AZ01-AZ0B 技能 ID + HeroDeathStateComp)。UnitSystem/ItemSystem/PlayerSystem 未提炼(UnitSystem 耦合 50+ setupA0XXAura 钩子;ItemSystem require 9 个 MoeHero data.*;PlayerSystem 耦合 ResourceComp + MoeHero 英雄选择逻辑)"
     }

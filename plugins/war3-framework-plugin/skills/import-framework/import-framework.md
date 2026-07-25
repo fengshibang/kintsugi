@@ -425,17 +425,18 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 
 ## 可选模块
 
-可选模块定义在 `assets/optional-modules.json`,包含 5 个模块:
+可选模块定义在 `assets/optional-modules.json`,包含 6 个模块:
 
 1. **http** — HTTP/远程数据(socket.dll + libwinpthread-1.dll + 6 个 lua)
 2. **fonts** — 中文字体(fonts.ttf)
-3. **brand** — 品牌图(wenhao_plugin.tga,rouge_lua 源不存在,空占位)
+3. **brand** — 品牌图(wenhao_plugin.tga,加载界面 logo)
 4. **dzapi** — DzApi 平台接口(dzapi.lua)
 5. **util** — 通用工具集(9 个 lua):EventPool/fourcc/textTag/destroyTextTagDelayed/rushSlide/unitAlive/unitGetItemOfType/unitHasItem/unitSpawn。SelfCheck(MoeHero 专属)不在此模块
+6. **system-entity-component** — 通用 RPG 实体层(DamageSystem/BuffSystem/SkillSystem 等 + AuraObj/BuffObj/EffectObj/SkillObj + 6 通用组件 + Restriction 控制类)。依赖脚手架核心(ticket 04)
 
 ### 默认行为
 
-**默认全装**:用户未指定排除时,拷贝所有可选模块(brand 模块为空,跳过)。
+**默认全装**:用户未指定排除时,拷贝所有可选模块。
 
 ### 排除机制
 
@@ -452,9 +453,10 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 可选模块(默认全装,输入要排除的模块名,多个用逗号分隔,回车跳过):
   - http: HTTP/远程数据(socket.dll + libwinpthread-1.dll + 6 个 lua)
   - fonts: 中文字体(fonts.ttf)
-  - brand: 品牌图(空占位)
+  - brand: 品牌图(wenhao_plugin.tga,加载界面 logo)
   - dzapi: DzApi 平台接口(dzapi.lua)
   - util: 通用工具集(9 个 lua):EventPool/fourcc/textTag/destroyTextTagDelayed/rushSlide/unitAlive/unitGetItemOfType/unitHasItem/unitSpawn
+  - system-entity-component: 通用 RPG 实体层(System/Entity/Component,依赖脚手架核心)
 
 排除: [等待用户输入]
 ```
@@ -468,7 +470,7 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 
 **其他模块**:
 - fonts:不拷贝 `fonts.ttf`
-- brand:跳过(本就空占位)
+- brand:不拷贝 wenhao_plugin.tga
 - dzapi:不拷贝 `dzapi.lua`,已存在则保留
 
 ### 拷贝步骤
