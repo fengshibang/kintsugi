@@ -5,7 +5,7 @@ description: 用 qwen3.7-plus 多模态模型从视频里提取"点子创意"(�
 
 # 视频创意提取
 
-本 plugin 自带 `video_idea_extractor` 源码(自包含)。**首次使用前**需到 plugin 目录 `pip install -e .` 装 vie 命令 + openai SDK(见 README)。CLI 内部:ffmpeg 切片 -> qwen3.7-plus 提取 -> 合并去重 -> 信封输出。
+本 plugin 自带 video_idea_extractor 源码(自包含)。**首次使用前**需到 plugin 目录 `pip install -e .` 装 vie 命令 + openai SDK(见 README)。CLI 内部:ffmpeg 切片 -> qwen3.7-plus 提取 -> 合并去重 -> 信封输出。
 
 ## 何时用
 
@@ -15,8 +15,8 @@ description: 用 qwen3.7-plus 多模态模型从视频里提取"点子创意"(�
 
 把 `<VIDEO>` 换成视频路径:
 
-```bash
-VIE_FFMPEG_BIN='D:\FeverApps\party_pcin' vie analyze "<VIDEO>" --format md
+```
+VIE_FFMPEG_BIN='D:/FeverApps/party_pc/bin' vie analyze "<VIDEO>" --format md
 ```
 
 **参数**
@@ -26,7 +26,7 @@ VIE_FFMPEG_BIN='D:\FeverApps\party_pcin' vie analyze "<VIDEO>" --format md
 - `--keep-artifacts`:保留切片/转写供调试
 - `--model <名>`:覆盖模型
 
-**配置**(首次):vie 需 `pip install -e <plugin目录>`;ffmpeg 需 `VIE_FFMPEG_BIN` 或 PATH;`.env`(plugin 目录,即 pyproject.toml 同级)含 `DASHSCOPE_API_KEY`/`DASHSCOPE_BASE_URL`/`MODEL`/`VIE_SUPPORTS_VIDEO`,CLI 自动加载。
+**配置(首次)**:vie 需 `pip install -e <plugin目录>`;ffmpeg 需 `VIE_FFMPEG_BIN` 或 PATH;`.env`(plugin 目录,即 pyproject.toml 同级)含 `DASHSCOPE_API_KEY`/`DASHSCOPE_BASE_URL`/`MODEL`/`VIE_SUPPORTS_VIDEO`,CLI 自动加载。
 
 ## 输出
 
