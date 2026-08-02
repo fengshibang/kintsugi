@@ -4,6 +4,7 @@
   "plugins": [
     { "name": "mentor-kit", "source": "./plugins/mentor-kit" },
     { "name": "war3-tester", "source": "./plugins/war3-tester" },
-    { "name": "war3-lua-framework", "source": "./plugins/war3-framework-plugin" }
+    { "name": "war3-lua-framework", "source": "./plugins/war3-framework-plugin" },
+    { "name": "video-idea-extractor", "source": "./plugins/video-idea-extractor" }
   ]
 }

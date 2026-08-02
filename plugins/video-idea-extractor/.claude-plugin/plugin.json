@@ -1,0 +1,5 @@
+{
+  "name": "video-idea-extractor",
+  "version": "0.1.0",
+  "description": "用 qwen3.7-plus 多模态模型从视频提取点子创意,输出 JSON/Markdown 速览。skill 调 vie CLI(需另装)。"
+}
