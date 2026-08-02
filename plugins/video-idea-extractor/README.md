@@ -2,13 +2,21 @@
 
 用 qwen3.7-plus 多模态模型从视频提取"点子创意",输出 JSON/Markdown 速览。kintsugi marketplace plugin(自包含,源码内置)。
 
-## 一键配置(脚手架)
+## 交互式配置(Claude Code command)
 
-装 plugin 后,到 plugin 目录(含 pyproject.toml)跑:
+装 plugin 后,在 Claude Code 会话跑:
+
+    /video-idea-extractor:setup
+
+Claude 交互式引导:装依赖 -> 问模型/代理/ffmpeg -> 写 .env -> 验证 vie。API key 引导你手动填(不进对话)。
+
+## 一键配置(脚手架脚本)
+
+或到 plugin 目录(含 pyproject.toml)跑:
 
     python install.py
 
-自动:检查 Python → pip install -e .(vie + openai)→ 检查 ffmpeg → 生成 .env 模板 → 验证 vie。可重复跑(幂等)。
+自动:检查 Python -> pip install -e . -> 检查 ffmpeg -> 生成 .env 模板 -> 验证 vie。可重复跑(幂等)。
 
 ## 手动安装(自包含)
 
