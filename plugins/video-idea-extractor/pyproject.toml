@@ -1,0 +1,22 @@
+[project]
+name = "video-idea-extractor"
+version = "0.1.0"
+description = "用多模态模型自适应提取视频中的点子创意"
+requires-python = ">=3.13"
+dependencies = ["openai>=1.50", "playwright>=1.40", "yt-dlp>=2024.0"]
+
+[project.scripts]
+vie = "video_idea_extractor.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
