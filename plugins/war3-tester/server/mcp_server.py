@@ -431,7 +431,7 @@ class War3TesterMCP:
                 return {"content": [{"type": "text", "text": f"[FAIL] 截图分析失败\n\n{e}"}], "isError": True}
 
         _add("analyze_screenshot",
-             "用多模态视觉模型（VLM）分析游戏截图，返回画面判读文本。需要环境变量 VLM_MODEL/VLM_BASE_URL/VLM_API_KEY",
+             "用多模态视觉模型（VLM）分析游戏截图，返回画面判读文本。零配置：settings.json env 配 ZHIPU_API_KEY 即可（内置智谱端点+glm-4.5v）；可用 VLM_MODEL/VLM_BASE_URL/VLM_API_KEY 覆盖",
              {"type": "object", "properties": {
                  "png_path": {"type": "string", "description": "截图 PNG 文件路径（Windows 绝对路径或相对路径）"},
                  "prompt": {"type": "string", "description": "自定义分析提示词（可选，默认判读画面状态/UI元素/是否卡对话框/可见数值）"}

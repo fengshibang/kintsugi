@@ -86,27 +86,34 @@ class DiagnosticsCollector:
 
         b64, mime = self._read_image_b64(png_path)
 
-        # 环境变量读取（缺任一项报错，不静默用默认值）
-        base_url = os.environ.get("VLM_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL")
-        if not base_url:
-            raise RuntimeError(
-                "未配置 VLM_BASE_URL（或 ANTHROPIC_BASE_URL）。"
-                "请在 ~/.claude/settings.json 的 env 中设置 VLM_BASE_URL，"
-                "然后 /mcp 重连 war3-tester。"
-            )
-        model = os.environ.get("VLM_MODEL")
-        if not model:
-            raise RuntimeError(
-                "未配置 VLM_MODEL（视觉多模态模型名）。"
-                "请在 ~/.claude/settings.json 的 env 中设置 VLM_MODEL"
-                "（当前视觉模型，例如 qwen3.7-plus），然后 /mcp 重连 war3-tester。"
-            )
-        api_key = os.environ.get("VLM_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        # VLM 配置解析（零配置优先，环境变量可覆盖）
+        # 优先级：VLM_MODEL/VLM_BASE_URL/VLM_API_KEY > ZHIPU_API_KEY(内置智谱默认) > ANTHROPIC_*(回退)
+        # 零配置路径：只需 settings.json 的 env 里配好 ZHIPU_API_KEY，其余全用内置默认
+        DEFAULT_VLM_BASE_URL = "https://open.bigmodel.cn/api/anthropic"
+        DEFAULT_VLM_MODEL = "glm-4.5v"
+
+        base_url = (
+            os.environ.get("VLM_BASE_URL")
+            or os.environ.get("ZHIPU_VLM_BASE_URL")
+            or DEFAULT_VLM_BASE_URL
+        )
+        model = (
+            os.environ.get("VLM_MODEL")
+            or os.environ.get("ZHIPU_VLM_MODEL")
+            or DEFAULT_VLM_MODEL
+        )
+        api_key = (
+            os.environ.get("VLM_API_KEY")
+            or os.environ.get("ZHIPU_API_KEY")
+            or os.environ.get("Z_AI_API_KEY")
+            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        )
         if not api_key:
             raise RuntimeError(
-                "未配置 VLM_API_KEY（或 ANTHROPIC_AUTH_TOKEN）。"
-                "请在 ~/.claude/settings.json 的 env 中设置 API token，"
-                "然后 /mcp 重连 war3-tester。"
+                "未配置 VLM/智谱 API Key。零配置用法：在 ~/.claude/settings.json 的 env 中"
+                "设置 ZHIPU_API_KEY=<智谱Key>，然后 /mcp 重连 war3-tester。"
+                "（端点/模型已内置默认：open.bigmodel.cn/api/anthropic + glm-4.5v；"
+                "如需覆盖可用 VLM_BASE_URL/VLM_MODEL/VLM_API_KEY）"
             )
 
         payload = {
