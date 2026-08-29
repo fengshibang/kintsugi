@@ -56,7 +56,7 @@ Phase 5: 修复（循环，最多 3 轮）
 | `env_error` | HTTP 不通 / 端口占用 / 进程从未启动 | 运行 `cleanup_all` → 重跑 |
 | `unknown` | 无法归类 | 触发截图（已自动） + 报告需人工介入 |
 
-> **截图策略（设计文档 4.7）**：仅 `crash` / `timeout` / `unknown` 自动截图（`auto_screenshot_on_failure=true` 时）；`assertion` / `runtime_error` / `compile_error` 不截图（日志已足够诊断）。**自动截图后，必须对失败截图调用 `analyze_screenshot` 调 VLM 判读**，辅助定位（禁止用 Read 自看）。
+> **截图策略（设计文档 4.7）**：仅 `crash` / `timeout` / `unknown` 自动截图（`auto_screenshot_on_failure=true` 时）；`assertion` / `runtime_error` / `compile_error` 不截图（日志已足够诊断）。**截图只负责采集**；判读用环境内的视觉 MCP 工具（如 `mcp__zhipuVision__analyze_image`）读取返回的 PNG 路径，本插件不含判读能力（v0.20 移除内置 VLM）。
 
 ---
 
@@ -117,7 +117,7 @@ Phase 5: 修复（循环，最多 3 轮）
 | `compile_map` / `compile_only` | 编译地图（同步等待 w2l.exe） |
 | `run_game` / `launch_only` | 仅启动游戏 |
 | `stop_game` | 关闭 War3 进程 |
-| `take_screenshot` | 截取游戏窗口（PrintWindow），**默认自动调 VLM 判读（返回含判读文本）**；config.json take_screenshot_auto_analyze=false 可关，关闭后须手动 `analyze_screenshot`，禁止 Read 自看 |
+| `take_screenshot` | 截取游戏窗口（PrintWindow），只采集并返回 PNG 路径；判读用环境内视觉 MCP（如 `mcp__zhipuVision__analyze_image`）读路径，插件不做判读 |
 | `send_key` | 向 War3 窗口发送键盘事件 |
 | `cleanup_all` | 关闭 war3.exe 进程和 HTTP 服务器 |
 | `stop_http_server` | 仅关闭 HTTP 测试服务器 |
@@ -351,7 +351,7 @@ integration/e2e 层 TDD 走 `test_commit`（实机，30s+/轮）。注意三个�
 |---|---|
 | 编译失败 | `compile_only` 看错误 → 修物编/配置 |
 | 测试失败 | 按 `failure_type` 查诊断决策树 |
-| 游戏卡对话框 | `take_screenshot`（默认含 VLM 判读）→ `send_key` 继续 |
+| 游戏卡对话框 | `take_screenshot` → 视觉 MCP 判读 → `send_key` 继续 |
 | HTTP 上报失败 | 检查 8766 端口、游戏内 HTTP 客户端、网络连通 |
 | `discover_tests` 找不到测试 | 检查 `test_dir` 配置是否与实际目录一致 |
 
@@ -361,7 +361,7 @@ integration/e2e 层 TDD 走 `test_commit`（实机，30s+/轮）。注意三个�
 
 **⚠️ 严禁 AI 直接操作 Windows 端**：所有编译/启动/截图/按键都通过 MCP 工具代理，不直接 `net start`/访问 Windows 路径/手动启停 War3。
 
-**⚠️ 截图后必须调 VLM 判读**：任何截图（`take_screenshot` / 失败自动截图）后，必须调用 `analyze_screenshot` 用 VLM 判读画面，**禁止用 Read 工具自己看图**。判读结果用于决定下一步（如 `send_key` 跳过对话框、定位失败原因）。`analyze_screenshot` 失败时（VLM 临时不可用）只影响判读，截图本身仍可用。
+**⚠️ 截图后用环境内视觉 MCP 判读**：任何截图（`take_screenshot` / 失败自动截图）后，判读用环境内视觉 MCP 工具读取 PNG 路径（如 `mcp__zhipuVision__analyze_image`），**禁止用 Read 工具自己看图**。判读结果用于决定下一步（如 `send_key` 跳过对话框、定位失败原因）。视觉 MCP 不可用时只影响判读，截图本身仍可用。
 
 ---
 
@@ -373,7 +373,7 @@ integration/e2e 层 TDD 走 `test_commit`（实机，30s+/轮）。注意三个�
 | `/log` 高频 POST 对游戏性能 | ⚠️ 未验证 | 游戏侧节流（同类 0.2s 合并）+ MCP 侧上限防爆；实测后调参 |
 | 崩溃日志读取（`Errors\`） | P1 | P0 已做进程消失检测（`failure_type=crash`）；`crash_log` 字段 P1 填充 |
 | War3 根目录定位 | ✅ 已验证 | 注册表 `InstallPath` = `D:\war3`（设计文档 4.6） |
-| `未配置 VLM/智谱 API Key`（analyze_screenshot 报错） | ⚠️ 需配置 | 零配置用法：`~/.claude/settings.json` 的 `env` 加 `"ZHIPU_API_KEY": "<智谱Key>"`，重启 Claude Code（或 `/mcp` 重连 war3-tester）。端点/模型已内置默认（open.bigmodel.cn/api/anthropic + glm-4.5v），无需 VLM_* 变量 |
+| `analyze_screenshot` 工具不存在 | ℹ️ 预期行为 | v0.20 起插件不含判读能力。判读用环境内视觉 MCP（如 `mcp__zhipuVision__analyze_image`）读取 `take_screenshot` 返回的 PNG 路径 |
 | `name 'os' is not defined` 等 os 相关错误 | ℹ️ 已知不修 | war3 对 os 库做了改造适配（见目标项目 CLAUDE.md「内部定制版 Lua 运行时，对 os 库进行了改造适配」），take_screenshot/analyze_screenshot 等路径偶发；不影响核心测试链路（编译→启动→结果回传），无需修复 |
 
 ---
