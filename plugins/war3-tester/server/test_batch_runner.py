@@ -500,9 +500,8 @@ class TestBatchRunner:
             is_failure = not test_success
 
             # screenshots 已由 _run_single_test 在 stop_game 前预拍（pre_screenshots）
-            # screenshot_analysis（依赖截图文件）和 debug_output（读日志）不依赖游戏进程
+            # 判读不在插件内做：AI 拿到 screenshots 路径后用环境内视觉 MCP 判读
             if is_failure and auto_screenshot_on_failure:
-                screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
 
             # 决策5：result 分支（最常见路径）诊断收集后必须 clear_test
@@ -528,9 +527,8 @@ class TestBatchRunner:
             progress = snap['progress']
             logs = snap['logs']
 
-            # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
+            # 【M4 增强】收集诊断（debug_output 不依赖游戏进程）；判读交环境内视觉 MCP
             if auto_screenshot_on_failure:
-                screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
 
             # v0.14.0: 诊断收集完成后清缓冲
@@ -559,9 +557,8 @@ class TestBatchRunner:
             progress = snap['progress']
             logs = snap['logs']
 
-            # 【M4 增强】收集诊断（screenshot_analysis/debug_output 不依赖游戏进程）
+            # 【M4 增强】收集诊断（debug_output 不依赖游戏进程）；判读交环境内视觉 MCP
             if auto_screenshot_on_failure:
-                screenshot_analysis = self._collect_screenshot_analysis(screenshots, test_name)
                 debug_output = self._collect_debug_output()
 
             # v0.14.0: 诊断收集完成后清缓冲
@@ -650,23 +647,6 @@ class TestBatchRunner:
         except Exception as e:
             self.logger.warning(f"[{test_name}] 截图异常：{e}")
         return []
-
-    def _collect_screenshot_analysis(self, screenshots: List[str], test_name: str = 'unknown') -> Optional[str]:
-        """【M4 方向 G】收集截图的 VLM 判读结果（graceful）"""
-        if not screenshots:
-            return None
-        try:
-            # 取第一张截图
-            screenshot_path = screenshots[0]
-            if not screenshot_path or not os.path.exists(screenshot_path):
-                return None
-
-            # 调用 diagnostics_collector 的 analyze_screenshot（v0.15.0: 消除 mcp_server 反向依赖）
-            analysis = self.diagnostics_collector.analyze_screenshot(screenshot_path)
-            return analysis
-        except Exception as e:
-            self.logger.warning(f"[{test_name}] VLM 判读失败（graceful）：{e}")
-            return f"VLM 判读失败: {e}"
 
     def _collect_inspect_snapshot(self) -> Optional[str]:
         """【M4 方向 G】收集运行时状态快照（graceful）

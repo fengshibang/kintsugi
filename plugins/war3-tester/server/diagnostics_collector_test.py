@@ -3,7 +3,8 @@
 """
 DiagnosticsCollector 单测
 
-覆盖：analyze_screenshot（VLM mock）/ get_debug_output（store + 日志文件 mock）
+覆盖：get_debug_output（store + 日志文件 mock）
+（v0.20: analyze_screenshot/VLM 测试已随功能移除——判读交由环境内视觉 MCP）
 全部使用临时目录 + mock，不启动游戏、不依赖网络
 """
 
@@ -50,69 +51,6 @@ def _make_mock_config(tmpdir):
     config.get_war3_log_file_path = get_war3_log_file_path
     return config
 
-
-def test_analyze_screenshot_calls_vlm():
-    """analyze_screenshot: 调用 VLM API 并返回结果"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-
-        # 创建测试图片
-        png_path = tmpdir / 'test.png'
-        png_path.write_bytes(b'\x89PNG\r\n\x1a\n' + b'fake image data')
-
-        store = _make_mock_store()
-        config = _make_mock_config(tmpdir)
-        collector = DiagnosticsCollector(store, config, logger=_make_logger())
-
-        # Mock VLM 响应
-        mock_response = {
-            'content': [
-                {'type': 'text', 'text': '画面状态：主菜单\nUI 元素：按钮可见'}
-            ]
-        }
-
-        with patch('urllib.request.urlopen') as mock_urlopen:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = json.dumps(mock_response).encode('utf-8')
-            mock_resp.__enter__ = Mock(return_value=mock_resp)
-            mock_resp.__exit__ = Mock(return_value=False)
-            mock_urlopen.return_value = mock_resp
-
-            # 设置环境变量
-            with patch.dict(os.environ, {
-                'VLM_BASE_URL': 'https://api.example.com',
-                'VLM_MODEL': 'qwen3.7-plus',
-                'VLM_API_KEY': 'test-key'
-            }):
-                result = collector.analyze_screenshot(str(png_path), '测试提示词')
-
-        assert '主菜单' in result, "应包含 VLM 返回的文本"
-        assert '按钮可见' in result, "应包含 VLM 返回的文本"
-
-    print("  PASS test_analyze_screenshot_calls_vlm")
-
-
-def test_analyze_screenshot_raises_without_env():
-    """analyze_screenshot: 缺少环境变量时抛异常"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-
-        png_path = tmpdir / 'test.png'
-        png_path.write_bytes(b'\x89PNG\r\n\x1a\n' + b'fake image data')
-
-        store = _make_mock_store()
-        config = _make_mock_config(tmpdir)
-        collector = DiagnosticsCollector(store, config, logger=_make_logger())
-
-        # 清空环境变量
-        with patch.dict(os.environ, {}, clear=True):
-            try:
-                collector.analyze_screenshot(str(png_path))
-                assert False, "应抛出 RuntimeError"
-            except RuntimeError as e:
-                assert 'VLM_BASE_URL' in str(e), "异常信息应包含 VLM_BASE_URL"
-
-    print("  PASS test_analyze_screenshot_raises_without_env")
 
 
 def test_get_debug_output_includes_war3_log():
@@ -279,8 +217,6 @@ def test_get_debug_output_respects_limit():
 if __name__ == "__main__":
     print("=== DiagnosticsCollector 单测 ===")
     tests = [
-        test_analyze_screenshot_calls_vlm,
-        test_analyze_screenshot_raises_without_env,
         test_get_debug_output_includes_war3_log,
         test_get_debug_output_filters_by_level,
         test_get_debug_output_includes_store_recent,

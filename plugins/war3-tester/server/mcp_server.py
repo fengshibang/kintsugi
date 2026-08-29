@@ -387,7 +387,7 @@ class War3TesterMCP:
              {"type": "object", "properties": {}, "required": []},
              _handle_cleanup_all)
 
-        # 9. take_screenshot
+        # 9. take_screenshot（只采集截图，判读交给环境内视觉 MCP 由 AI 调用）
         def _handle_take_screenshot(arguments):
             test_name = arguments.get("test_name", "unknown")
             filename = arguments.get("filename")
@@ -395,21 +395,14 @@ class War3TesterMCP:
             result = self.executor.take_screenshot(test_name, filename, window_title)
             if result.get("success"):
                 base_text = (f"[OK] 截图已保存\n\n{result.get('message', '')}\n\n"
-                             f"WSL 路径：{result.get('path_wsl', '')}\nWindows 路径：{result.get('path', '')}")
-                if getattr(config, 'take_screenshot_auto_analyze', True):
-                    png_path = result.get('path') or result.get('path_wsl')
-                    try:
-                        analysis = self.analyze_screenshot(png_path)
-                        base_text += f"\n\n--- VLM 判读 ---\n{analysis}"
-                    except Exception as e:
-                        base_text += (f"\n\n--- VLM 判读失败(不影响截图使用) ---\n{e}"
-                                      f"\n(关闭自动判读:config.json 设 take_screenshot_auto_analyze=false)")
+                             f"WSL 路径：{result.get('path_wsl', '')}\nWindows 路径：{result.get('path', '')}"
+                             f"\n\n(判读请用环境内视觉 MCP 工具读取上述路径，本插件不做判读)")
                 return {"content": [{"type": "text", "text": base_text}]}
             else:
                 return {"content": [{"type": "text", "text": f"[FAIL] 截图失败\n\n{result.get('error', '未知错误')}"}], "isError": True}
 
         _add("take_screenshot",
-             "截取游戏窗口截图。成功后默认自动调 VLM(analyze_screenshot)判读画面,返回含判读文本;VLM 未配或判读失败则 graceful 仅返回路径不阻塞。config.json 的 take_screenshot_auto_analyze=false 可关闭自动判读。",
+             "截取游戏窗口截图，只负责采集并返回 PNG 路径。画面判读请用环境内的视觉 MCP 工具（如 zhipuVision 的 analyze_image）读取返回的路径，本插件不含判读能力。",
              {"type": "object", "properties": {
                  "test_name": {"type": "string", "description": "测试名称，用于组织截图文件"},
                  "filename": {"type": "string", "description": "截图文件名（可选）"},
@@ -417,28 +410,7 @@ class War3TesterMCP:
              }, "required": ["test_name"]},
              _handle_take_screenshot)
 
-        # 10. analyze_screenshot
-        def _handle_analyze_screenshot(arguments):
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            png_path = arguments.get("png_path")
-            prompt = arguments.get("prompt", "")
-            if not png_path:
-                return {"content": [{"type": "text", "text": "[FAIL] 缺少 png_path 参数"}], "isError": True}
-            try:
-                analysis_text = self.analyze_screenshot(png_path, prompt)
-                return {"content": [{"type": "text", "text": f"[OK] 截图分析完成\n\n时间：{timestamp}\n\n{analysis_text}"}]}
-            except Exception as e:
-                return {"content": [{"type": "text", "text": f"[FAIL] 截图分析失败\n\n{e}"}], "isError": True}
-
-        _add("analyze_screenshot",
-             "用多模态视觉模型（VLM）分析游戏截图，返回画面判读文本。需要环境变量 VLM_MODEL/VLM_BASE_URL/VLM_API_KEY",
-             {"type": "object", "properties": {
-                 "png_path": {"type": "string", "description": "截图 PNG 文件路径（Windows 绝对路径或相对路径）"},
-                 "prompt": {"type": "string", "description": "自定义分析提示词（可选，默认判读画面状态/UI元素/是否卡对话框/可见数值）"}
-             }, "required": ["png_path"]},
-             _handle_analyze_screenshot)
-
-        # 11. send_key
+        # 10. send_key
         def _handle_send_key(arguments):
             key = arguments.get("key", "enter")
             result = self.executor.send_key(key)
@@ -948,13 +920,6 @@ class War3TesterMCP:
             'action': action,
             'compile_error': compile_result.get('error') if not compile_result.get('success') else None,
         }
-
-    def analyze_screenshot(self, png_path: str, prompt: str = "") -> str:
-        """调用多模态视觉模型（VLM）分析截图，返回文本结果。
-
-        v0.15.0: 委托 diagnostics_collector（thin delegate）
-        """
-        return self.diagnostics_collector.analyze_screenshot(png_path, prompt)
 
     def _get_project_info(self, source_dir: str, max_depth: int = 3) -> str:
         """

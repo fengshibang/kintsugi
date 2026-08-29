@@ -1,5 +1,18 @@
 # Changelog — war3-tester
 
+## 0.20.0 - 2026-08-29
+
+### 移除（职责剥离：截图判读交环境内视觉 MCP）
+
+插件不再内置 VLM 判读能力，只负责采集截图并返回 PNG 路径。判读由 AI 调用环境内的视觉 MCP 工具（如 mcp__zhipuVision__analyze_image）完成。动机：视觉能力与判读配置（模型/端点/Key）属于环境职责，插件绑定具体 VLM 实现造成配置重复（VLM_*/ZHIPU_*/ANTHROPIC_* 多套变量）与耦合。
+
+- 移除 analyze_screenshot MCP 工具（27→26 个）：mcp_server.py 工具注册 + thin delegate 类方法
+- 移除 take_screenshot 自动判读：不再默认调 VLM 拼接判读文本；config 项 take_screenshot_auto_analyze 一并移除
+- 移除 test_batch_runner 失败诊断的 VLM 判读收集（_collect_screenshot_analysis，result/crash/timeout 三分支）：失败结果仍带 screenshots 路径列表，AI 自行判读
+- diagnostics_collector 瘦身：删 analyze_screenshot/_read_image_b64 与 base64/mimetypes/urllib import，只保留 get_debug_output
+- 文档同步：SKILL.md（截图策略/工具表/卡对话框/判读约束/排错表）、README（工具表）
+- 测试：diagnostics_collector_test 8→6（删 2 个 VLM 测试）；mcp_server_dispatch_test 27→26 工具断言；全部通过
+
 ## 0.19.10 - 2026-07-24
 
 ### 新增（W3-implement 项目适配生成通用化）
