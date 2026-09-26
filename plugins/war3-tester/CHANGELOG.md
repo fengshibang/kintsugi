@@ -1,5 +1,23 @@
 # Changelog — war3-tester
 
+## 0.20.1 - 2026-09-26
+
+### 修复（take_screenshot R/B 互换：截图像素被按 RGB 解释，GDI BGR 字节序未还原）
+
+颜色相关验收（品质色/金边/特效色）结论全部被污染：金色 #b08d4a 抓成互补蓝 (74,141,176)。实机对照确认截图像素 R/B 就地互换，不崩溃、仅颜色错。
+
+### 根因
+`env_bridge.py` 截图脚本（两处，:626 `{win_screenshot_path}` 版 / :1185 `{str(screenshot_path)}` 版）用 `Image.frombytes('RGB', ...)` 直接解释 `GetDIBits` 的像素缓冲；24bpp `BI_RGB` 的 GDI 缓冲字节序是 **BGR**，PIL 按 RGB 逐字节映射即得互补色。PrintWindow 失败回退的 BitBlt 路径共用同一份像素解释代码，一并覆盖。
+
+### 修复
+- 两处调用点均改为 `Image.frombytes('RGB', (width, height), bytes(pixels), 'raw', 'BGR')`，raw decoder 按 B,G,R 解释字节流后映射到 RGB，截图像素与屏幕一致
+- 回归测试 `screenshot_bgr_test.py`（2 例，纯内存/静态，不依赖 War3 窗口）：① 全部 frombytes 调用点必须声明 BGR（防两处回退）；② 锁定 bug 语义本身——裸 RGB 必得互补色、raw BGR 必还原源色
+- 另附独立验证脚本 `scripts/verify_bgr_fix.py`（语义+调用点双层红绿环）与 `scripts/verify_e2e_bgr.py`（真实 GDI 管线端到端：纯色窗口抓图采样 == 源色；先红后绿验证过）
+
+### 排查注记（来自报告方 yggjs 卡牌收纳页验收）
+- 应急期间曾把「游戏偏蓝」误诊为 War3 对 TGA 非标读取，给业务资源做了反向补偿——被截图反色自我佐证掩盖（截图反→资源补→截图"正常"→游戏真反）。修复截图后此类验收结论才可信；被反向补偿过的资源需复查
+- 低饱和参照物（如草地 R≈G）无法证伪反色；排查颜色问题应使用高饱和已知色
+
 ## 0.20.0 - 2026-08-29
 
 ### 移除（职责剥离：截图判读交环境内视觉 MCP）

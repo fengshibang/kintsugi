@@ -623,7 +623,9 @@ gdi32.GetDIBits(hdc_mem, hbmp, 0, height, pixels, ctypes.byref(bmi), 0)
 
 # 保存为 PNG
 from PIL import Image
-img = Image.frombytes('RGB', (width, height), bytes(pixels))
+# GDI GetDIBits 24bpp BI_RGB 字节序为 BGR，必须声明 raw decoder 'BGR'，
+# 否则 R/B 就地互换（截图整体偏互补色，颜色验收全被污染）。
+img = Image.frombytes('RGB', (width, height), bytes(pixels), 'raw', 'BGR')
 img.save(r'{win_screenshot_path}')
 
 # 清理
@@ -1182,7 +1184,9 @@ pixels = (ctypes.c_byte * (width * height * 3))()
 gdi32.GetDIBits(hdc_mem, hbmp, 0, height, pixels, ctypes.byref(bmi), 0)
 
 from PIL import Image
-img = Image.frombytes('RGB', (width, height), bytes(pixels))
+# GDI GetDIBits 24bpp BI_RGB 字节序为 BGR，必须声明 raw decoder 'BGR'，
+# 否则 R/B 就地互换（截图整体偏互补色，颜色验收全被污染）。
+img = Image.frombytes('RGB', (width, height), bytes(pixels), 'raw', 'BGR')
 img.save(r'{str(screenshot_path)}')
 
 gdi32.DeleteObject(hbmp)
