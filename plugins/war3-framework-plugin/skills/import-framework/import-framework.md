@@ -46,9 +46,9 @@ grep -nE 'AbilityId\("exec-lua:plugin_main"\)' map/war3map.j
 # C 组:callback 加载(YDWE 触发器混淆 JASS,与 exec-lua 桥配对)
 grep -nE 'StartCampaignAI\(.*"callback"\)' map/war3map.j
 
-# 辅助锚点(定位 main 函数,注入用)
+# 辅助锚点(定位 main 函数与标准 WE 结构,注入用)
 grep -nE "^function[[:space:]]+main[[:space:]]+takes" map/war3map.j
-grep -nE "call[[:space:]]+InitBlizzard\(\)" map/war3map.j
+grep -nE "call[[:space:]]+InitBlizzard\(\)" map/war3map.j  # 标准 WE 结构健全性;注入落点已是 main 首行,不再依赖此锚点
 ```
 
 ### 基线判定规则(组合判定,非单 grep)
@@ -263,7 +263,7 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 
 将往 map/war3map.j 注入:
   - initializePlugin 函数定义(在 main 之前)
-  - call initializePlugin() 调用(在 main 的 call InitBlizzard() 之后)
+  - call initializePlugin() 调用(在 main 函数体顶部,InitBlizzard 之前;wzns 实证落点)
 
 将拷贝以下文件到目标项目:
   - map/plugin_main.lua — 新建
@@ -289,13 +289,15 @@ ls <workspaceRoot>/.vscode/tasks.json                # VS Code 任务(项目根)
 
 ### 步骤 2:插入调用
 
-在目标 `map/war3map.j` 中找到 `main` 函数体内的 `call InitBlizzard()` 行,
-在该行**之后**插入 `    call initializePlugin()`(4 空格缩进)。
+在目标 `map/war3map.j` 中找到 `function main takes nothing returns nothing` 行,在
+该行**之后、main 函数体第一行**插入 `    call initializePlugin()`(4 空格缩进)。
+此落点为 **main 函数体顶部、`call InitBlizzard()` 之前**(wzns 实证,同 YDWE 官方
+注入约定)——保证 exec-lua 桥最早接管,先于相机/昼夜/JASS InitBlizzard 等后续初始化。
 
-### 锚点找不到时
+### 步骤 1+2 锚点找不到时
 
 - 找不到 `function main`:报错"目标 map/war3map.j 缺 main 函数,非标准 WE 生成地图",停止
-- 找不到 `call InitBlizzard()`:报错"目标 main 缺 InitBlizzard 调用,非标准 WE 生成地图",停止
+- `main` 内找不到可插位置(空 body 或非标准首行):报错"目标 main 结构非标准,无法注入调用",停止
 - 已存在 `initializePlugin`:按 YDWE-Lua 基线处理(跳过注入)
 
 ## 拷贝框架文件
@@ -703,6 +705,7 @@ os.exit(errs > 0 and 1 or 0)
 1. **静态校验**
    - `grep -nE "^function[[:space:]]+initializePlugin[[:space:]]+takes" map/war3map.j` 应有结果(新注入)
    - `grep -nE "call[[:space:]]+initializePlugin\(\)" map/war3map.j` 应有结果(新注入,在 main 内)
+   - **落点核对**:`call initializePlugin()` 应位于 main 函数体首部、`call InitBlizzard()` 之前(与 wzns 实证一致;若编译器重排则至少确认不晚于后续初始化)
    - 目标项目应存在 `map/plugin_main.lua` / `map/path.lua` / `map/script/init.lua` / `map/script/src/init.lua` / `map/script/lib/` / `map/callback` / `map/(key)` / `tools/` / `.vscode/`
    - `map/script/src/init.lua` 应含 `_G.__framework_scaffold_loaded = true`(脚手架)或 `_G.__framework_booted = true`(极简)
    - `map/path.lua` 不应含 `D:\war3项目` 硬编码
@@ -717,7 +720,8 @@ os.exit(errs > 0 and 1 or 0)
 ## 错误处理
 
 - 目标非 lni 格式 → 提示先解包
-- 目标 main 缺 InitBlizzard → 报错停止
+- 目标 main 缺可注入首行(空 body / 非标准声明)→ 报错停止
+- 目标 main 缺 InitBlizzard → 仅提示"非标准 WE 结构,框架仍注入 main 首部"(注入不依赖此锚点)
 - 注入过程中断 → 提示用户从备份恢复(导入前应建议用户备份)
 - lib/ 拷贝失败 → 报错并列出缺失文件
 

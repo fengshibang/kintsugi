@@ -27,6 +27,54 @@ description: Use when migrating JASS triggers to ECS Lua architecture — analyz
 
 ---
 
+## 游戏框架目录结构
+
+skill 假定目标项目为上图所示「地图编译源码 + 物编 + 品牌资源 + 完整工具链」布局。项目根 `workspaceRoot/` 的既定结构如下（仅「JASS 源 / 迁移文档目录 / pjass」三项按目标调整，其余为框架既定）：
+
+```
+workspaceRoot/
+├── map/                              # 地图编译源码
+│   ├── war3map.j                     # JASS 源（迁移分析对象）
+│   ├── plugin_main.lua               # Lua 引导入口
+│   ├── callback                      # YDWE 触发器混淆 JASS（initializePlugin 经 StartCampaignAI 加载）
+│   ├── (key)                         # YDWE key（触发器机制）
+│   └── script/                       # Lua 框架根
+│       ├── lib/                      # ac/ecs/ui/util 框架层
+│       └── src/
+│           ├── systems/*.lua         # ECS 系统落点（Death/Attack/Item…）
+│           ├── components/*.lua      # ECS 组件落点
+│           ├── 技能/<skill>.lua      # 技能触发器落点
+│           ├── Buffs/ 物品/ 任务/ 副本/ 界面/ …   # 业务模块落点
+│           └── …
+├── table/                            # 物编数据（源码制，w2l 编译读）
+│   ├── ability.ini                   #   技能物编 → 技能 ID 真值源
+│   └── buff.ini  item.ini  unit.ini  upgrade.ini  misc.ini  w3i.ini …
+├── resource/                         # 品牌/UI 资源
+│   ├── wenhao_plugin.tga             #   brand 插件 dll 素材（改名注入加载界面）
+│   └── background.tga  war3mapMap.blp  core/  frameworkBase/ …/
+├── docs/
+│   └── migrations/                   # 迁移 PRD/单触发器分析/状态文件输出
+├── tools/                            # 完整工具链
+│   ├── w3x2lni/                      # 编译打包（lni→w3x）
+│   │   ├── w2l.exe                   #   w2l 主程序
+│   │   ├── bin/  data/  template/  config.ini
+│   │   └── script/                   #   w2l 编译核心脚本（backend/ core/ ffi/ …）
+│   ├── rsa/                          # 地图签名
+│   ├── filewatch.dll                 # 语法检查监听
+│   ├── 运行.lua 语法检查.lua 配置.lua ydwe.lua  # YDWE 启动/语法脚本
+│   └── jasshelper/pjass.exe          # 迁移后 JASS 语法检测（随 common.j/blizzard.j）
+└── .claude/
+    └── workflows/
+        └── jass-migrate-trigger.js   # 迁移编码编排（可选，缺失则降级手动模式）
+```
+
+**要点**
+- `map/war3map.j` + `table/` 是地图的两半数据源：物编（技能 ID 等）以 `table/*.ini` 为真值，`check-skill-id` 类治理应指向 `table/ability.ini`。
+- `map/callback` / `map/(key)` 是 `initializePlugin` 引导链依赖，非模板噪音，勿删。
+- 工具链闭环 = 编译打包（`tools/w3x2lni/w2l.exe` + `rsa` 签名）+ 语法检测（`tools/jasshelper/pjass.exe`）；迁移后语法校验依赖 pjass，缺则迁移闭环不完整。
+
+---
+
 ## 核心能力
 
 | 能力 | 命令 | 说明 |
