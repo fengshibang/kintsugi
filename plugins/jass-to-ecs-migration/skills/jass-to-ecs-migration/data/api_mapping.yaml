@@ -1,0 +1,942 @@
+# JASS API → Lua/ac API Migration Mapping
+# Used by extract_trigger.py to recommend API replacements
+
+# --- 单位相关 ---
+- jass_api: "GetTriggerUnit()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.trigger_unit (在 ECS 事件回调中)"
+    jass_callback: "GetTriggerUnit() (JASS 回调中仍可用)"
+  notes: "在 ECS 事件回调中优先使用 event 对象的属性"
+
+- jass_api: "GetDyingUnit()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.dying_unit"
+    jass_callback: "GetDyingUnit()"
+
+- jass_api: "GetAttacker()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.attacker"
+
+- jass_api: "GetEnumUnit()"
+  category: "unit_enum"
+  lua_alternative:
+    ecs_context: "for _, entity in query do local unit = entity.unit"
+  notes: "ECS 不使用 ForGroup 枚举，改为遍历查询结果"
+
+- jass_api: "GetUnitX(unit)"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.posComp.x (如果单位有 PosComp)"
+    fallback: "GetUnitX(unit)"
+
+- jass_api: "GetUnitY(unit)"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.posComp.y (如果单位有 PosComp)"
+    fallback: "GetUnitY(unit)"
+
+- jass_api: "GetUnitTypeId(unit)"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.unitIdComp.type_id"
+    fallback: "GetUnitTypeId(unit)"
+
+- jass_api: "GetWidgetLife(unit)"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.healthComp.current"
+    fallback: "GetWidgetLife(unit)"
+  notes: "null 安全: unit ~= nil and GetWidgetLife(unit) > 0.405"
+
+# --- 定时器 ---
+- jass_api: "CreateTimer()"
+  category: "timer"
+  lua_alternative:
+    preferred: "ac.timer(callback, timeout, {loop = false})"
+  notes: "不再手动创建 timer 对象"
+
+- jass_api: "TimerStart(timer, timeout, periodic, callback)"
+  category: "timer"
+  lua_alternative:
+    preferred: "ac.timer(callback, timeout, {loop = periodic})"
+
+- jass_api: "PauseTimer(timer)"
+  category: "timer"
+  lua_alternative:
+    preferred: "timer_handle:stop() (ac.timer 返回的对象)"
+
+- jass_api: "DestroyTimer(timer)"
+  category: "timer"
+  lua_alternative:
+    preferred: "N/A (ac.timer 自动管理生命周期)"
+
+# --- 伤害 ---
+- jass_api: "UnitDamageTarget(source, target, amount, ...)"
+  category: "damage"
+  lua_alternative:
+    preferred: "DamageObj.create({source, target, amount}):apply()"
+
+- jass_api: "GetEventDamage()"
+  category: "damage"
+  lua_alternative:
+    ecs_context: "event.damage_amount"
+
+# --- 特效 ---
+- jass_api: "AddSpecialEffect(path, x, y)"
+  category: "effect"
+  lua_alternative:
+    preferred: "AssetsManager.createEffect(path, x, y)"
+    fallback: "AddSpecialEffect(path, x, y)"
+
+- jass_api: "AddSpecialEffectTargetUnitBJ(path, target, attach)"
+  category: "effect"
+  lua_alternative:
+    preferred: "AssetsManager.createEffectTarget(path, target, attach)"
+
+- jass_api: "DestroyEffect(effect)"
+  category: "effect"
+  lua_alternative:
+    preferred: "effect:destroy() (AssetsManager 返回的对象)"
+
+# --- 文字标签 ---
+- jass_api: "CreateTextTagUnitBJ(text, unit, ...)"
+  category: "texttag"
+  lua_alternative:
+    preferred: "ac.texttag.createUnitText(text, unit, ...)"
+
+# --- 位置 ---
+- jass_api: "Location(x, y)"
+  category: "location"
+  lua_alternative:
+    preferred: "{x = x, y = y}"
+  notes: "Lua table 替代 Location 对象，无需 RemoveLocation"
+
+- jass_api: "RemoveLocation(loc)"
+  category: "location"
+  lua_alternative:
+    preferred: "N/A (table 自动 GC)"
+
+- jass_api: "GetUnitLoc(unit)"
+  category: "location"
+  lua_alternative:
+    preferred: "unit.posComp (如果有 PosComp)"
+    fallback: "{x = GetUnitX(unit), y = GetUnitY(unit)}"
+
+# --- Group ---
+- jass_api: "CreateGroup()"
+  category: "group"
+  lua_alternative:
+    preferred: "Engine:query({TagComp}) 或自定义过滤"
+
+- jass_api: "DestroyGroup(group)"
+  category: "group"
+  lua_alternative:
+    preferred: "N/A (ECS 查询无泄漏)"
+
+- jass_api: "GroupEnumUnitsInRange(g, x, y, radius, filter)"
+  category: "group"
+  lua_alternative:
+    preferred: "Engine:queryWithinRadius({PosComp}, x, y, radius)"
+
+# --- Hashtable ---
+- jass_api: "SaveUnitHandle(ht, key, subkey, value)"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity.comp.property = value"
+  notes: "hashtable 数据映射到 ECS Component 属性"
+
+- jass_api: "LoadUnitHandle(ht, key, subkey)"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity.comp.property"
+
+# --- 触发器 ---
+- jass_api: "DisableTrigger(trig)"
+  category: "trigger"
+  lua_alternative:
+    preferred: "EventManager.unsubscribe(handler) 或系统 enable=false"
+
+- jass_api: "EnableTrigger(trig)"
+  category: "trigger"
+  lua_alternative:
+    preferred: "EventManager.subscribe(handler) 或系统 enable=true"
+
+- jass_api: "DestroyTrigger(trig)"
+  category: "trigger"
+  lua_alternative:
+    preferred: "EventManager.unsubscribe(handler)"
+
+# --- 物品 ---
+- jass_api: "CreateItem(typeId, x, y)"
+  category: "item"
+  lua_alternative:
+    preferred: "ItemSystem.createItem(typeId, x, y)"
+
+- jass_api: "CreateItemLoc(typeId, loc)"
+  category: "item"
+  lua_alternative:
+    preferred: "ItemSystem.createItem(typeId, loc.x, loc.y)"
+
+# --- 能力 ---
+- jass_api: "UnitAddAbility(unit, abilityId)"
+  category: "ability"
+  lua_alternative:
+    preferred: "unit:addBuff({name='对应BuffID', from=source}) 或 SkillSystem"
+  notes: "临时 Buff 用 addBuff；永久技能通过 ECS 技能槽管理"
+
+- jass_api: "UnitRemoveAbility(unit, abilityId)"
+  category: "ability"
+  lua_alternative:
+    preferred: "unit:removeBuff(buffId)"
+
+
+# --- 单位事件 ---
+- jass_api: "GetEventDamageSource()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.damage_source"
+
+- jass_api: "GetFilterUnit()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.filtered_unit (在 filter 回调中)"
+  notes: "用于 GroupEnum/Enum 过滤回调"
+
+- jass_api: "GetSpellAbilityUnit()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.caster_unit"
+  notes: "施法者单位，比 GetTriggerUnit 更可靠"
+
+- jass_api: "GetEnteringUnit()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.entering_unit"
+  notes: "区域进入事件中的单位"
+
+- jass_api: "GetSellingUnit()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.selling_unit"
+  notes: "出售物品的单位（商店）"
+
+- jass_api: "GetKillingUnit()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.killing_unit"
+
+- jass_api: "GetDyingDestructable()"
+  category: "unit_event"
+  lua_alternative:
+    ecs_context: "event.dying_destructable"
+  notes: "死亡的可破坏物"
+
+- jass_api: "GetEnumDestructable()"
+  category: "unit_enum"
+  lua_alternative:
+    preferred: "for _, entity in query do"
+  notes: "枚举回调中的可破坏物"
+
+# --- 单位信息 ---
+- jass_api: "IsUnitType()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.unitTypeComp.type 或单位分类标签"
+
+- jass_api: "GetItemTypeId()"
+  category: "item_info"
+  lua_alternative:
+    preferred: "item.typeId 或 item.type_name"
+  notes: "物品类型 ID，原始 ID 如 I0A8"
+
+- jass_api: "GetHeroLevel()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit:get('LevelComp').level"
+    fallback: "GetHeroLevel(handle)"
+
+- jass_api: "GetHeroStr()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit:get('HeroComp').str"
+    fallback: "GetHeroStr(handle, includeBonus)"
+
+- jass_api: "GetHeroAgi()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit:get('HeroComp').agi"
+    fallback: "GetHeroAgi(handle, includeBonus)"
+
+- jass_api: "GetHeroInt()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit:get('HeroComp').int"
+    fallback: "GetHeroInt(handle, includeBonus)"
+
+- jass_api: "GetUnitUserData()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit:getData(key)"
+  notes: "JASS 中用 GetHandleId 关联的自定义数据"
+
+- jass_api: "GetUnitLifePercent()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.attribute:get('生命') / unit.attribute:max('生命') * 100"
+
+- jass_api: "GetUnitStateSwap()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.attribute:get(attrType)"
+  notes: "UnitState 的 BJ 封装"
+
+- jass_api: "GetHeroStatBJ()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit:get('HeroComp').main_attr_value"
+  notes: "英雄主属性值"
+
+- jass_api: "IsUnitAliveBJ()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit:isAlive()"
+
+- jass_api: "IsUnitAlly()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.player:isAlly(other.player)"
+
+- jass_api: "IsUnitEnemy()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "unit.player:isEnemy(other.player)"
+
+- jass_api: "YDWEAngleBetweenUnits()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "AngleBetweenPoints(unit1.pos, unit2.pos)"
+  notes: "两单位间角度"
+
+# --- 单位修改 ---
+- jass_api: "SetUnitUserData()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:setData(key, value)"
+
+- jass_api: "SetHeroStr()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:setStr(value)"
+    fallback: "SetHeroStr(handle, value, permanent)"
+
+- jass_api: "SetHeroAgi()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:setAgi(value)"
+    fallback: "SetHeroAgi(handle, value, permanent)"
+
+- jass_api: "SetHeroInt()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:setInt(value)"
+    fallback: "SetHeroInt(handle, value, permanent)"
+
+- jass_api: "SetHeroLevelBJ()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:get('LevelComp'):setLevel(value, showEffect)"
+
+- jass_api: "ModifyHeroStat()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:get('HeroComp'):modifyStat(type, delta)"
+  notes: "增减英雄属性"
+
+- jass_api: "SetUnitFlyHeight()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "SetUnitFlyHeight(handle, newHeight, rate)"
+
+- jass_api: "GetUnitFlyHeight()"
+  category: "unit_info"
+  lua_alternative:
+    preferred: "GetUnitFlyHeight(handle)"
+
+- jass_api: "AddHeroXP()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:get('ExpComp'):addXP(amount, showUI)"
+
+- jass_api: "UnitStripHeroLevel()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:get('LevelComp'):stripLevels(count)"
+  notes: "剥离英雄等级"
+
+- jass_api: "UnitResetCooldown()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "UnitResetCooldown(handle)"
+
+- jass_api: "SoAddUnitState()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit.attribute:modify(stateType, delta)"
+  notes: "自定义单位状态修改"
+
+- jass_api: "SoInvincible()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit:add('RestrictionInvulnerableComp')"
+  notes: "无敌状态"
+
+- jass_api: "SoHeroStateAmend()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "HeroSystem.amendState(hero, stateType, delta)"
+  notes: "英雄状态修正"
+
+- jass_api: "SoAddUnitLife()"
+  category: "unit_modify"
+  lua_alternative:
+    preferred: "unit.attribute:modify('生命', delta)"
+  notes: "增加单位生命"
+
+# --- 单位创建/击杀/复活 ---
+- jass_api: "CreateNUnitsAtLoc()"
+  category: "unit_create"
+  lua_alternative:
+    preferred: "循环调用 AssetsManager.createUnit(typeId, x, y)"
+  notes: "批量创建同类型单位"
+
+- jass_api: "CreateDestructableLoc()"
+  category: "unit_create"
+  lua_alternative:
+    preferred: "CreateDestructableLoc(typeId, loc.x, loc.y, facing)"
+  notes: "创建可破坏物"
+
+- jass_api: "KillUnit()"
+  category: "unit_kill"
+  lua_alternative:
+    preferred: "unit:kill(killer) 或 unit:destroy()"
+
+- jass_api: "KillDestructable()"
+  category: "unit_kill"
+  lua_alternative:
+    preferred: "KillDestructable(handle) 或 RemoveDestructable(handle)"
+
+- jass_api: "RemoveDestructable()"
+  category: "unit_kill"
+  lua_alternative:
+    preferred: "RemoveDestructable(handle)"
+
+- jass_api: "ReviveHeroLoc()"
+  category: "unit_revive"
+  lua_alternative:
+    preferred: "HeroSystem.reviveHero(hero, loc.x, loc.y, showEffect)"
+
+# --- 单位 Buff ---
+- jass_api: "UnitApplyTimedLife()"
+  category: "unit_buff"
+  lua_alternative:
+    preferred: "unit:addBuff({name='TimedLife', duration=d})"
+  notes: "限时生命周期 Buff"
+
+# --- 物品 ---
+- jass_api: "RemoveItem()"
+  category: "item"
+  lua_alternative:
+    preferred: "item:destroy()"
+
+- jass_api: "UnitRemoveItemFromSlotSwapped()"
+  category: "item"
+  lua_alternative:
+    preferred: "ItemSystem.removeItemFromSlot(unit, slotIndex)"
+
+- jass_api: "UnitAddItemByIdSwapped()"
+  category: "item"
+  lua_alternative:
+    preferred: "ItemSystem.addItem(unit, typeId)"
+
+- jass_api: "GetItemCharges()"
+  category: "item_info"
+  lua_alternative:
+    preferred: "item.charges"
+    fallback: "GetItemCharges(handle)"
+
+- jass_api: "UnitRemoveItemSwapped()"
+  category: "item"
+  lua_alternative:
+    preferred: "ItemSystem.removeItem(unit, item)"
+
+- jass_api: "UnitItemInSlotBJ()"
+  category: "item_info"
+  lua_alternative:
+    preferred: "unit.items[slotIndex]"
+    fallback: "UnitItemInSlot(handle, slot)"
+
+- jass_api: "SoAddItemCharges()"
+  category: "item"
+  lua_alternative:
+    preferred: "item:addCharges(delta)"
+  notes: "增加物品充数"
+
+- jass_api: "AddItemToStockBJ()"
+  category: "item_stock"
+  lua_alternative:
+    preferred: "shop:addStockItem(typeId, currentStock, maxStock)"
+  notes: "商店库存管理"
+
+- jass_api: "RemoveItemFromStockBJ()"
+  category: "item_stock"
+  lua_alternative:
+    preferred: "shop:removeStockItem(typeId)"
+  notes: "移除商店库存项"
+
+- jass_api: "YDWENewItemsFormula()"
+  category: "item_info"
+  lua_alternative:
+    preferred: "物品公式系统 - 计算合成结果"
+  notes: "物品合成计算"
+
+- jass_api: "YDWEGetItemOfTypeFromUnitBJNull()"
+  category: "item_info"
+  lua_alternative:
+    preferred: "unit:findItemByTypeId(typeId)"
+  notes: "获取单位指定类型物品"
+
+- jass_api: "YDWEUnitHasItemOfTypeBJNull()"
+  category: "item_info"
+  lua_alternative:
+    preferred: "unit:hasItem(typeId)"
+  notes: "检查单位是否有某物品"
+
+- jass_api: "ChooseRandomItemBJ()"
+  category: "item"
+  lua_alternative:
+    preferred: "ChooseRandomItemBJ(level) -> typeId"
+  notes: "按等级随机选物品"
+
+# --- 特效 ---
+- jass_api: "AddSpecialEffectLocBJ()"
+  category: "effect"
+  lua_alternative:
+    preferred: "AssetsManager.createEffect(path, loc.x, loc.y)"
+
+# --- 文字 ---
+- jass_api: "DisplayTextToPlayer()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "DisplayTextToPlayer(player, x, y, text)"
+    fallback: "ac.texttag"
+
+- jass_api: "YDWETimerDestroyTextTag()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "texttag:destroy() (ac.timer 回调中)"
+  notes: "YDWE 定时销毁文字"
+
+- jass_api: "GetLastCreatedTextTag()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "texttag 对象引用 (最好避免全局引用)"
+
+- jass_api: "SoTextTagForUnit()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "ac.texttag.createUnitText(text, unit, ...)"
+  notes: "绑定到单位的漂浮文字"
+
+- jass_api: "SoNewTextTagUnit()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "ac.texttag.createUnitText(text, unit, ...)"
+  notes: "新建单位绑定文字"
+
+- jass_api: "SoNewTextTag()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "ac.texttag.createText(text, x, y, ...)"
+  notes: "新建漂浮文字"
+
+- jass_api: "CreateTextTagLocBJ()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "ac.texttag.createText(text, loc.x, loc.y, ...)"
+
+- jass_api: "SoTurnTextTagToUnit()"
+  category: "texttag"
+  lua_alternative:
+    preferred: "texttag:attachToUnit(unit)"
+  notes: "文字转为绑定单位"
+
+# --- 位置 ---
+- jass_api: "GetRandomLocInRect()"
+  category: "location"
+  lua_alternative:
+    preferred: "{x=math.random(minX,maxX), y=math.random(minY,maxY)}"
+    fallback: "GetRandomLocInRect(rect)"
+
+- jass_api: "GetRectCenterEx()"
+  category: "location"
+  lua_alternative:
+    preferred: "{x=(rect.minX+rect.maxX)/2, y=(rect.minY+rect.maxY)/2}"
+  notes: "自定义 Rect 中心获取"
+
+- jass_api: "GetDestructableLoc()"
+  category: "location"
+  lua_alternative:
+    preferred: "{x=GetWidgetX(destructable), y=GetWidgetY(destructable)}"
+
+- jass_api: "GetRectCenterX()"
+  category: "location"
+  lua_alternative:
+    preferred: "(rect.minX + rect.maxX) / 2"
+
+- jass_api: "GetRectCenterY()"
+  category: "location"
+  lua_alternative:
+    preferred: "(rect.minY + rect.maxY) / 2"
+
+- jass_api: "GetPlayableMapRect()"
+  category: "location"
+  lua_alternative:
+    preferred: "code.GetPlayableMapRect()"
+  notes: "可玩地图区域"
+
+- jass_api: "SetUnitPositionLocEx()"
+  category: "unit_move"
+  lua_alternative:
+    preferred: "unit:setPoint({x, y})"
+  notes: "自定义扩展的位置设置"
+
+# --- Group ---
+- jass_api: "ForGroupBJ()"
+  category: "group"
+  lua_alternative:
+    preferred: "for _, entity in engine:query({Comp}) do ... end"
+  notes: "BJ 版本的 ForGroup"
+
+- jass_api: "YDWEGetUnitsOfPlayerMatchingNull()"
+  category: "group"
+  lua_alternative:
+    preferred: "engine:query({PlayerComp, ...}) 过滤 player.match()"
+  notes: "YDWE 单位筛选"
+
+- jass_api: "YDWEGetUnitsInRectMatchingNull()"
+  category: "group"
+  lua_alternative:
+    preferred: "engine:queryWithinRect({PosComp}, rect, filter)"
+  notes: "区域内单位筛选"
+
+- jass_api: "YDWEGetUnitsInRectOfPlayerNull()"
+  category: "group"
+  lua_alternative:
+    preferred: "engine:queryWithinRect({PosComp, PlayerComp}, rect, filter)"
+  notes: "区域内某玩家的单位"
+
+- jass_api: "IsUnitInGroup()"
+  category: "group"
+  lua_alternative:
+    preferred: "group:contains(unit) 或 ECS tag 检查"
+
+- jass_api: "IsUnitGroupEmptyBJ()"
+  category: "group"
+  lua_alternative:
+    preferred: "#group == 0 或 engine:query(...):is_empty()"
+
+# --- Hashtable ---
+- jass_api: "GetHandleId()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "handle 直接作为 key 或使用 entity.eid"
+  notes: "hashtable 的 key 生成器，迁移后不再需要"
+
+- jass_api: "LoadEffectHandle()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity:get('EffectComp').effect"
+
+- jass_api: "LoadPlayerHandle()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity:get('PlayerComp').player"
+
+- jass_api: "SavePlayerHandle()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity:get('PlayerComp').player = value"
+
+- jass_api: "FlushChildHashtable()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "清除 entity.comp 中对应的所有字段"
+
+- jass_api: "SaveEffectHandle()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity:get('EffectComp').effect = value"
+
+# --- Timer ---
+- jass_api: "GetExpiredTimer()"
+  category: "timer_event"
+  lua_alternative:
+    preferred: "event.timer (在 timer 回调中)"
+
+- jass_api: "GetLastCreatedTimerBJ()"
+  category: "timer"
+  lua_alternative:
+    preferred: "timer 对象引用"
+
+- jass_api: "CreateTimerDialogBJ()"
+  category: "timer"
+  lua_alternative:
+    preferred: "CreateTimerDialogBJ(timer, title)"
+  notes: "创建定时器对话框"
+
+- jass_api: "GetLastCreatedTimerDialogBJ()"
+  category: "timer"
+  lua_alternative:
+    preferred: "timer dialog 引用"
+
+- jass_api: "DestroyTimerDialog()"
+  category: "timer"
+  lua_alternative:
+    preferred: "DestroyTimerDialog(dialog)"
+  notes: "销毁定时器对话框"
+
+- jass_api: "SaveTimerDialogHandle()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity:get('TimerComp').dialog = value"
+
+- jass_api: "LoadTimerDialogHandle()"
+  category: "hashtable"
+  lua_alternative:
+    preferred: "entity:get('TimerComp').dialog"
+
+# --- Player ---
+- jass_api: "GetPlayersAll()"
+  category: "player"
+  lua_alternative:
+    preferred: "engine:query('PlayerComp') 返回所有玩家实体"
+
+- jass_api: "GetPlayerState()"
+  category: "player_info"
+  lua_alternative:
+    preferred: "player.state[type]"
+    fallback: "GetPlayerState(handle, type)"
+
+- jass_api: "SetPlayerStateBJ()"
+  category: "player_modify"
+  lua_alternative:
+    preferred: "player:setState(type, value)"
+
+- jass_api: "SetPlayerHandicapXP()"
+  category: "player_modify"
+  lua_alternative:
+    preferred: "SetPlayerHandicapXP(handle, percentage)"
+  notes: "设置经验倍率"
+
+- jass_api: "GetPlayerSlotState()"
+  category: "player_info"
+  lua_alternative:
+    preferred: "GetPlayerSlotState(handle)"
+  notes: "玩家槽位状态（在线/离线）"
+
+- jass_api: "GetPlayerController()"
+  category: "player_info"
+  lua_alternative:
+    preferred: "GetPlayerController(handle)"
+  notes: "玩家控制器类型"
+
+- jass_api: "GetPlayerName()"
+  category: "player_info"
+  lua_alternative:
+    preferred: "player.name"
+    fallback: "GetPlayerName(handle)"
+
+- jass_api: "AdjustPlayerStateBJ()"
+  category: "player_modify"
+  lua_alternative:
+    preferred: "player:adjustState(type, delta)"
+  notes: "增减玩家状态值"
+
+- jass_api: "SetPlayerAllianceStateBJ()"
+  category: "player_modify"
+  lua_alternative:
+    preferred: "player:setAlliance(otherPlayer, allied)"
+  notes: "设置同盟关系"
+
+# --- Camera ---
+- jass_api: "PanCameraToTimedLocForPlayerEx()"
+  category: "camera"
+  lua_alternative:
+    preferred: "PanCameraToTimedForPlayer(player.handle, x, y, duration)"
+
+- jass_api: "CameraSetEQNoiseForPlayer()"
+  category: "camera"
+  lua_alternative:
+    preferred: "CameraSetEQNoiseForPlayer(handle, magnitude)"
+  notes: "地震效果"
+
+- jass_api: "CameraClearNoiseForPlayer()"
+  category: "camera"
+  lua_alternative:
+    preferred: "CameraClearNoiseForPlayer(handle)"
+  notes: "清除地震效果"
+
+# --- Trigger ---
+- jass_api: "Condition()"
+  category: "trigger"
+  lua_alternative:
+    preferred: "function() return bool end (Lua function)"
+  notes: "触发器条件函数"
+
+- jass_api: "TriggerExecute()"
+  category: "trigger"
+  lua_alternative:
+    preferred: "eventManager:fireEvent(event)"
+  notes: "手动触发事件"
+
+- jass_api: "GetTriggerExecCount()"
+  category: "trigger_info"
+  lua_alternative:
+    preferred: "trigger.exec_count"
+
+# --- Dialog ---
+- jass_api: "DialogAddButtonBJ()"
+  category: "dialog"
+  lua_alternative:
+    preferred: "UI 系统中的按钮创建"
+  notes: "对话框添加按钮"
+
+- jass_api: "GetLastCreatedButtonBJ()"
+  category: "dialog"
+  lua_alternative:
+    preferred: "UI 按钮引用"
+
+- jass_api: "GetClickedButtonBJ()"
+  category: "dialog"
+  lua_alternative:
+    preferred: "event.clicked_button"
+  notes: "点击的按钮"
+
+- jass_api: "DialogSetMessage()"
+  category: "dialog"
+  lua_alternative:
+    preferred: "UI 对话框消息设置"
+
+- jass_api: "DialogDisplayBJ()"
+  category: "dialog"
+  lua_alternative:
+    preferred: "UI 对话框显示"
+
+# --- Game ---
+- jass_api: "CustomVictoryBJ()"
+  category: "game"
+  lua_alternative:
+    preferred: "GameState.transition(WinState)"
+  notes: "自定义胜利条件"
+
+# --- Quest ---
+- jass_api: "CreateQuestBJ()"
+  category: "quest"
+  lua_alternative:
+    preferred: "QuestSystem.createQuest(title, description, icon)"
+
+# --- Random ---
+- jass_api: "GetRandomDirectionDeg()"
+  category: "random"
+  lua_alternative:
+    preferred: "math.random(0, 359)"
+  notes: "随机方向角度"
+
+# --- Visual ---
+- jass_api: "SetUnitVertexColorBJ()"
+  category: "unit_visual"
+  lua_alternative:
+    preferred: "SetUnitVertexColor(handle, r, g, b, a)"
+
+# --- YDWE Custom ---
+- jass_api: "YDWERPGGetKey()"
+  category: "custom"
+  lua_alternative:
+    preferred: "YDWE RPG 系统 - 获取键值"
+  notes: "RPG 自定义系统"
+
+- jass_api: "YDWERPGAddKey()"
+  category: "custom"
+  lua_alternative:
+    preferred: "YDWE RPG 系统 - 添加键值"
+  notes: "RPG 自定义系统"
+
+- jass_api: "YDWERPGBillingHasStatus()"
+  category: "custom"
+  lua_alternative:
+    preferred: "YDWE RPG 系统 - 检查状态"
+  notes: "RPG 计费/状态系统"
+
+- jass_api: "YDWEGeneralBounsSystemUnitSetBonus()"
+  category: "custom"
+  lua_alternative:
+    preferred: "unit:get('BonusComp'):applyBonus()"
+  notes: "通用奖励系统"
+
+- jass_api: "YDWETimerPatternRushSlide()"
+  category: "custom"
+  lua_alternative:
+    preferred: "ac.timer + tween 动画"
+  notes: "YDWE 定时器文字滑动模式"
+
+# --- DYC Custom ---
+- jass_api: "DYCImpaleSector()"
+  category: "custom"
+  lua_alternative:
+    preferred: "自定义扇形穿刺技能逻辑"
+  notes: "DYC 技能库"
+
+- jass_api: "DYCImpaleLinear()"
+  category: "custom"
+  lua_alternative:
+    preferred: "自定义线性穿刺技能逻辑"
+  notes: "DYC 技能库"
+
+- jass_api: "DYCdmgdodge()"
+  category: "custom"
+  lua_alternative:
+    preferred: "闪避计算 -> unit:get('AvoidDeathComp')"
+  notes: "DYC 闪避系统"
+
+- jass_api: "DYCpushback()"
+  category: "custom"
+  lua_alternative:
+    preferred: "击退逻辑 -> TweenSystem.pushback(unit, dir, dist)"
+  notes: "DYC 击退系统"
+
+# --- Misc ---
+- jass_api: "DoNothing()"
+  category: "misc"
+  lua_alternative:
+    preferred: "return (无操作)"
+
+- jass_api: "ConvertUnitState()"
+  category: "conversion"
+  lua_alternative:
+    preferred: "ConvertUnitState(enumValue)"
+  notes: "UnitState 枚举转换"
+
+- jass_api: "FogMaskEnable()"
+  category: "camera"
+  lua_alternative:
+    preferred: "FogMaskEnable(true/false)"
+  notes: "迷雾遮罩"
+
+- jass_api: "FogEnable()"
+  category: "camera"
+  lua_alternative:
+    preferred: "FogEnable(true/false)"
+  notes: "迷雾开关"

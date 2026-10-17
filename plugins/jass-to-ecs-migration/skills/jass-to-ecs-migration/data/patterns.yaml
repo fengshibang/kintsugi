@@ -1,0 +1,148 @@
+# JASS Pattern → ECS Migration Mapping
+# Used by analyzer.py to recommend ECS components/systems for each trigger
+
+- pattern_id: jass-001
+  name: "单位死亡事件触发器"
+  jass_trigger: "TriggerRegisterAnyUnitEventBJ(trig, EVENT_PLAYER_UNIT_DEATH)"
+  jass_pattern:
+    - "GetTriggerUnit() / GetDyingUnit()"
+    - "GetUnitTypeId() 判断单位类型"
+    - "CreateItem / CreateItemLoc 掉落物品"
+    - "CreateTextTagUnitBJ 死亡文字"
+  ecs_mapping:
+    event: "AnyUnitDeath"
+    component: "DeathComp"
+    system: "DeathSystem"
+    notes: "掉落逻辑应放在 DeathSystem 中；物品创建用 ItemSystem"
+  file_hint: "map/script/src/systems/DeathSystem.lua"
+
+- pattern_id: jass-002
+  name: "单位攻击事件触发器"
+  jass_trigger: "TriggerRegisterAnyUnitEventBJ(trig, EVENT_PLAYER_UNIT_ATTACKED)"
+  jass_pattern:
+    - "GetAttacker() / GetTriggerUnit()"
+    - "UnitAddAbility / UnitRemoveAbility 临时技能"
+    - "YDWEPolledWaitNull 同步等待技能动画"
+    - "IssueImmediateOrder / IssueTargetOrder"
+  ecs_mapping:
+    event: "AnyUnitAttacked"
+    component: "AttackComp"
+    system: "AttackSystem"
+    notes: "PolledWait 必须改为 ac.timer 状态机；临时技能改用 ECS Buff 系统"
+  file_hint: "map/script/src/systems/AttackSystem.lua"
+
+- pattern_id: jass-003
+  name: "拾取物品事件触发器"
+  jass_trigger: "TriggerRegisterAnyUnitEventBJ(trig, EVENT_PLAYER_UNIT_PICKUP_ITEM)"
+  jass_pattern:
+    - "GetManipulatingUnit() / GetManipulatedItem()"
+    - "GetItemTypeId()"
+    - "AddSpecialEffectTargetUnitBJ 特效"
+    - "UnitAddAbility 被动技能"
+  ecs_mapping:
+    event: "AnyUnitPickUpItem"
+    component: "InventoryComp"
+    system: "ItemSystem"
+    notes: "拾取效果应走 ItemSystem 的事件订阅"
+  file_hint: "map/script/src/systems/ItemSystem.lua"
+
+- pattern_id: jass-004
+  name: "使用物品事件触发器"
+  jass_trigger: "TriggerRegisterAnyUnitEventBJ(trig, EVENT_PLAYER_UNIT_USE_ITEM)"
+  jass_pattern:
+    - "GetManipulatingUnit() / GetManipulatedItem()"
+    - "GetItemTypeId()"
+    - "伤害/治疗/Buff 效果"
+  ecs_mapping:
+    event: "AnyUnitUseItem"
+    component: "InventoryComp"
+    system: "ItemSystem"
+    notes: "物品使用效果拆分为 DamageObj/HealObj/addBuff 调用"
+  file_hint: "map/script/src/systems/ItemSystem.lua"
+
+- pattern_id: jass-005
+  name: "出售物品事件触发器"
+  jass_trigger: "TriggerRegisterAnyUnitEventBJ(trig, EVENT_PLAYER_UNIT_SELL_ITEM)"
+  jass_pattern:
+    - "GetSoldItem() / GetBuyingUnit()"
+    - "GetItemTypeId()"
+    - "条件判断触发特殊逻辑"
+  ecs_mapping:
+    event: "AnyUnitSellItem"
+    component: "InventoryComp"
+    system: "ItemSystem"
+    notes: "出售逻辑放在 ItemSystem 的事件处理中"
+  file_hint: "map/script/src/systems/ItemSystem.lua"
+
+- pattern_id: jass-006
+  name: "技能施放事件触发器"
+  jass_trigger: "TriggerRegisterAnyUnitEventBJ(trig, EVENT_PLAYER_UNIT_SPELL_EFFECT)"
+  jass_pattern:
+    - "GetSpellAbilityId()"
+    - "GetTriggerUnit() / GetSpellTargetUnit()"
+    - "GetSpellTargetX() / GetSpellTargetY()"
+    - "伤害计算和特效"
+  ecs_mapping:
+    event: "AnyUnitSpellCast"
+    component: "SkillComp"
+    system: "SkillSystem"
+    notes: "技能逻辑应放在 map/script/src/技能/ 下的独立文件"
+  file_hint: "map/script/src/技能/<skill_name>.lua"
+
+- pattern_id: jass-007
+  name: "PolledWait 同步阻塞"
+  jass_pattern:
+    - "YDWEPolledWaitNull(duration)"
+    - "DisableTrigger → PolledWait → EnableTrigger"
+  ecs_mapping:
+    pattern: "状态机"
+    solution: "ac.timer"
+    notes: "将连续代码拆分为 触发函数 → 保存状态到组件 → ac.timer 回调继续执行"
+    example: |
+      -- JASS:
+      -- call DisableTrigger(trig)
+      -- call DoSomething()
+      -- call YDWEPolledWaitNull(5.0)
+      -- call DoAfterWait()
+      -- call EnableTrigger(trig)
+
+      -- Lua ECS:
+      function onEvent(event)
+          DoSomething()
+          ac.timer(function() DoAfterWait() end, 5.0)
+      end
+
+- pattern_id: jass-008
+  name: "Hashtable 数据存储"
+  jass_pattern:
+    - "SaveUnitHandle(ht, key, subkey, value)"
+    - "LoadUnitHandle(ht, key, subkey)"
+    - "SaveReal / SaveInteger / SaveString"
+  ecs_mapping:
+    pattern: "Component 属性"
+    solution: "创建对应的 ECS Component"
+    notes: "hashtable 中同一 key 的数据应归入同一个 Component"
+
+- pattern_id: jass-009
+  name: "Group 单位枚举"
+  jass_pattern:
+    - "CreateGroup()"
+    - "GroupEnumUnits*()"
+    - "ForGroup(group, callback)"
+    - "DestroyGroup(group)"
+  ecs_mapping:
+    pattern: "ECS Entity 查询"
+    solution: "Engine:query({ComponentA, ComponentB})"
+    notes: "Group 枚举改为 ECS Component/Tag 查询，无内存泄漏"
+
+- pattern_id: jass-010
+  name: "Location 位置对象"
+  jass_pattern:
+    - "Location(x, y)"
+    - "GetUnitLoc(unit)"
+    - "PolarProjectionBJ(loc, dist, angle)"
+    - "RemoveLocation(loc)"
+  ecs_mapping:
+    pattern: "table 或 PosComp"
+    solution: "{x = x, y = y} 或 unit.posComp"
+    notes: "Lua 中用 table 代替 Location 对象，无需手动清理"

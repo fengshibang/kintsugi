@@ -1,0 +1,7 @@
+{
+  "name": "jass-to-ecs-migration",
+  "version": "2.1.0",
+  "description": "JASS 到 ECS Lua 架构迁移分析 skill：解析 war3map.j 生成分批迁移 PRD（ECS 就绪度评估）、单触发器 API 依赖提取、迁移进度追踪。代码实现交由 jass-migrate-trigger workflow 编排（无 workflow 环境走手动模式），提供 data/api_mapping.yaml + data/patterns.yaml 映射库。",
+  "author": { "name": "fengshibang" },
+  "license": "MIT"
+}
