@@ -747,11 +747,13 @@ class TestBatchRunner:
             snapshots = []
             for expr in queries:
                 try:
-                    result = pipe.eval_lua(expr, timeout_sec=2.0)
-                    if result.get("success"):
-                        snapshots.append(f"{expr}: {result.get('value', '')}")
+                    resp = pipe.request("inspect", {"expr": expr}, timeout_ms=2000)
+                    if isinstance(resp, dict) and resp.get("ok"):
+                        payload = resp.get("payload") or {}
+                        snapshots.append(f"{expr}: {payload.get('result', '')}")
                     else:
-                        snapshots.append(f"{expr}: ERROR - {result.get('error', '')}")
+                        err_obj = resp.get("error") if isinstance(resp, dict) else {}
+                        snapshots.append(f"{expr}: ERROR - {err_obj.get('message', '')}")
                 except Exception as e:
                     snapshots.append(f"{expr}: 查询失败 - {e}")
 
