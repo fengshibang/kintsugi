@@ -98,7 +98,8 @@ class War3TesterMCP:
             test_mode_flag=self.test_mode_flag,
             test_entry_preparer=self.test_entry_preparer,
             diagnostics_collector=self.diagnostics_collector,
-            store=self.store
+            store=self.store,
+            pipe_client=self.pipe_client
         )
         self.desktop_runner = DesktopRunner(self.config, self.executor)
         self.file_watcher = FileWatcher(self.desktop_runner, self.config)
@@ -1168,29 +1169,18 @@ async def run_server():
         print("=" * 60, file=sys.stderr)
         return
 
-    server.logger.info("执行器连接检测通过")
-
-    http_result = server.http_receiver.start(force_takeover=False)
-    if http_result:
-        server.logger.info(f"HTTP 服务器已启动（端口 {server.config.http_port}）")
-    else:
-        server.logger.info(f"HTTP 端口 {server.config.http_port} 由其他实例监听中，本实例处于命名管道/单测共存模式（执行 test_commit 时自动按需接管）")
-
+    server.logger.info("执行器连接检测通过（全链路采用 Windows 命名管道 \\\\.\\pipe\\war3_agent，已废除 8766 HTTP 端口监听）")
     server.logger.info("服务器已初始化")
-    print("[OK] War3 Tester MCP Server 已启动", file=sys.stderr)
+    print("[OK] War3 Tester MCP Server 已启动 (Named Pipe Mode)", file=sys.stderr)
 
     def _cleanup_on_exit():
-        """退出清理：关命名管道 + 停 HTTP 接收端 + 若本实例曾自动拉起测试游戏进程则清理"""
+        """退出清理：关命名管道 + 若本实例曾自动拉起测试游戏进程则清理"""
         try:
             server.pipe_client.close()
         except Exception:
             pass
-        try:
-            server.http_receiver.stop()
-        except Exception as e:
-            server.logger.warning(f"退出清理 http_receiver.stop 异常：{e}")
 
-        if getattr(server.test_batch_runner, "launched_war3", False) and (server.config.is_windows or server.config.is_wsl):
+        if getattr(server.batch_runner, "launched_war3", False) and (server.config.is_windows or server.config.is_wsl):
             for proc_name in server.config.war3_process_names:
                 try:
                     subprocess.run(

@@ -15,7 +15,7 @@ description: "魔兽争霸 3 地图自动化测试与 LLM Agent 实机探索（v
 | 层级 | 名称 | 运行环境 | 耗时 | 核心工具 | 适用场景 |
 |---|---|---|---|---|---|
 | **Tier 1** | **桌面纯逻辑单测 (`unit`)** | 桌面 Lua 5.3 + `jass_mock` | **< 1 秒** | `run_unit_test` / `watch_unit_tests` | 伤害公式、词条计算、残卷配置、数据表校验 |
-| **Tier 2** | **实机剧本/集成测试 (`integration` / `e2e`)** | 启动 `War3.exe` 跑 `TestScenario` / `TestRunner` | 15 ~ 60 秒 | `test_commit` / `run_test_batch` | 技能释放完整生命周期、Buff 驱散、多波次刷怪、投射物碰撞 |
+| **Tier 2** | **实机剧本/集成测试 (`integration` / `e2e`)** | 启动 `War3.exe` 跑 `TestScenario` / `TestRunner` (`\\.\pipe\war3_agent` 回传) | 15 ~ 60 秒 | `test_commit` / `run_test_batch` | 技能释放完整生命周期、Buff 驱散、多波次刷怪、投射物碰撞 |
 | **Tier 3** | **Named Pipe 实时交互查询 (`inspect` / `exec`)** | 已运行的 `War3.exe` (`\\.\pipe\war3_agent`) | **~16 毫秒** | `inspect_game` / `exec_game` / `game_setup` | 边玩边查 ECS 实体/组件数据、实时刷怪/跳关/发装备/改属性 |
 | **Tier 4** | **LLM Play / Bug 探索 Agent (`agent`)** | 已运行的 `War3.exe` + 步进冻结 (`step`) + 五大 Oracle | 按步实时 | `game_status` / `game_set_mode` / `game_observe` / `game_act` / `game_events` / `game_report_bug` | AI 自主选英雄、放技能、跑图，配合五大 Oracle 自动抓 NaN/卡死/泄露 |
 

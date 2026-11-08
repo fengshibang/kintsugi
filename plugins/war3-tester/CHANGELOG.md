@@ -4,9 +4,10 @@
 
 ### 新增（Named Pipe 架构升级 + 8 个 LLM Agent 实机探索工具 + 一键安装/体检/修复）
 
-1. **纯 Windows 命名管道 (`\\.\pipe\war3_agent` / `\\.\pipe\war3_agent_<pid>`) 彻底替代 HTTP 轮询 inspect 通道**：
-   - 新增 `server/pipe_client.py` 与 `bin/agent_bridge.dll`（`PIPE_UNLIMITED_INSTANCES` + 跨权限 `NULL DACL` + 多客户端独立工作线程），支持多个 IDE / MCP 实例并发连接，彻底解决多开 TCP 端口冲突问题。
-   - `inspect_game` 与 `exec_game` 完全迁移至命名管道同步调用（延迟 ~3–16ms），移除 `http_receiver.py` 的 `/inspect/pending`、`/inspect/result` 路由及 `test_state_store.py` 的轮询队列。
+1. **纯 Windows 命名管道 (`\\.\pipe\war3_agent` / `\\.\pipe\war3_agent_<pid>`) 彻底替代 HTTP 8766 端口（覆盖 Tier 2 / Tier 3 / Tier 4 全链路）**：
+   - 新增 `server/pipe_client.py` 与 `bin/agent_bridge.dll`（`PIPE_UNLIMITED_INSTANCES` + 跨权限 `NULL DACL` + 多客户端独立工作线程），支持多个 IDE / MCP 实例并发连接，彻底告别 TCP 8766 端口占用与冲突问题。
+   - **Tier 2 (`test_commit` / `run_test_batch`)**：`TestScenario.lua`、`TestRunner.lua` 与 `auto-test/init.lua` 的进度（`test_progress`）、日志（`test_log`）、崩溃（`test_error`）与最终断言结果（`test_result`）全部通过 `bridge.event(...)` 写入 `agent_bridge` 环形队列，由 `test_batch_runner.py` 通过命名管道 `events` 命令实时拉取，MCP 服务启动时不再绑定 HTTP 8766 端口。
+   - **Tier 3 (`inspect_game` / `exec_game`)**：完全迁移至命名管道同步调用（延迟 ~3–16ms），移除 `http_receiver.py` 的 `/inspect/pending`、`/inspect/result` 路由及 `test_state_store.py` 的轮询队列。
    - `test_entry_preparer.py` 改为自动注入 `agent.init` 命名管道启动引导，移除旧版 `inspect_handler.lua` 注入。
 2. **新增 8 个 LLM Agent 实机探索与五大 Oracle 工具（MCP 工具总数 26 → 34）**：
    - `game_status`、`game_set_mode`（`step` 步进硬冻结 / `free` 自动解冻）、`game_observe`、`game_act`（支持 `select_hero` / `move` / `attack` / `attack_move` / `cast` / `use_item` 等语义动作）、`game_events`、`game_inspect`、`game_setup`、`game_report_bug`。

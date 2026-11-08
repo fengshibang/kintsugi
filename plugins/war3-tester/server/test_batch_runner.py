@@ -36,16 +36,17 @@ class TestBatchRunner:
     # 失败时触发截图的类型（设计文档 4.7：assertion/runtime_error/compile_error 不截图）
     SCREENSHOT_FAILURE_TYPES = {'crash', 'timeout', 'unknown'}
 
-    def __init__(self, config, executor, http_receiver, test_mode_flag, test_entry_preparer, diagnostics_collector, store=None):
+    def __init__(self, config, executor, http_receiver, test_mode_flag, test_entry_preparer, diagnostics_collector, store=None, pipe_client=None):
         """
         Args:
             config: Config 实例
             executor: 执行器（WinProxy / Local）
-            http_receiver: HTTPReceiver 实例（文件操作）
+            http_receiver: HTTPReceiver 实例（结果文件目录管理）
             test_mode_flag: TestModeFlag 实例（v0.15.0 注入，_test_off.lua 管理）
             test_entry_preparer: TestEntryPreparer 实例（v0.15.0 注入，测试入口准备）
             diagnostics_collector: DiagnosticsCollector 实例（v0.15.0 注入，诊断信息收集）
             store: TestStateStore 实例（v0.14.0 注入，跨线程状态 owner）
+            pipe_client: PipeClient 实例（v0.21.0 注入，通过 \\\\.\\pipe\\war3_agent 收集进度、日志与测试结果）
         """
         self.config = config
         self.executor = executor
@@ -54,6 +55,7 @@ class TestBatchRunner:
         self.test_entry_preparer = test_entry_preparer  # v0.15.0: 消除 mcp_server 反向依赖
         self.diagnostics_collector = diagnostics_collector  # v0.15.0: 消除 mcp_server 反向依赖
         self.store = store  # v0.14.0: 跨线程状态 owner
+        self.pipe_client = pipe_client
         self.logger = setup_logger('test-batch')
         # 本次 batch 的 failed 列表（内存，不持久化），供 filter="failed" 复用
         self._failed_cache: List[Dict[str, str]] = []
@@ -325,14 +327,15 @@ class TestBatchRunner:
 
         v0.15.0: 从 _run_single_test 提升为 public，供 mcp_server.test_commit 直接调用。
         """
-        # v0.21.0: 确保本实例 HTTP 接收端已启动（若被其他空闲 MCP 实例占用则按需接管）
-        if hasattr(self.http_receiver, 'ensure_started'):
-            self.http_receiver.ensure_started()
-
         # v0.14.0: 清缓冲（委托 store）
         # 决策5：每测试开头只用 clear_test（清该 test 的 progress/logs）
         # clear_all 只在 batch 边界调（会清 game_errors，违背全局保留）
         self.store.clear_test(test_name)
+        if getattr(self, 'pipe_client', None) is not None:
+            try:
+                self.pipe_client.close()
+            except Exception:
+                pass
 
         # source_dir 默认 config.compile_source_dir（与 test_commit handle 一致）；
         # 否则 _prepare_test_entry 会 fallback 到 project_root(cache)，
@@ -378,21 +381,30 @@ class TestBatchRunner:
                                           elapsed=0)
             self.launched_war3 = True
 
-            # 3. 轮询结果 + 进程存活监控
+            # 3. 轮询结果（通过 Windows 命名管道 \\.\pipe\war3_agent 拉取进度、日志、错误与结果）+ 进程存活监控
             self.http_receiver.delete_old_result(test_name)
             result_file = self.http_receiver.get_result_file(test_name)
 
-            self.logger.info(f"[{test_name}] 等待测试结果 (超时 {timeout}s)...")
+            self.logger.info(f"[{test_name}] 等待测试结果 (命名管道 \\\\.\\pipe\\war3_agent, 超时 {timeout}s)...")
             elapsed = 0
-            poll_interval = 3
+            poll_interval = 2
             game_seen_alive = False
             result_data = None
             outcome: Optional[str] = None  # 'result' | 'crash' | 'timeout' | 'env_error'
+            pipe_seq = 0
 
             while elapsed < timeout:
                 time.sleep(poll_interval)
                 elapsed += poll_interval
 
+                # 3.1 从命名管道拉取事件流与测试结果
+                pipe_res, pipe_seq = self._poll_pipe_events(test_name, pipe_seq, result_file)
+                if pipe_res is not None:
+                    result_data = pipe_res
+                    outcome = 'result'
+                    break
+
+                # 3.2 兼容结果文件落地兜底
                 if result_file.exists():
                     try:
                         with open(result_file, 'r', encoding='utf-8') as f:
@@ -654,33 +666,92 @@ class TestBatchRunner:
             self.logger.warning(f"[{test_name}] 截图异常：{e}")
         return []
 
-    def _collect_inspect_snapshot(self) -> Optional[str]:
-        """【M4 方向 G】收集运行时状态快照（graceful）
+    def _poll_pipe_events(self, test_name: str, since_seq: int, result_file: Optional[Path] = None):
+        r"""通过 Windows 命名管道 (\\.\pipe\war3_agent) 增量拉取进度、日志、错误与最终测试结果"""
+        pipe = getattr(self, 'pipe_client', None)
+        if pipe is None:
+            return None, since_seq
 
-        查询表达式从 config.inspect_queries 读取（项目自定义，默认空=不查 inspect）。
-        通用性：不硬编码任何项目特化 API，项目通过 config.json -> test.inspect_queries 配置。
-        v0.14.0: 委托 store.submit_inspect + take_inspect（消除直插私有字段）
-        """
         try:
-            # 从 config 读取查询表达式列表（项目自定义，默认空）
+            resp = pipe.request("events", {"since_seq": since_seq}, timeout_ms=1500)
+        except Exception:
+            return None, since_seq
+
+        if not isinstance(resp, dict) or not resp.get("ok"):
+            return None, since_seq
+
+        payload = resp.get("payload") or {}
+        evts = payload.get("events") or []
+        new_seq = payload.get("max_seq", since_seq)
+        final_result = None
+
+        for evt in evts:
+            if not isinstance(evt, dict):
+                continue
+            kind = evt.get("kind")
+            if kind == "test_progress":
+                self.store.record_progress(test_name, {
+                    "step": evt.get("step", ""),
+                    "phase": evt.get("phase", "done"),
+                    "detail": evt.get("detail") or {},
+                    "elapsed_ms": evt.get("elapsed_ms", 0),
+                    "timestamp": evt.get("timestamp", ""),
+                })
+            elif kind == "test_log":
+                self.store.record_log(test_name, {
+                    "level": evt.get("level", "info"),
+                    "category": evt.get("category", ""),
+                    "message": evt.get("message", ""),
+                    "context": evt.get("context") or {},
+                    "timestamp": evt.get("timestamp", ""),
+                })
+            elif kind in ("test_error", "lua_error"):
+                self.store.record_error(evt.get("test_name") or test_name, {
+                    "test_name": evt.get("test_name") or test_name,
+                    "error": evt.get("error") or evt.get("message", ""),
+                    "traceback": evt.get("traceback", ""),
+                    "timestamp": evt.get("timestamp", ""),
+                })
+            elif kind == "test_result":
+                snap = self.store.snapshot(test_name)
+                res_obj = dict(evt)
+                res_obj.pop("kind", None)
+                res_obj.pop("seq", None)
+                if not res_obj.get("progress"):
+                    res_obj["progress"] = snap["progress"]
+                if not res_obj.get("logs"):
+                    res_obj["logs"] = snap["logs"]
+                final_result = res_obj
+                if result_file is not None:
+                    try:
+                        result_file.parent.mkdir(parents=True, exist_ok=True)
+                        with open(result_file, "w", encoding="utf-8") as f:
+                            json.dump(final_result, f, ensure_ascii=False, indent=2)
+                    except Exception as write_e:
+                        self.logger.warning(f"[{test_name}] 写入结果文件失败：{write_e}")
+
+        return final_result, new_seq
+
+    def _collect_inspect_snapshot(self) -> Optional[str]:
+        r"""收集运行时状态快照（通过命名管道 \\.\pipe\war3_agent）"""
+        try:
             queries = self.config.inspect_queries or []
             if not queries:
-                # 未配置 inspect_queries，跳过（通用，不依赖项目特化 API）
                 self.logger.info("[inspect] 未配置 inspect_queries，跳过 inspect 快照")
+                return None
+
+            pipe = getattr(self, 'pipe_client', None)
+            if pipe is None:
                 return None
 
             snapshots = []
             for expr in queries:
                 try:
-                    # v0.14.0: 委托 store 管理 inspect 协议
-                    query_id = self.store.submit_inspect(expr)
-                    # 等待结果（最多 2s）
-                    result = self.store.take_inspect(query_id, timeout=2)
-                    if result:
-                        if "error" in result:
-                            snapshots.append(f"{expr}: ERROR - {result['error']}")
-                        else:
-                            snapshots.append(f"{expr}: {result.get('value', '')}")
+                    result = pipe.eval_lua(expr, timeout_sec=2.0)
+                    if result.get("success"):
+                        snapshots.append(f"{expr}: {result.get('value', '')}")
+                    else:
+                        snapshots.append(f"{expr}: ERROR - {result.get('error', '')}")
                 except Exception as e:
                     snapshots.append(f"{expr}: 查询失败 - {e}")
 

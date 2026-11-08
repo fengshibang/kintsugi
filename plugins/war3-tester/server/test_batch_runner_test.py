@@ -143,12 +143,56 @@ def test_run_single_test_calls_is_war3_clean_after_sleep():
     print("  PASS test_run_single_test_calls_is_war3_clean_after_sleep")
 
 
+def test_poll_pipe_events_collects_progress_logs_and_result():
+    """_poll_pipe_events: 通过命名管道收集 test_progress / test_log / test_error / test_result"""
+    from test_state_store import TestStateStore
+    runner = _make_runner()
+    runner.store = TestStateStore()
+    runner.pipe_client = MagicMock()
+    runner.pipe_client.request.return_value = {
+        "ok": True,
+        "payload": {
+            "dropped": 0,
+            "max_seq": 4,
+            "events": [
+                {"seq": 1, "kind": "test_progress", "step": "wait_hero", "phase": "done", "elapsed_ms": 120},
+                {"seq": 2, "kind": "test_log", "level": "info", "message": "hero ready"},
+                {"seq": 3, "kind": "test_error", "test_name": "test_pipe_case", "error": "boom", "traceback": "tb"},
+                {
+                    "seq": 4,
+                    "kind": "test_result",
+                    "test_name": "test_pipe_case",
+                    "success": True,
+                    "duration_ms": 250,
+                    "assertions": [{"name": "ok", "passed": True}],
+                },
+            ],
+        },
+    }
+
+    res, new_seq = runner._poll_pipe_events("test_pipe_case", 0, None)
+    assert new_seq == 4
+    assert res is not None
+    assert res["test_name"] == "test_pipe_case"
+    assert res["success"] is True
+    assert len(res["progress"]) == 1
+    assert res["progress"][0]["step"] == "wait_hero"
+    assert len(res["logs"]) == 1
+    assert res["logs"][0]["message"] == "hero ready"
+    snap = runner.store.snapshot("test_pipe_case")
+    assert len(snap["game_errors"]) == 1
+    assert snap["game_errors"][0]["error"] == "boom"
+
+    print("  PASS test_poll_pipe_events_collects_progress_logs_and_result")
+
+
 if __name__ == "__main__":
     print("=== test_batch_runner 单测 ===")
     tests = [
         test_run_single_test_war3_remaining_returns_env_error,
         test_run_single_test_war3_clean_continues,
         test_run_single_test_calls_is_war3_clean_after_sleep,
+        test_poll_pipe_events_collects_progress_logs_and_result,
     ]
 
     passed = 0
