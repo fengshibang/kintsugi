@@ -19,14 +19,13 @@ oracle.register({
         if not entities then return nil end
 
         local now_sec = ctx.sec
+        local seen_handles = {}
+
         for eid, ent in pairs(entities) do
-            if ent.handle then
-                local is_dead = false
-                if UnitAlive then
-                    is_dead = not UnitAlive(ent.handle)
-                elseif IsUnitType and UNIT_TYPE_DEAD then
-                    is_dead = IsUnitType(ent.handle, UNIT_TYPE_DEAD)
-                end
+            -- 严格过滤：必须包含 UnitModelComp（排除 PlayerObj 等非单位实体），且排除等待复活的英雄实体 (HeroComp)
+            if ent.handle and ent.get and ent:get('UnitModelComp') ~= nil and ent:get('HeroComp') == nil then
+                seen_handles[ent.handle] = true
+                local is_dead = (ent.isAlive and not ent:isAlive()) or false
 
                 if is_dead then
                     if not dead_tracked_units[ent.handle] then
@@ -43,6 +42,14 @@ oracle.register({
                 end
             end
         end
+
+        -- 清理已从 entities 中移除的句柄记录，防止表内存泄漏
+        for h, _ in pairs(dead_tracked_units) do
+            if not seen_handles[h] then
+                dead_tracked_units[h] = nil
+            end
+        end
+
         return violations
     end
 })

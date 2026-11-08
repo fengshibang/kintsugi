@@ -5,6 +5,11 @@
 local actions = {}
 local entity_ref = require 'script.src.auto-test.agent.entity_ref'
 
+local HERO_CANDIDATE_TYPES = {
+    Hgbx = true, Hslz = true, Hwdd = true,
+    Hthd = true, Hqzj = true, Hbts = true
+}
+
 --- 获取主英雄对象（兼容哈希表形式的 getEntitiesWithComponent('HeroComp')）
 local function get_hero()
     if PlayerObj and PlayerObj.getPlayerById then
@@ -51,17 +56,21 @@ local function select_hero_for_player(hero_spec)
     end
     if not player then return false, "NO_PLAYER" end
 
-    -- 查找目标选人单位
+    -- 查找目标选人单位（支持 u:N 引用、unit_id 整数、四字物编 Hgbx 或名称子串）
     local target_unit = nil
     if type(hero_spec) == 'string' and hero_spec:match("^u:") then
         target_unit = entity_ref.resolve(hero_spec)
     end
+    local spec_num = tonumber(hero_spec)
     if not target_unit then
         for _, ent in pairs(engine.entities) do
-            if ent.handle and ent.name then
-                local uid = (GetUnitTypeId and IdHelp and IdHelp.Id2Str and IdHelp.Id2Str(GetUnitTypeId(ent.handle))) or tostring(ent.id)
-                if not hero_spec or hero_spec == "" or uid == hero_spec or tostring(ent.name):find(tostring(hero_spec), 1, true) then
-                    if uid == 'Hgbx' or uid == 'Hslz' or uid == 'Hwdd' or uid == 'Hthd' or uid == 'Hqzj' or uid == 'Hbts' then
+            if ent.handle and ent.get and ent:get('UnitModelComp') then
+                local utype = (GetUnitTypeId and IdHelp and IdHelp.Id2Str and IdHelp.Id2Str(GetUnitTypeId(ent.handle))) or ""
+                if spec_num and (ent.id == spec_num or ent.handle == spec_num) then
+                    target_unit = ent
+                    break
+                elseif HERO_CANDIDATE_TYPES[utype] then
+                    if not hero_spec or hero_spec == "" or utype == tostring(hero_spec) or tostring(ent.name or ""):find(tostring(hero_spec), 1, true) then
                         target_unit = ent
                         break
                     end
@@ -80,26 +89,40 @@ local function select_hero_for_player(hero_spec)
     return false, "NO_EVENT_MANAGER"
 end
 
---- 查找英雄身上的技能对象
+--- 查找英雄身上的技能对象（与 observe.lua 的槽位分配顺序严格一致）
 local function find_hero_skill(hero, skill_spec)
-    if not hero or not hero.skills then return nil end
+    if not hero or not hero.skills or not skill_spec then return nil end
 
-    -- 1. 按槽位匹配（Q, W, E, R, 0, 1...）
+    local slot_names = {"Q", "W", "E", "R", "D", "F", "B"}
     local spec_str = tostring(skill_spec):upper()
+
+    -- 1. 按槽位匹配（显式 skl.slot 或与 observe.lua 一致的顺序槽位 Q/W/E/R/D/F/B）
+    local idx = 1
     for _, skl in pairs(hero.skills) do
-        if skl.slot and tostring(skl.slot):upper() == spec_str then
+        local slot_str = skl.slot and tostring(skl.slot):upper() or slot_names[idx] or ("S" .. idx)
+        if slot_str == spec_str then
             return skl
         end
+        idx = idx + 1
     end
 
     -- 2. 按技能 ID 或名称匹配
     for _, skl in pairs(hero.skills) do
-        if skl.id == skill_spec or skl.name == skill_spec then
+        if tostring(skl.id or ""):upper() == spec_str or skl.name == skill_spec then
             return skl
         end
     end
 
     return nil
+end
+
+--- 解析目标引用（兼容 act.target.ref / act.ref / act.target_ref / act.target_id）
+local function resolve_target_from_act(act)
+    local ref = (act.target and act.target.ref) or act.ref or act.target_ref
+    if not ref and act.target_id then
+        ref = "u:" .. tostring(act.target_id)
+    end
+    return entity_ref.resolve(ref)
 end
 
 --- 执行单条动作
@@ -111,10 +134,13 @@ function actions.execute_single(hero, act)
     local res = { op = op, issued = false, error = nil }
 
     if op == "select_hero" then
-        local spec = (act.target and act.target.ref) or act.hero_id or act.name or "Hgbx"
+        local spec = (act.target and act.target.ref) or act.ref or act.unit_id or act.hero_id or act.id or act.name or "Hgbx"
         local ok, err = select_hero_for_player(spec)
         res.issued = ok
         res.error = err
+        return res
+    elseif op == "wait" then
+        res.issued = true
         return res
     end
 
@@ -131,6 +157,9 @@ function actions.execute_single(hero, act)
             return res
         end
         res.issued = (IssuePointOrder and IssuePointOrder(h, "move", act.x, act.y)) or false
+        if res.issued and _G.__agent_record_move_order then
+            _G.__agent_record_move_order(act.x, act.y)
+        end
 
     elseif op == "attack_move" then
         if not act.x or not act.y then
@@ -138,10 +167,12 @@ function actions.execute_single(hero, act)
             return res
         end
         res.issued = (IssuePointOrder and IssuePointOrder(h, "attack", act.x, act.y)) or false
+        if res.issued and _G.__agent_record_move_order then
+            _G.__agent_record_move_order(act.x, act.y)
+        end
 
     elseif op == "attack" then
-        local target_ref = act.target and act.target.ref
-        local target_obj, err = entity_ref.resolve(target_ref)
+        local target_obj, err = resolve_target_from_act(act)
         if not target_obj then
             res.error = err or "INVALID_TARGET"
             return res
@@ -156,7 +187,8 @@ function actions.execute_single(hero, act)
         res.issued = (IssueImmediateOrder and IssueImmediateOrder(h, "holdposition")) or false
 
     elseif op == "cast" then
-        local skill = find_hero_skill(hero, act.skill)
+        local skill_spec = act.skill or act.slot or act.id
+        local skill = find_hero_skill(hero, skill_spec)
         if not skill then
             res.error = "SKILL_NOT_FOUND"
             return res
@@ -169,8 +201,7 @@ function actions.execute_single(hero, act)
 
         local t_type = skill.targetType or 0
         if t_type == 1 then -- 单位目标
-            local target_ref = act.target and act.target.ref
-            local target_obj, err = entity_ref.resolve(target_ref)
+            local target_obj, err = resolve_target_from_act(act)
             if not target_obj then
                 res.error = err or "INVALID_TARGET"
                 return res
@@ -179,8 +210,8 @@ function actions.execute_single(hero, act)
             res.issued = (IssueTargetOrder and IssueTargetOrder(h, order_str, th)) or false
 
         elseif t_type == 2 then -- 点目标
-            local x = act.target and act.target.x or act.x
-            local y = act.target and act.target.y or act.y
+            local x = (type(act.target) == 'table' and act.target.x) or act.x
+            local y = (type(act.target) == 'table' and act.target.y) or act.y
             if not x or not y then
                 res.error = "MISSING_PARAM"
                 return res
@@ -188,16 +219,14 @@ function actions.execute_single(hero, act)
             res.issued = (IssuePointOrder and IssuePointOrder(h, order_str, x, y)) or false
 
         elseif t_type == 3 then -- 单位或点目标
-            if act.target and act.target.ref then
-                local target_obj = entity_ref.resolve(act.target.ref)
-                if target_obj then
-                    local th = (type(target_obj) == 'table' and target_obj.handle) or target_obj
-                    res.issued = (IssueTargetOrder and IssueTargetOrder(h, order_str, th)) or false
-                    return res
-                end
+            local target_obj = resolve_target_from_act(act)
+            if target_obj then
+                local th = (type(target_obj) == 'table' and target_obj.handle) or target_obj
+                res.issued = (IssueTargetOrder and IssueTargetOrder(h, order_str, th)) or false
+                return res
             end
-            local x = act.target and act.target.x or act.x or 0
-            local y = act.target and act.target.y or act.y or 0
+            local x = (type(act.target) == 'table' and act.target.x) or act.x or 0
+            local y = (type(act.target) == 'table' and act.target.y) or act.y or 0
             res.issued = (IssuePointOrder and IssuePointOrder(h, order_str, x, y)) or false
 
         else -- 0: 无目标瞬发
@@ -212,8 +241,7 @@ function actions.execute_single(hero, act)
         end
 
     elseif op == "pick_up" then
-        local target_ref = act.target and act.target.ref
-        local item_obj, err = entity_ref.resolve(target_ref)
+        local item_obj, err = resolve_target_from_act(act)
         if not item_obj then
             res.error = err or "INVALID_TARGET"
             return res
@@ -224,7 +252,6 @@ function actions.execute_single(hero, act)
     elseif op == "chat" then
         local txt = act.text
         if txt and Game and Game.curState and Game.curState().eventManager then
-            -- 模拟聊天事件
             res.issued = true
         else
             res.error = "CHAT_FAILED"

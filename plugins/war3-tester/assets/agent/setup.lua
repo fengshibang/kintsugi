@@ -93,6 +93,26 @@ function setup.execute(cmd, args)
             return true
         end
 
+    elseif cmd == "clear_enemies" then
+        if Game and Game.curState and Game.curState().engine then
+            local entities = Game.curState().engine.entities
+            if entities then
+                for _, ent in pairs(entities) do
+                    if ent ~= hero and ent.handle and ent.get and ent:get('UnitModelComp') and not ent:get('HeroComp') then
+                        local ok_e, is_e = pcall(function() return hero and hero.isEnemy and hero:isEnemy(ent) end)
+                        if ok_e and is_e then
+                            if ent.kill then
+                                pcall(function() ent:kill(hero) end)
+                            elseif KillUnit then
+                                pcall(KillUnit, ent.handle)
+                            end
+                        end
+                    end
+                end
+                return true
+            end
+        end
+
     elseif cmd == "add_item" then
         local item_id = args.item_id
         if hero and hero.handle and UnitAddItemById and item_id then
@@ -103,7 +123,6 @@ function setup.execute(cmd, args)
 
     elseif cmd == "learn_skill" then
         local skill_id = args.skill_id
-        local lv = args.level or 1
         if hero and hero.addSkill and skill_id then
             hero:addSkill(skill_id, skill_id)
             return true

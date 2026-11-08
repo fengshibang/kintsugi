@@ -13,7 +13,8 @@ local oracle = require 'script.src.auto-test.agent.oracle.init'
 
 local MODE_FREE = 'free'
 local MODE_STEP = 'step'
-local FREEZE_MAX_SEC = 600.0
+-- 步进冻结空闲超时（秒）：连续 30 秒无任何管道指令则自动解冻切回 free，防止外部异常导致游戏长期卡死
+local IDLE_FREEZE_TIMEOUT_SEC = 30.0
 
 local state = {
     mode = MODE_FREE,
@@ -23,6 +24,18 @@ local state = {
     act_start_clock = 0,
     act_results = {}
 }
+
+local function notify_screen(msg)
+    print(msg)
+    if DisplayTextToPlayer and GetLocalPlayer then
+        pcall(function()
+            local p = GetLocalPlayer()
+            if p then
+                DisplayTextToPlayer(p, 0, 0, msg)
+            end
+        end)
+    end
+end
 
 --- 统一求值 inspect 表达式
 local function eval_inspect(expr)
@@ -131,22 +144,30 @@ local function dispatch(req)
         end
 
     elseif rtype == "act" then
+        -- 若上一次 act 尚未结束，先结算上一次请求，防止旧请求悬挂超时
+        if state.pending_act then
+            pcall(finish_act)
+        end
+
         local act_list = payload.actions or {}
         local results = actions.execute_batch(act_list)
+        local req_run_sec = tonumber(payload.run_seconds)
 
-        if state.mode == MODE_STEP then
-            local run_sec = math.max(0.1, math.min(10.0, payload.run_seconds or 1.0))
+        if state.mode == MODE_STEP or (req_run_sec and req_run_sec > 0) then
+            local run_sec = math.max(0.05, math.min(10.0, req_run_sec or 1.0))
             local run_ms = run_sec * 1000.0
 
             state.act_results = results
             state.act_start_clock = ac and ac.clock and ac.clock() or 0
             state.run_until = state.act_start_clock + run_ms
             state.pending_act = req
-            state.frozen = false -- 解除冻结推进游戏
+            state.frozen = false -- 推进游戏帧
         else
-            -- free 模式立即回传
+            -- free 模式且 run_seconds <= 0 时立即回传
             bridge.reply(id, true, {
                 results = results,
+                ran_frames = 0,
+                events = {},
                 observation = observe.snapshot({ detail = "brief", mode = state.mode })
             })
         end
@@ -204,18 +225,21 @@ function runtime.start()
             end
         end
 
-        -- 2. 冻结态（主线程 Hard Freeze 阻塞循环）
-        local hold_start = os.clock()
+        -- 2. 冻结态（主线程 Hard Freeze 阻塞循环，带 30s 空闲自动解冻保护）
+        local idle_start = os.clock()
         while state.frozen do
             local req = bridge.poll(100)
             if req then
+                idle_start = os.clock()
                 safe_dispatch(req)
             end
 
-            -- 看门狗超时保护 (600s)
-            if (os.clock() - hold_start) > FREEZE_MAX_SEC then
-                events.push('agent_watchdog', { reason = "Freeze timeout reached 600s" })
+            -- 看门狗空闲超时保护 (30s 无指令自动切回 free 并解冻)
+            if (os.clock() - idle_start) > IDLE_FREEZE_TIMEOUT_SEC then
+                events.push('agent_watchdog', { reason = "Idle freeze timeout reached 30s, auto resumed to free mode" })
+                state.mode = MODE_FREE
                 state.frozen = false
+                notify_screen("|cffffcc00[Agent]|r 步进模式空闲满 30 秒，已自动解冻恢复自由运行")
                 break
             end
         end

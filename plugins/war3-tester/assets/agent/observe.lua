@@ -5,6 +5,11 @@
 local observe = {}
 local entity_ref = require 'script.src.auto-test.agent.entity_ref'
 
+local HERO_CANDIDATE_TYPES = {
+    Hgbx = true, Hslz = true, Hwdd = true,
+    Hthd = true, Hqzj = true, Hbts = true
+}
+
 --- 安全格式化数值：支持 NaN / inf 异常暴露，普通数值保留 1 位小数
 local function safe_num(val)
     if val == nil then return 0 end
@@ -20,6 +25,15 @@ local function get_distance(x1, y1, x2, y2)
     local dx = x1 - x2
     local dy = y1 - y2
     return math.sqrt(dx * dx + dy * dy)
+end
+
+--- 获取单位四字物编 ID
+local function get_unit_type_str(ent)
+    if ent and ent.handle and GetUnitTypeId and IdHelp and IdHelp.Id2Str then
+        local ok, s = pcall(function() return IdHelp.Id2Str(GetUnitTypeId(ent.handle)) end)
+        if ok and s then return s end
+    end
+    return tostring(ent and ent.id or "Unit")
 end
 
 --- 获取玩家主英雄（兼容哈希表形式的 getEntitiesWithComponent('HeroComp')）
@@ -173,6 +187,18 @@ function observe.snapshot(options)
     local radius = options.radius or 1200
     local mode = options.mode or "step"
 
+    local gold = 0
+    local lumber = 0
+    if Player and GetPlayerState and PLAYER_STATE_RESOURCE_GOLD then
+        pcall(function()
+            local p0 = Player(0)
+            gold = GetPlayerState(p0, PLAYER_STATE_RESOURCE_GOLD) or 0
+            if PLAYER_STATE_RESOURCE_LUMBER then
+                lumber = GetPlayerState(p0, PLAYER_STATE_RESOURCE_LUMBER) or 0
+            end
+        end)
+    end
+
     local cur_clock = ac and ac.clock and ac.clock() or 0
     local snap = {
         frame = cur_clock,
@@ -180,8 +206,8 @@ function observe.snapshot(options)
         mode = mode,
         hero = nil,
         player = {
-            gold = 0,
-            lumber = 0,
+            gold = gold,
+            lumber = lumber,
             realm = "初入江湖",
             wave = 1
         },
@@ -209,7 +235,8 @@ function observe.snapshot(options)
 
         snap.hero = {
             ref = entity_ref.get_ref(hero),
-            type_id = tostring(hero.id or "Hero"),
+            unit_id = hero.id,
+            type_id = get_unit_type_str(hero),
             name = hero.name or "Hero",
             level = hero.getLevel and hero:getLevel() or 1,
             x = safe_num(h_x),
@@ -258,10 +285,12 @@ function observe.snapshot(options)
                         local uhp = ent.getHp and ent:getHp() or 0
                         local umax = ent.getMaxHp and ent:getMaxHp() or 1
                         local hp_pct = safe_num(uhp / math.max(1, umax))
+                        local utype = get_unit_type_str(ent)
 
-                        table.insert(all_nearby, {
+                        local item = {
                             ref = entity_ref.get_ref(ent),
-                            type_id = tostring(ent.id or "Unit"),
+                            unit_id = ent.id,
+                            type_id = utype,
                             name = ent.name or "Unit",
                             rel = rel,
                             x = safe_num(ux),
@@ -269,17 +298,26 @@ function observe.snapshot(options)
                             dist = safe_num(d),
                             hp_pct = hp_pct,
                             is_boss = ent.isBossUnit and ent:isBossUnit(ent) or false
-                        })
+                        }
+                        if not hero and HERO_CANDIDATE_TYPES[utype] then
+                            item.selectable_hero = true
+                        end
+                        table.insert(all_nearby, item)
                     end
                 end
             end
         end
     end
 
-    -- 按照距离排序
-    table.sort(all_nearby, function(a, b) return a.dist < b.dist end)
+    -- 按照距离排序（选人阶段优先将 selectable_hero 排在前面）
+    table.sort(all_nearby, function(a, b)
+        if a.selectable_hero ~= b.selectable_hero then
+            return a.selectable_hero == true
+        end
+        return a.dist < b.dist
+    end)
 
-    local max_count = (detail == "brief") and 5 or 20
+    local max_count = (detail == "brief") and 8 or 20
     if #all_nearby > max_count then
         snap.nearby_truncated = #all_nearby - max_count
         for i = 1, max_count do
