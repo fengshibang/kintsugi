@@ -57,6 +57,7 @@ class TestBatchRunner:
         self.logger = setup_logger('test-batch')
         # 本次 batch 的 failed 列表（内存，不持久化），供 filter="failed" 复用
         self._failed_cache: List[Dict[str, str]] = []
+        self.launched_war3: bool = False
 
     # ------------------------------------------------------------------
     # 测试发现
@@ -324,6 +325,10 @@ class TestBatchRunner:
 
         v0.15.0: 从 _run_single_test 提升为 public，供 mcp_server.test_commit 直接调用。
         """
+        # v0.21.0: 确保本实例 HTTP 接收端已启动（若被其他空闲 MCP 实例占用则按需接管）
+        if hasattr(self.http_receiver, 'ensure_started'):
+            self.http_receiver.ensure_started()
+
         # v0.14.0: 清缓冲（委托 store）
         # 决策5：每测试开头只用 clear_test（清该 test 的 progress/logs）
         # clear_all 只在 batch 边界调（会清 game_errors，违背全局保留）
@@ -371,6 +376,7 @@ class TestBatchRunner:
                 return self._build_result(test_name, success=False, failure_type='env_error',
                                           error=f'启动游戏失败：{run_result.get("error", "unknown")}',
                                           elapsed=0)
+            self.launched_war3 = True
 
             # 3. 轮询结果 + 进程存活监控
             self.http_receiver.delete_old_result(test_name)

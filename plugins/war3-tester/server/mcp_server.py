@@ -1170,17 +1170,17 @@ async def run_server():
 
     server.logger.info("执行器连接检测通过")
 
-    http_result = server.http_receiver.start()
+    http_result = server.http_receiver.start(force_takeover=False)
     if http_result:
         server.logger.info(f"HTTP 服务器已启动（端口 {server.config.http_port}）")
     else:
-        server.logger.warning("HTTP 服务器启动失败")
+        server.logger.info(f"HTTP 端口 {server.config.http_port} 由其他实例监听中，本实例处于命名管道/单测共存模式（执行 test_commit 时自动按需接管）")
 
     server.logger.info("服务器已初始化")
     print("[OK] War3 Tester MCP Server 已启动", file=sys.stderr)
 
     def _cleanup_on_exit():
-        """退出清理：关命名管道 + 停 HTTP 接收端 + 杀 war3 进程（仅 Windows）"""
+        """退出清理：关命名管道 + 停 HTTP 接收端 + 若本实例曾自动拉起测试游戏进程则清理"""
         try:
             server.pipe_client.close()
         except Exception:
@@ -1190,7 +1190,7 @@ async def run_server():
         except Exception as e:
             server.logger.warning(f"退出清理 http_receiver.stop 异常：{e}")
 
-        if server.config.is_windows or server.config.is_wsl:
+        if getattr(server.test_batch_runner, "launched_war3", False) and (server.config.is_windows or server.config.is_wsl):
             for proc_name in server.config.war3_process_names:
                 try:
                     subprocess.run(

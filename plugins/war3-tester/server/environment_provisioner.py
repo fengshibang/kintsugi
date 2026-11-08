@@ -395,7 +395,7 @@ class EnvironmentProvisioner:
             except Exception as e:
                 results.append({"component": "entry_hook", "status": "failed", "message": f"处理失败：{e}"})
 
-        # 7. plugin_sync 组件（同步插件源码到 Claude 插件缓存与全局 Skill 目录）
+        # 7. plugin_sync 组件（同步插件源码到 Claude Code 插件缓存、Antigravity 本地插件与全局 Skill 目录）
         if "plugin_sync" in components:
             try:
                 home = Path.home()
@@ -405,13 +405,30 @@ class EnvironmentProvisioner:
                     for ver_dir in cache_root.iterdir():
                         if ver_dir.is_dir():
                             if not is_check:
-                                for sub in ["bin", "assets", "server", "skills", "commands", ".claude-plugin"]:
+                                for sub in ["bin", "assets", "server", "scripts", "skills", "commands", ".claude-plugin"]:
                                     src_sub = plugin_root / sub
                                     dst_sub = ver_dir / sub
                                     if src_sub.exists():
                                         shutil.copytree(src_sub, dst_sub, dirs_exist_ok=True)
                             synced_targets.append(str(ver_dir))
-                msg = f"{'检查发现' if is_check else '已同步'} {len(synced_targets)} 个插件缓存目录"
+
+                # 同步 Antigravity 本地插件与全局 Skill 目录
+                skill_src = plugin_root / "skills" / "war3-auto-test" / "SKILL.md"
+                if skill_src.exists():
+                    agy_skill_targets = [
+                        home / ".gemini" / "config" / "plugins" / "war3-tester" / "skills" / "war3-auto-test" / "SKILL.md",
+                        home / ".gemini" / "config" / "plugins" / "dsh-skills" / "skills" / "war3-auto-test" / "SKILL.md",
+                        home / ".gemini" / "config" / "skills" / "war3-auto-test" / "SKILL.md",
+                        home / ".claude" / "skills" / "war3-auto-test" / "SKILL.md",
+                    ]
+                    for dst_skill in agy_skill_targets:
+                        if dst_skill.parent.parent.exists():
+                            if not is_check:
+                                dst_skill.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(skill_src, dst_skill)
+                            synced_targets.append(str(dst_skill.parent))
+
+                msg = f"{'检查发现' if is_check else '已同步'} {len(synced_targets)} 个本地插件/Skill 目录"
                 results.append({"component": "plugin_sync", "status": "success", "message": msg, "files": synced_targets})
             except Exception as e:
                 results.append({"component": "plugin_sync", "status": "failed", "message": f"同步失败：{e}"})

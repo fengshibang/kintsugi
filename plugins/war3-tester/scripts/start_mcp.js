@@ -110,12 +110,17 @@ const args = isPyLauncher
   ? ['-3', serverScript]
   : [serverScript];
 
-// spawn mcp_server 前,清理 8766 旧占用(多实例自动接管,不用手动杀进程)
-cleanupPortOccupiers(8766);
+// 注意：不再在 MCP 启动时无条件强杀 8766 端口进程，避免多 IDE（如 Antigravity + Claude Code）
+// 同时启动 MCP 时互相误杀。命名管道 (\\.\pipe\war3_agent) 原生支持多客户端并发；
+// 8766 端口仅在执行 test_commit / run_test_batch 时由 http_receiver 按需接管。
 
 const proc = spawn(pythonBin, args, {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, PYTHONUTF8: '1', WAR3_PROJECT_ROOT: process.cwd() },
+  env: {
+    ...process.env,
+    PYTHONUTF8: '1',
+    WAR3_PROJECT_ROOT: process.env.WAR3_PROJECT_ROOT || process.cwd(),
+  },
 });
 
 // 双向转发泵：node <-> python，保证 MCP 协议完整 + node 死亡时 python 收 EOF

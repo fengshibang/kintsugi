@@ -64,8 +64,14 @@ class HTTPReceiver:
         self.http_thread = None
         self.store = store
 
-    def start(self) -> bool:
-        """启动 HTTP 服务器（后台线程）"""
+    def start(self, force_takeover: bool = False) -> bool:
+        """启动 HTTP 服务器（后台线程）。
+
+        Args:
+            force_takeover: 若端口已被其他进程监听，是否强行清理接管。
+                            MCP 空闲启动时设为 False，避免多 IDE 共存时互相强杀；
+                            实际执行 test_commit / run_test_batch 时设为 True 按需接管。
+        """
         try:
             from flask import Flask
             from werkzeug.serving import make_server
@@ -76,14 +82,21 @@ class HTTPReceiver:
 
             app = self._create_app()
 
-            cleaned = self._cleanup_port_occupiers()
-            if cleaned:
-                self.logger.info(f"启动前清理占用端口 {self.port} 的残留进程：{cleaned}")
-                time.sleep(1)
+            if force_takeover:
+                cleaned = self._cleanup_port_occupiers()
+                if cleaned:
+                    self.logger.info(f"按需接管：清理占用端口 {self.port} 的旧进程：{cleaned}")
+                    time.sleep(1)
 
             try:
                 server = make_server(self.host, self.port, app, threaded=True)
             except OSError as e:
+                if not force_takeover:
+                    self.logger.info(
+                        f"端口 {self.port} 已由其他 MCP 实例监听（多客户端共存模式，命名管道与单测不受影响；"
+                        f"执行 test_commit 时将自动按需接管）"
+                    )
+                    return False
                 self.logger.warning(f"HTTP 服务器启动失败（端口 {self.port} 可能被占用）：{e}，尝试清理残留进程...")
                 cleaned_pids = self._cleanup_port_occupiers()
                 if cleaned_pids:
@@ -120,6 +133,12 @@ class HTTPReceiver:
         except Exception as e:
             self.logger.error(f"HTTP 服务器启动失败：{e}")
             return False
+
+    def ensure_started(self) -> bool:
+        """确保本实例的 HTTP 接收端处于监听状态（若被其他实例占用则按需接管）"""
+        if self.http_server is not None:
+            return True
+        return self.start(force_takeover=True)
 
     def stop(self) -> None:
         """停止 HTTP 服务器"""
