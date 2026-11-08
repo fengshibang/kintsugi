@@ -1,35 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-TestStateStore - 跨线程状态 owner（候选 3 第一阶段）
-
-设计文档：docs/plans/2026-07-22-war3-tester-teststatestore-design.md
+r"""
+TestStateStore - 跨线程状态 owner
 
 职责：
-- 持有 5 个跨线程共享缓冲：_game_errors / _progress / _logs /
-  _inspect_pending / _inspect_results
+- 持有 3 个跨线程共享缓冲：_game_errors / _progress / _logs
 - 单把 RLock 覆盖所有方法，消除跨线程竞态
 - 零反向依赖：不 import http_receiver / mcp_server / batch_runner
-
-本阶段只新建文件，不改任何现有文件。迁移（HTTPReceiver 瘦身、
-mcp_server 注入、batch_runner 切换）在下一阶段进行。
+- 注：运行时查询（inspect_game / exec_game）已完全迁移至 Windows 命名管道 (\\.\pipe\war3_agent)，
+  不再使用 HTTP 轮询队列。
 """
 
-import os
-import time
 import threading
 
 
 class TestStateStore:
-    """
+    r"""
     跨线程状态 owner。
 
     缓冲：
       _game_errors     : list[dict]，全局，环形上限 1000
       _progress        : dict[test_name -> list[entry]]
       _logs            : dict[test_name -> list[entry]]
-      _inspect_pending : list[{id, expr}]，FIFO 队列
-      _inspect_results : dict[id -> data]
 
     锁：单把 RLock，所有 public 方法 with self._lock 包裹。
     """
@@ -41,8 +33,6 @@ class TestStateStore:
         self._game_errors = []           # 全局，环形上限 1000
         self._progress = {}              # test_name -> list
         self._logs = {}                  # test_name -> list
-        self._inspect_pending = []       # FIFO: append 入，pop(0) 出
-        self._inspect_results = {}       # id -> data
 
     # ── 写入（加锁） ─────────────────────────────────────────────
 
@@ -59,61 +49,11 @@ class TestStateStore:
     def record_error(self, test_name, entry):
         """记录一条全局游戏错误，超 1000 淘汰最旧"""
         with self._lock:
-            # 确保 entry 带 test_name（调用方通常已设，这里做兜底）
             if isinstance(entry, dict) and 'test_name' not in entry:
                 entry['test_name'] = test_name
             self._game_errors.append(entry)
             if len(self._game_errors) > self._GAME_ERRORS_CAP:
-                # 淘汰最旧的一条（保留最新 1000）
                 del self._game_errors[0]
-
-    def record_inspect_result(self, id, data):
-        """记录一条 inspect 查询结果（游戏端回传）"""
-        with self._lock:
-            self._inspect_results[id] = data
-
-    # ── inspect 协议 ─────────────────────────────────────────────
-
-    def submit_inspect(self, expr, mode='inspect'):
-        """
-        提交一个运行时查询，返回唯一 id。
-
-        id 格式：q_{int(time.time()*1000)}_{os.getpid()}
-        入队到 _inspect_pending，游戏端 take_pending_inspect 取走执行。
-
-        mode:
-          - 'inspect'（默认）：只读表达式，游戏端 load('return ' .. expr)
-          - 'exec'：语句块（可带副作用、可改游戏态），游戏端 load(expr)
-        """
-        with self._lock:
-            id = f"q_{int(time.time() * 1000)}_{os.getpid()}"
-            self._inspect_pending.append({"id": id, "expr": expr, "mode": mode})
-            return id
-
-    def take_inspect(self, id, timeout):
-        """
-        轮询等待 inspect 结果，超时返回 None。
-
-        0.2s 间隔轮询 _inspect_results[id]，取到即 pop 返回。
-        """
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            with self._lock:
-                if id in self._inspect_results:
-                    return self._inspect_results.pop(id)
-            time.sleep(0.2)
-        return None
-
-    def take_pending_inspect(self):
-        """
-        游戏端拉取一条待执行查询（FIFO pop(0)）。
-
-        无待执行时返回 None。
-        """
-        with self._lock:
-            if not self._inspect_pending:
-                return None
-            return self._inspect_pending.pop(0)
 
     # ── 读取 / 合并 ──────────────────────────────────────────────
 
@@ -154,15 +94,12 @@ class TestStateStore:
                 if isinstance(e, dict) and e.get("test_name", "unknown") == test_name
             ]
 
-        # 合并 progress：原 data 字段保留在前，缓冲追加在后
         existing_progress = data.get("progress") or []
         data["progress"] = (existing_progress + buf_progress) if existing_progress else list(buf_progress)
 
-        # 合并 logs：同上
         existing_logs = data.get("logs") or []
         data["logs"] = (existing_logs + buf_logs) if existing_logs else list(buf_logs)
 
-        # game_errors：直接设置（与 http_receiver 基线行为一致）
         if related_errors and not data.get("game_errors"):
             data["game_errors"] = related_errors
 
@@ -180,11 +117,9 @@ class TestStateStore:
           - "warning" : 只 _logs 中 level in ("warn", "warning")
         """
         with self._lock:
-            # 合并所有日志条目（带统一结构）
             all_entries = []
             for entries in self._logs.values():
                 all_entries.extend(entries)
-            # game_errors 转为统一结构（带 level="error"）
             for e in self._game_errors:
                 if isinstance(e, dict):
                     all_entries.append({
@@ -196,7 +131,6 @@ class TestStateStore:
                         "_source": "game_error",
                     })
 
-            # 按 level 过滤
             if level == "error":
                 filtered = [
                     e for e in all_entries
@@ -210,7 +144,6 @@ class TestStateStore:
             else:  # "all"
                 filtered = list(all_entries)
 
-            # 取最近 limit 条
             return filtered[-limit:] if limit > 0 else []
 
     # ── 清理 ─────────────────────────────────────────────────────
@@ -226,10 +159,8 @@ class TestStateStore:
             self._logs.pop(test_name, None)
 
     def clear_all(self):
-        """清除全部 5 个缓冲"""
+        """清除全部 3 个缓冲"""
         with self._lock:
             self._game_errors.clear()
             self._progress.clear()
             self._logs.clear()
-            self._inspect_pending.clear()
-            self._inspect_results.clear()

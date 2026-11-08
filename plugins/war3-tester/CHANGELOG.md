@@ -1,5 +1,19 @@
 # Changelog — war3-tester
 
+## 0.21.0 - 2026-11-08
+
+### 新增（Named Pipe 架构升级 + 8 个 LLM Agent 实机探索工具 + 一键安装/体检/修复）
+
+1. **纯 Windows 命名管道 (`\\.\pipe\war3_agent` / `\\.\pipe\war3_agent_<pid>`) 彻底替代 HTTP 轮询 inspect 通道**：
+   - 新增 `server/pipe_client.py` 与 `bin/agent_bridge.dll`（`PIPE_UNLIMITED_INSTANCES` + 跨权限 `NULL DACL` + 多客户端独立工作线程），支持多个 IDE / MCP 实例并发连接，彻底解决多开 TCP 端口冲突问题。
+   - `inspect_game` 与 `exec_game` 完全迁移至命名管道同步调用（延迟 ~3–16ms），移除 `http_receiver.py` 的 `/inspect/pending`、`/inspect/result` 路由及 `test_state_store.py` 的轮询队列。
+   - `test_entry_preparer.py` 改为自动注入 `agent.init` 命名管道启动引导，移除旧版 `inspect_handler.lua` 注入。
+2. **新增 8 个 LLM Agent 实机探索与五大 Oracle 工具（MCP 工具总数 26 → 34）**：
+   - `game_status`、`game_set_mode`（`step` 步进硬冻结 / `free` 自动解冻）、`game_observe`、`game_act`（支持 `select_hero` / `move` / `attack` / `attack_move` / `cast` / `use_item` 等语义动作）、`game_events`、`game_inspect`、`game_setup`、`game_report_bug`。
+   - 内置全部 15 个游戏内 Lua Agent 与五大 Oracle 脚本（`assets/agent/`：`numeric`、`runtime_error`、`stuck`、`consistency`、`leak`）。
+3. **升级环境一键安装 / 体检 / 修复（`setup_environment` & `scripts/install_or_repair.py`）**：
+   - 支持 `mode="repair" | "install" | "check"` 三种模式，覆盖七大组件：`socket`、`http`、`nopause`、`agent_bridge`、`agent_lua`（自动适配项目 `test_module_prefix`）、`entry_hook`（自动注入 `-test on` 钩子并清理 `_test_off.lua`）、`plugin_sync`（同步插件缓存）。
+
 ## 0.20.1 - 2026-09-26
 
 ### 修复（take_screenshot R/B 互换：截图像素被按 RGB 解释，GDI BGR 字节序未还原）

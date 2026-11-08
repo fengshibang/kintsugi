@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
+r"""
 HTTP 接收端模块
 
 从基线 _create_http_app 提取，提供 HTTP 接收端：
@@ -9,6 +9,11 @@ HTTP 接收端模块
 - /screenshot: 接收截图
 - /error: 接收游戏内错误上报
 - /poll/<test_name>: 轮询测试结果
+- /progress: 接收测试逐步骤进度
+- /log: 接收结构化分级日志
+
+注：运行时查询（inspect_game / exec_game）已完全迁移至 Windows 命名管道 (\\.\pipe\war3_agent)，
+不再通过 HTTP 轮询 /inspect/pending 与 /inspect/result。
 
 端口：8766（可配置）
 """
@@ -36,24 +41,16 @@ class HTTPReceiver:
     - POST /screenshot: 接收截图
     - POST /error: 接收游戏内错误上报
     - GET  /poll/<test_name>: 轮询测试结果
+    - POST /progress: 接收测试步骤进度
+    - POST /log: 接收结构化日志
     """
 
     def __init__(self, host: str = '0.0.0.0', port: int = 8766,
                  logs_dir: Path = None, store=None):
-        """
-        初始化 HTTP 接收端
-
-        Args:
-            host: 监听地址
-            port: 监听端口
-            logs_dir: 日志目录（默认 server/logs/）
-            store: TestStateStore 实例（跨线程状态 owner，v0.14.0 注入）
-        """
         self.host = host
         self.port = port
         self.logger = setup_logger('http-receiver')
 
-        # 目录结构（使用 Path(__file__) 自解析）
         base_dir = Path(__file__).parent / 'logs'
         self.logs_dir = logs_dir or base_dir
         self.test_results_dir = self.logs_dir / 'test_results'
@@ -65,16 +62,10 @@ class HTTPReceiver:
 
         self.http_server = None
         self.http_thread = None
-        # v0.14.0: 状态存储委托给 TestStateStore（5 缓冲字段已移除）
         self.store = store
 
     def start(self) -> bool:
-        """启动 HTTP 服务器（后台线程）
-
-        使用 werkzeug.serving.make_server 替代 app.run()，
-        避免 werkzeug 启动 banner 污染 stdout（MCP stdio 协议要求 stdout 纯净）。
-        端口占用时 make_server 会抛 OSError，直接报告失败，不误报成功。
-        """
+        """启动 HTTP 服务器（后台线程）"""
         try:
             from flask import Flask
             from werkzeug.serving import make_server
@@ -85,24 +76,19 @@ class HTTPReceiver:
 
             app = self._create_app()
 
-            # make_server 前主动清理 8766 残留进程
-            # Windows SO_REUSEADDR 允许多实例监听同一端口，make_server 不报 OSError，
-            # 必须主动清理残留 http_receiver，确保当前实例独占端口接收 /result
             cleaned = self._cleanup_port_occupiers()
             if cleaned:
                 self.logger.info(f"启动前清理占用端口 {self.port} 的残留进程：{cleaned}")
-                time.sleep(1)  # 等待端口释放
+                time.sleep(1)
 
-            # make_server 不打印 banner，端口占用时直接抛 OSError
             try:
                 server = make_server(self.host, self.port, app, threaded=True)
             except OSError as e:
                 self.logger.warning(f"HTTP 服务器启动失败（端口 {self.port} 可能被占用）：{e}，尝试清理残留进程...")
-                # 清理占用端口的残留 http_receiver 进程
                 cleaned_pids = self._cleanup_port_occupiers()
                 if cleaned_pids:
                     self.logger.info(f"已清理占用端口 {self.port} 的进程：{cleaned_pids}，重试启动...")
-                    time.sleep(1)  # 等待端口释放
+                    time.sleep(1)
                     try:
                         server = make_server(self.host, self.port, app, threaded=True)
                     except OSError as retry_e:
@@ -117,7 +103,6 @@ class HTTPReceiver:
             def run_http():
                 server.serve_forever()
 
-            # 守护线程，主进程退出时自动停止
             self.http_thread = threading.Thread(target=run_http, daemon=True)
             self.http_thread.start()
 
@@ -163,9 +148,7 @@ class HTTPReceiver:
                 self.logger.warning(f"netstat 执行失败：returncode={result.returncode}")
                 return cleaned
 
-            # or '' 防御 stdout=None（与 env_bridge._check_war3_remaining 同源 bug）
             for line in (result.stdout or '').splitlines():
-                # 匹配 :8766 且 LISTENING 的行
                 if f':{self.port}' in line and 'LISTENING' in line:
                     parts = line.split()
                     if not parts:
@@ -230,10 +213,6 @@ class HTTPReceiver:
         def receive_test_result():
             """接收测试结果"""
             try:
-                # 容错解析（通用 JSON 接收）：
-                # force+silent 优先，失败则 get_data + json.loads 兜底。
-                # 修复：部分 War3 Lua HTTP 客户端的 JSON POST 在 Flask strict request.json 下被判 400
-                # （Content-Type/mimetype 识别差异），改用容错链路保证兼容。
                 data = request.get_json(force=True, silent=True)
                 if not data:
                     raw_data = request.get_data(as_text=True)
@@ -249,20 +228,16 @@ class HTTPReceiver:
                 timestamp = data.get('timestamp', datetime.now().strftime('%Y%m%d_%H%M%S'))
                 result_file = self.test_results_dir / f'{test_name}.json'
 
-                # 保存截图
                 screenshots = data.get('screenshots', [])
                 saved_screenshots = save_screenshots(test_name, screenshots)
                 if saved_screenshots:
                     data['screenshots'] = saved_screenshots
 
-                # v0.14.0: 委托 store 合并缓冲的 progress / logs / game_errors
                 data = self.store.merge_into(test_name, data)
 
-                # 写入结果文件
                 with open(result_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
 
-                # 写入日志
                 log_file = self.logs_dir / f'test_{test_name}.log'
                 with open(log_file, 'a', encoding='utf-8') as f:
                     f.write(f"[{timestamp}] 测试结果：{'通过' if data.get('success') else '失败'}\n")
@@ -319,8 +294,6 @@ class HTTPReceiver:
                         data = json.loads(raw_data)
                     except (json.JSONDecodeError, ValueError):
                         return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
-                # 二次兜底:json.loads('null') 等合法 JSON 解析为 None，
-                # 不兜底则后续 data.get() 抛 AttributeError 被外层 except 吞成 500（应返回 400）
                 if not data:
                     return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
 
@@ -361,11 +334,7 @@ class HTTPReceiver:
 
         @app.route('/progress', methods=['POST'])
         def receive_progress():
-            """接收测试逐步骤进度（v2 新增）
-
-            游戏侧 TestScenario:step() 与 assert 失败时 POST。
-            MCP 按 test_name 缓冲为时间线，/result 到达时并入 result.json。
-            """
+            """接收测试逐步骤进度（v2 新增）"""
             try:
                 data = request.get_json(force=True, silent=True)
                 if not data:
@@ -381,7 +350,7 @@ class HTTPReceiver:
                 entry = {
                     'test_name': test_name,
                     'step': data.get('step', ''),
-                    'phase': data.get('phase', 'done'),  # start | done | failed
+                    'phase': data.get('phase', 'done'),
                     'detail': data.get('detail', {}),
                     'timestamp': data.get('timestamp') or datetime.now().isoformat(),
                 }
@@ -395,63 +364,9 @@ class HTTPReceiver:
                 self.logger.error(f"处理进度上报失败：{e}", exc_info=True)
                 return jsonify({'success': False, 'error': str(e)}), 500
 
-        @app.route('/inspect/pending', methods=['GET'])
-        def get_inspect_pending():
-            """游戏端轮询拉取待执行的查询（v0.9.0 新增）
-
-            返回 FIFO 队列中最旧的一条 {id, expr}，取出即移除。
-            队列为空时返回 {}（200），绝不阻塞——游戏每 200ms 轮询一次。
-            """
-            try:
-                entry = self.store.take_pending_inspect()
-                if entry is None:
-                    return jsonify({})
-                return jsonify(entry)
-            except Exception as e:
-                self.logger.error(f"处理 /inspect/pending 失败：{e}", exc_info=True)
-                # graceful：出错时返回空，不阻塞游戏轮询
-                return jsonify({})
-
-        @app.route('/inspect/result', methods=['POST'])
-        def receive_inspect_result():
-            """接收游戏端回传的查询结果（v0.9.0 新增）
-
-            body: {"id":"<id>","value":"<结果文本>"} 或 {"id":"<id>","error":"<错误文本>"}
-            存入 _inspect_results 缓存，MCP 侧 inspect_game 轮询取出。
-            """
-            try:
-                data = request.get_json(force=True, silent=True)
-                if not data:
-                    raw_data = request.get_data(as_text=True)
-                    try:
-                        data = json.loads(raw_data)
-                    except (json.JSONDecodeError, ValueError):
-                        return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
-                # 二次兜底:json.loads('null') 等合法 JSON 解析为 None，
-                # 不兜底则后续 data.get() 抛 AttributeError 被外层 except 吞成 500（应返回 400）
-                if not data:
-                    return jsonify({'success': False, 'error': '请求体为空或不是有效的 JSON'}), 400
-
-                req_id = data.get('id')
-                if not req_id:
-                    return jsonify({'success': False, 'error': '缺少 id 字段'}), 400
-
-                # 存入 store 结果缓存（整个 body，含 id+value 或 id+error）
-                self.store.record_inspect_result(req_id, data)
-                self.logger.info(f"[inspect] 收到结果：{req_id}")
-                return jsonify({'success': True, 'message': '结果已接收'})
-            except Exception as e:
-                self.logger.error(f"处理 /inspect/result 失败：{e}", exc_info=True)
-                return jsonify({'success': False, 'error': str(e)}), 500
-
         @app.route('/log', methods=['POST'])
         def receive_log():
-            """接收结构化分级日志（v2 新增）
-
-            游戏侧 init.lua 拦截 log.info / log.error 后 POST。
-            MCP 按 test_name 缓冲（设上限防爆），/result 到达时并入 result.json。
-            高频上报由游戏侧节流（同类 message 0.2s 合并，见 init.lua）。
-            """
+            """接收结构化分级日志（v2 新增）"""
             try:
                 data = request.get_json(force=True, silent=True)
                 if not data:
@@ -466,7 +381,7 @@ class HTTPReceiver:
                 test_name = data.get('test_name', 'unknown')
                 entry = {
                     'test_name': test_name,
-                    'level': data.get('level', 'info'),  # info | warn | error
+                    'level': data.get('level', 'info'),
                     'category': data.get('category', ''),
                     'message': data.get('message', ''),
                     'context': data.get('context', {}),

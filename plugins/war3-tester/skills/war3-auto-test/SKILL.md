@@ -1,388 +1,140 @@
 ---
 name: war3-auto-test
-version: 2.0.0
-description: "通用 War3 地图自动测试：发现 → 批量跑 → 分析 → 修复 → 重验 无人值守循环。最小契约（RunAutoTest + POST 8766），不限 Lua 框架。"
+version: 3.0.0
+description: "魔兽争霸 3 地图自动化测试与 LLM Agent 实机探索（v3.0 四层测试体系 + Named Pipe 桥接）。支持桌面秒级单测（unit）、实机集成/全流程测试（integration/e2e）、实时命名管道状态查询（inspect_game/exec_game）与 LLM 步进探索/五大 Oracle 自动巡检（game_* 工具）。触发词：自动测试、测试全部、跑测试、/war3-test、测试某模块、实机探索。"
 ---
 
-# War3 Auto Test - 无人值守测试循环（v2.0）
+# War3 地图自动化测试与 LLM Agent 探索（v3.0）
 
-> **触发方式**：用户输入 `/war3-auto-test` 或 agent 通过 Skill 工具调度
-> **核心升级（v2.0）**：从「单次手动驱动」升级为「批量自动循环 + 丰富反馈」。
-> 一条 `run_test_batch` 指令跑完全部测试，失败自动给出 `failure_type` + `progress` 时间线 + `logs`，Claude 据此直接定位修复，无需逐步人工干预。
+**核心目标**：一条命令跑完全部测试，AI 自主完成「发现 → 批量执行 → 失败分析 → 修复 → 重验」与「实机步进探索 + 五大 Oracle Bug 巡检」，无需人工逐步盯梢。
 
 ---
 
-## 无人值守循环（核心工作流）
+## 四层测试体系总览
+
+| 层级 | 名称 | 运行环境 | 耗时 | 核心工具 | 适用场景 |
+|---|---|---|---|---|---|
+| **Tier 1** | **桌面纯逻辑单测 (`unit`)** | 桌面 Lua 5.3 + `jass_mock` | **< 1 秒** | `run_unit_test` / `watch_unit_tests` | 伤害公式、词条计算、残卷配置、数据表校验 |
+| **Tier 2** | **实机剧本/集成测试 (`integration` / `e2e`)** | 启动 `War3.exe` 跑 `TestScenario` / `TestRunner` | 15 ~ 60 秒 | `test_commit` / `run_test_batch` | 技能释放完整生命周期、Buff 驱散、多波次刷怪、投射物碰撞 |
+| **Tier 3** | **Named Pipe 实时交互查询 (`inspect` / `exec`)** | 已运行的 `War3.exe` (`\\.\pipe\war3_agent`) | **~16 毫秒** | `inspect_game` / `exec_game` / `game_setup` | 边玩边查 ECS 实体/组件数据、实时刷怪/跳关/发装备/改属性 |
+| **Tier 4** | **LLM Play / Bug 探索 Agent (`agent`)** | 已运行的 `War3.exe` + 步进冻结 (`step`) + 五大 Oracle | 按步实时 | `game_status` / `game_set_mode` / `game_observe` / `game_act` / `game_events` / `game_report_bug` | AI 自主选英雄、放技能、跑图，配合五大 Oracle 自动抓 NaN/卡死/泄露 |
+
+---
+
+## 核心工作流
+
+### A. 无人值守回归循环（Tier 1 & Tier 2）
 
 ```
-Phase 1: 准备
-  → cleanup_all()                 # 清理残留进程/服务
-  → compile_only()                # 验证编译通过（编译失败直接修，不必进游戏）
-
-Phase 2: 发现
-  → discover_tests()              # 扫描 auto-test/，返回测试列表 + 分类 + 估算耗时
-
-Phase 3: 执行（一条指令，阻塞等待）
-  → run_test_batch(filter="all", auto_screenshot_on_failure=true)
-  返回结构化汇总：{summary, results[], failed[]}
-
-Phase 4: 分析
-  → 读返回的 summary.pass_rate
-  → pass_rate == 1.0  → 报告成功，结束
-  → 有 failure        → Phase 5
-
-Phase 5: 修复（循环，最多 3 轮）
-  → 按 failure_type 查【诊断决策树】→ codegraph_explore 理解相关代码 → 修复
-  → run_test_batch(filter="failed")   # 只重跑上次失败的（内存缓存，不持久化）
-  → 全通过 → 报告完成
-  → 仍失败 → 报告需人工介入（附 failure_type + progress + logs + 截图）
+cleanup_all → compile_only → discover_tests → run_test_batch(test_filter="all")
+                                                      ↓
+                                          全通过？──是──→ 报告完成
+                                              │否
+                                              ↓
+                              按 failure_type 查诊断决策树（至多 3 轮）
+                                              ↓
+                              codegraph_explore 定位根因 → 修改代码
+                                              ↓
+                              run_test_batch(test_filter="failed") 重验
 ```
 
-**关键**：Phase 3 一条指令跑完全部，Phase 5 用 `filter="failed"` 只重验修复项。Claude 全程不逐步驱动。
+### B. Named Pipe 实机步进探索与交互调试（Tier 3 & Tier 4）
+
+> **通信机制**：通过 `agent_bridge.dll` 建立 Windows 命名管道 `\\.\pipe\war3_agent`（以及支持多开的 `\\.\pipe\war3_agent_<pid>`），设置 `PIPE_UNLIMITED_INSTANCES` 与跨权限安全描述符。多个 IDE / MCP 进程可同时连接同一游戏实例，**零 TCP 端口冲突，零轮询延迟**。
+>
+> **激活方式**：
+> 1. 调用 `run_game(inject_inspect=True)` 启动游戏（自动注入 `agent.init` 引导并开启管道）；或
+> 2. 手动启动游戏后，在聊天框输入 **`-test on`**（或 `-agent on`）手动热启动管道。
+
+```
+game_status（确认管道连通）
+  → game_observe(detail="full")（读取英雄/候选英雄台/周围敌友/技能冷却）
+  → game_set_mode(mode="step")（切入步进冻结模式，精细控制）
+  → 循环：
+      game_act(actions=[...], run_seconds=1.0)（下发选英雄/移动/攻击/施法并推进 1 秒）
+      检查返回中的 observation 与 events（含五大 Oracle 的 violation 事件）
+      若有异常 → game_inspect 深入核查 ECS 状态 → game_report_bug 记录复现步骤
+  → 结束探索：务必调用 game_set_mode(mode="free") 解冻游戏恢复正常游玩！
+```
+
+> **⚠️ 重要铁律**：使用 `game_set_mode(mode="step")` 冻结游戏做完步进调试后，**结束时必须调用 `game_set_mode(mode="free")` 解冻游戏**，否则游戏画面会一直停留在冻结态等待指令。
 
 ---
 
-## 诊断决策树（按 failure_type 处置）
+## MCP 工具清单（共 34 个）
 
-每个失败测试的结果含 `failure_type`，按下表处置：
+### 1. 编译、启动与批量测试工具
 
-| failure_type | 判定依据 | Claude 处置 |
+| 工具 | 用途 | 关键参数 |
 |---|---|---|
-| `compile_error` | w2l.exe 返回非 0 | 运行 `compile_only` 看详细错误 → 修物编/配置 |
-| `crash` | 游戏进程在测试期间消失（曾启动后丢失） | 看 `progress` 最后一步 + `logs` → `codegraph_explore` 查最近修改的 API；崩溃日志 `crash_log`（读 War3 根目录 `Errors\`）P1 提供 |
-| `timeout` | 超过 `timeout_per_test` 无 `/result` | 看 `progress` 卡在哪步 → 检查 `waitFor` 条件是否可达、是否卡对话框 |
-| `assertion` | `success=false` 且有失败断言 | 看 `assertions` + `progress` 的 failed 步 → `codegraph_explore` 追溯数据来源 |
-| `runtime_error` | `game_errors` 非空且有 traceback | 看 traceback 定位行号 → `codegraph_explore` 查该行 API |
-| `env_error` | HTTP 不通 / 端口占用 / 进程从未启动 | 运行 `cleanup_all` → 重跑 |
-| `unknown` | 无法归类 | 触发截图（已自动） + 报告需人工介入 |
+| `compile_only` / `compile_map` | 仅编译地图（`w2l.exe slk`） | `source_dir` |
+| `discover_tests` | 扫描测试目录，返回列表+分类+估算耗时 | `filter`, `layer` |
+| `run_unit_test` | **桌面秒级跑纯逻辑单测**（不启动游戏） | `test_name`, `timeout=10` |
+| `test_commit` | 单测实机执行（编译+启动+等待+诊断） | `test_name`, `timeout=60`, `auto_screenshot_on_failure=True` |
+| `run_test_batch` | **批量顺序运行测试**，返回结构化汇总 | `test_filter="all"\|"failed"\|[...]`, `layer="all"\|"unit"\|"integration"\|"e2e"` |
+| `run_game` | 启动游戏（默认自动注入 Named Pipe Agent 引导） | `inject_inspect=True`, `source_dir` |
+| `launch_only` | 仅启动游戏，不编译不注入 | `map_path`, `platform` |
+| `toggle_test` | **一键开关自动测试模式**（关闭时写 `_war3_tester/_test_off.lua` 重编译，手动玩零干扰） | `enabled: true\|false` |
+| `setup_environment` | **一键部署环境组件**（`socket.dll` / `Flask` / `nopause.asi` / `agent_bridge.dll`） | `components=["socket","http","nopause","agent_bridge"]` |
+| `cleanup_all` / `stop_game` | 关闭 `War3.exe` 进程、命名管道与 HTTP 服务 | - |
+| `take_screenshot` / `send_key` | 截取游戏窗口 PNG / 发送键盘按键（含组合键） | `test_name` / `key` |
+| `get_project_info` / `get_debug_output` | 静态扫描脚本结构 / 聚合游戏日志与运行时错误 | `source_dir`, `level`, `limit` |
+| `scaffold_test` / `tdd_red` / `tdd_green` | TDD 骨架生成与红绿阶段验证 | `module`, `layer`, `test_name` |
+| `watch_unit_tests` / `stop_watch` / `get_watch_results` | 后台监控文件改动自动重跑 `unit` 单测 | `test_name` |
+| `save_adapter_hook` | 保存项目专属适配钩子（如跳过难度弹窗）到 `_war3_tester/adapters/` | `name`, `content` |
 
-> **截图策略（设计文档 4.7）**：仅 `crash` / `timeout` / `unknown` 自动截图（`auto_screenshot_on_failure=true` 时）；`assertion` / `runtime_error` / `compile_error` 不截图（日志已足够诊断）。**截图只负责采集**；判读用环境内的视觉 MCP 工具（如 `mcp__zhipuVision__analyze_image`）读取返回的 PNG 路径，本插件不含判读能力（v0.20 移除内置 VLM）。
+### 2. Named Pipe 实时查询与 LLM Agent 工具（`\\.\pipe\war3_agent`）
 
----
+| 工具 | 用途 | 关键参数 |
+|---|---|---|
+| `inspect_game` | **实时执行 Lua 表达式**（走命名管道，毫秒级返回） | `expr`, `timeout=5`, `pid?` |
+| `exec_game` | **实时执行带副作用的 Lua 语句块**（走命名管道） | `code`, `timeout=5`, `pid?` |
+| `game_status` | 查询 `agent_bridge` 状态、版本、Lua 帧钟与冻结态 | `pid?` |
+| `game_set_mode` | 切换运行模式：`'step'`（步进冻结）或 `'free'`（自由运行并自动解冻） | `mode="step"\|"free"`, `pid?` |
+| `game_observe` | 获取结构化语义视界快照（英雄属性/技能/背包、周围敌友、可选英雄列表） | `detail="full"\|"brief"`, `radius=1200`, `pid?` |
+| `game_act` | 下发批量语义动作并推进 `run_seconds` 秒 | `actions=[...]`, `run_seconds=1.0`, `pid?` |
+| `game_events` | 增量拉取游戏事件（`unit_damaged`, `unit_died`, `violation` 等） | `since_seq=0`, `kinds?`, `pid?` |
+| `game_inspect` | 对游戏内 Lua 表达式求值并返回结构化 JSON | `expr`, `pid?` |
+| `game_setup` | 场景快速预置（刷怪/设等级/发物品/加钱/回满/刷CD/传送/清场） | `cmd`, `args={...}`, `pid?` |
+| `game_report_bug` | 提交探索发现的 Bug 报告，写入 `logs/agent_bugs.md` | `title`, `severity`, `steps`, `evidence_seqs` |
 
-## 结果格式 v2
+#### `game_act` 支持的语义动作 (`op`)
+- `{"op": "select_hero", "unit_id": 1048902}`：双击选中候选英雄完成选人
+- `{"op": "move", "x": 500, "y": -300}`：移动到坐标
+- `{"op": "attack", "target_id": 1049100}`：攻击指定单位 handle
+- `{"op": "attack_move", "x": 500, "y": -300}`：A 地板进攻移动
+- `{"op": "cast", "slot": "Q", "target": "none"|"point"|"unit", "x": ..., "y": ..., "target_id": ...}`：释放技能（支持按槽位 `"Q"/"W"/"E"/"R"/"D"/"F"` 或物编 `"id": "A000"`）
+- `{"op": "use_item", "slot": 1, "target": ...}`：使用背包槽位（1~6）物品
+- `{"op": "stop"}` / `{"op": "chat", "text": "-test status"}` / `{"op": "wait"}`
 
-单测试结果（`run_test_batch` 返回的 `results[]` 每项，`test_commit` 返回同结构）：
-
-```json
-{
-  "test_name": "test_skill_a00d",
-  "success": false,
-  "failure_type": "assertion",
-  "elapsed": 18,
-  "duration_ms": 18340,
-  "result": { ... },            // 游戏侧 /result 原始数据（含 progress/logs 已由 MCP 回填）
-  "result_file": ".../test_skill_a00d.json",
-  "progress": [                 // 逐步骤进度时间线（游戏侧 TestScenario:step 上报）
-    {"step": "wait_hero", "phase": "done", "elapsed_ms": 1200},
-    {"step": "cast_skill", "phase": "done", "elapsed_ms": 5100},
-    {"step": "assert_damage", "phase": "failed", "detail": {"expected":">100","actual":52}}
-  ],
-  "logs": [                     // 结构化分级日志（游戏侧 log.info/log.error 拦截上报）
-    {"level": "info", "category": "", "message": "..."},
-    {"level": "error", "category": "runtime", "message": "...", "context": {"traceback":"..."}}
-  ],
-  "game_errors": [ ... ],       // /error 端点缓存（runtime_error 判定依据）
-  "crash_log": null,            // 崩溃日志（P1：读 Errors\<时间戳> Crash.txt）
-  "screenshots": [".../test_xxx_failure.png"],
-  "error": "部分断言失败"
-}
-```
-
-批量汇总（`run_test_batch` 顶层）：
-
-```json
-{
-  "success": false,
-  "message": "批量测试完成：18/24 通过，通过率 75%",
-  "summary": {
-    "total": 24, "passed": 18, "failed": 6, "pass_rate": 0.75,
-    "stop_on_first_failure": false,
-    "failure_types": {"assertion": 4, "timeout": 1, "crash": 1}
-  },
-  "results": [ ... ],           // 每个测试的 v2 结果
-  "failed": ["test_skill_a00d", "..."]   // 供 filter="failed" 复用
-}
-```
+#### 五大内置实时 Oracle（自动挂靠 `game_events`）
+1. **`numeric`（数值异常）**：检测英雄 HP/MP/金币/等级 NaN、无穷大、负数或单帧异常暴涨（`> 1e7`）。
+2. **`error_log`（运行时报错）**：拦截 `log.error` / `error_handle` 并记录完整堆栈。
+3. **`stuck`（状态卡死）**：监控英雄存活且连续下达移动/施法指令却连续 15 秒坐标/状态零变化。
+4. **`consistency`（ECS 一致性）**：校验 `engine.entities` 存活实体的 JASS 句柄有效性，以及死亡超过 5 秒未清理的残留实体。
+5. **`perf`（性能泄露）**：监控 Lua 内存增量（`collectgarbage("count")`）与实体总数暴涨。
 
 ---
 
-## MCP 工具清单
+## 失败类型与诊断决策树（`test_commit` / `run_test_batch`）
 
-| 工具 | 说明 |
-|---|---|
-| **`run_test_batch`** | **核心（v2 新增）**：顺序运行多个测试（每测试独立游戏会话），返回结构化汇总。入参：`test_filter`（`"all"`/`"failed"`/列表/子串）、`stop_on_first_failure`、`max_retries`(默认1)、`timeout_per_test`(默认90)、`auto_screenshot_on_failure`(默认true)、`platform`、`source_dir` |
-| **`discover_tests`** | **v2 新增**：扫描测试目录，返回 `[{test_name, file, type(sync/async), est_seconds}]` + 总估算 |
-| `test_commit` | 单测：编译+启动+等待结果（v2 增强：崩溃检测/`failure_type`/失败截图/`game_errors`）。入参新增 `auto_screenshot_on_failure` |
-| `compile_map` / `compile_only` | 编译地图（同步等待 w2l.exe） |
-| `run_game` / `launch_only` | 仅启动游戏 |
-| `stop_game` | 关闭 War3 进程 |
-| `take_screenshot` | 截取游戏窗口（PrintWindow），只采集并返回 PNG 路径；判读用环境内视觉 MCP（如 `mcp__zhipuVision__analyze_image`）读路径，插件不做判读 |
-| `send_key` | 向 War3 窗口发送键盘事件 |
-| `cleanup_all` | 关闭 war3.exe 进程和 HTTP 服务器 |
-| `stop_http_server` | 仅关闭 HTTP 测试服务器 |
-
-### 反馈通道分层（设计文档第三节）
-
-| 优先级 | 通道 | 模式 | 用途 |
+| `failure_type` | 含义 | 自动截图 | 诊断动作 |
 |---|---|---|---|
-| ① 主 | `POST /progress`、`/log`、`/error`、`/result` | PUSH（游戏→MCP） | 活信息实时采集 |
-| ② 主 | MCP notification | PUSH（MCP→Claude） | batch 运行中实时回传（渲染效果待实测，P0 不依赖） |
-| ③ 辅 | 读 `Errors\` 文件 | PULL | 仅崩溃兜底（P1） |
-| ④ 兜底 | PrintWindow 截图 | PULL | 最终手段（仅 crash/timeout/unknown） |
+| `compile_error` | `w2l` 编译失败 | 否 | 读 `error` 输出 → 定位物编/语法错误 → 修复重编译 |
+| `crash` | `War3.exe` 进程消失 | 是 | 读 `crash_log` + 框架日志末尾 → 查 native 崩溃常见诱因（无效 handle / 除零 / 无限递归） |
+| `timeout` | 超时未收到 `/result` | 是 | ① 看 `progress` 最后完成的 step → 定位卡住的步骤；② 视觉 MCP 判读截图是否卡在弹窗/暂停；③ 查 `logs` 最后输出 |
+| `assertion` | 断言失败 | 否 | 读 `details` + `logs` → `codegraph_explore` 查被测函数实现 → 定位逻辑偏差并修复 |
+| `runtime_error` | Lua 运行时抛错 | 否 | 读 `game_errors[].traceback` → 定位文件:行号 → 查 nil 解引用/类型错误 |
+| `env_error` | 基础设施异常 | 否 | 检查 `setup_environment` 四大组件是否已部署 |
 
 ---
 
-## 最小测试契约（通用，不限 Lua 框架）
-
-插件与目标项目只约定一个最小契约：
-
-1. **测试文件**：`<source_dir>/<test_dir>/test_*.lua`，定义全局 `RunAutoTest()`（或用框架适配器桥接，见下）。
-2. **HTTP 上报**：测试完成后 `POST http://<host>:8766/result`，JSON 含 `test_name`、`success`、`assertions` 等。
-3. **进度/日志上报（v2 可选，推荐）**：
-   - `POST /progress`：逐步骤进度 `{test_name, step, phase(start/done/failed), detail, elapsed_ms}`
-   - `POST /log`：分级日志 `{test_name, level(info/warn/error), category, message, context}`
-4. **引导机制**：`test_commit` 编译前写 `_target_test.lua`（配置）+ `run_auto_test.lua`（引导模板）到 `<test_dir>/`。
-
-### 自定义引导模板（已有测试框架的项目用）
-
-通用引导加载后立即调用 `RunAutoTest()`。若项目已有测试框架（如自带测试运行器 + 初始化事件钩子，执行时机不同），用 `test_bootstrap_template` 指向自定义适配器：
-
-```json
-{
-  "test": {
-    "test_dir": "auto-test",
-    "test_module_prefix": "",
-    "test_bootstrap_template": "path/to/your_adapter.lua"
-  }
-}
-```
-
-适配器契约：读 `_target_test.lua` 的通用字段（`test_name/test_file/test_module/test_module_prefix/http_host/http_port`）→ 按项目机制加载测试、执行 → HTTP 上报 → 正常游戏时静默降级。范例见插件 `examples/`。
-
----
-
-## 配置（`config.json`，插件 project_root 下）
-
-```json
-{
-  "test": {
-    "test_dir": "auto-test",
-    "test_module_prefix": "",
-    "test_bootstrap_template": ""
-  },
-  "compile": { "source_dir": ".", "output_path": ".", "output_name": "map.w3x" },
-  "http_server": { "host": "0.0.0.0", "port": 8766 },
-  "ydwe_path": "D:\\war3\\YDWE",
-  "kkwe_path": "D:\\KKWE"
-}
-```
-
-| 配置项 | 默认 | 说明 |
-|---|---|---|
-| `test.test_dir` | `"auto-test"` | 测试目录（相对 `source_dir/`） |
-| `test.test_module_prefix` | `""` | require 模块前缀（空=同目录加载；非空=`prefix..name`） |
-| `test.test_bootstrap_template` | `""` | 自定义引导模板路径（空=用通用 `server/lua_bootstrap.lua`） |
-| `compile.output_name` | `"map.w3x"` | 编译输出地图名 |
-| `compile.source_dir` | `"."` | 源码根（支持 `${workspaceRoot}`） |
-
-> 路径类配置也可用环境变量 `.env`（`YDWE_PATH`/`KKWE_PATH`/`W2L_PATH` 等），见插件 CHANGELOG。
-
----
-
-## 自适应环境桥
-
-| 环境 | 编译/启动/截图 | 实现 |
-|---|---|---|
-| **WSL** | 经 `win_proxy`（TCP 8767）转发到 Windows | `env_bridge.WinProxyExecutor` |
-| **原生 Windows** | 直接 `subprocess` | `env_bridge.LocalExecutor` |
-
-WSL 用户需在 Windows 侧 `python win_proxy.py start`（监听 8767）。
-
----
-
-## TDD 工作流（M3 新增）
-
-> **目标**：秒级 Red-Green-Refactor 循环，测试驱动开发。
-
-### 测试分层（unit / integration / e2e）
-
-| 层 | 文件名约定 | 运行方式 | 反馈速度 | 适用场景 |
-|---|---|---|---|---|
-| **unit** | `test_unit_*.lua` | 桌面 lua5.3（`run_unit_test`） | 秒级（<2s） | 纯逻辑（配置校验、算法、数据处理） |
-| **integration** | `test_int_*.lua` | 游戏内（`test_commit`） | 30s+ | 依赖游戏 API（单位、技能、Buff） |
-| **e2e** | `test_e2e_*.lua` | 游戏内（`test_commit`） | 60s+ | 全流程（副本、任务链、多系统交互） |
-
-**文件命名约定**（优先级）：
-1. 文件名前缀：`test_unit_*` / `test_int_*` / `test_e2e_*`
-2. 文件首行注释标记：`-- @layer unit` / `-- @layer integration` / `-- @layer e2e`
-3. 默认：`integration`
-
-### TDD 前规划（推荐）
-
-TDD 开始前先规划，不要直接 scaffold 就写。规划清楚再动手，避免测试凭空设计、返工：
-
-1. **测什么**：确定被测模块（从项目真实需求提取纯逻辑功能，如配置校验、算法）
-2. **参考项目哪个已有模块**：找项目同类模块作规范参考（数据结构、代码风格、require 路径）
-3. **测试用例清单**：列出要测的场景（合法/非法/边界），用项目真实数据结构，不造玩具数据
-4. **测试层**：unit（纯逻辑秒级）/integration（游戏内）/e2e（全流程）
-
-规划后再进入 Red-Green-Refactor 决策树。
-
-### Red-Green-Refactor 决策树
-
-```
-1. scaffold_test(module="xxx", layer="unit")
-   → 生成测试骨架（Arrange-Act-Assert 三段式）
-
-2. tdd_red(test_name="test_unit_xxx", layer="unit")
-   → 预期失败，确认测试有效
-   → 区分「预期 assertion fail」（Red 成立）vs「意外 env_error」（Red 不成立，测试写错）
-
-3. 写最少实现代码
-
-4. tdd_green(test_name="test_unit_xxx", layer="unit")
-   → 预期通过，确认 Green 成立
-
-5. refactor（重构代码）
-
-6. run_test_batch(layer="unit")
-   → 回归测试，确保不破坏
-```
-
-### 何时用哪层测试
-
-| 场景 | 推荐层 | 理由 |
-|---|---|---|
-| 配置校验（天赋、数值表） | unit | 纯数据，秒级反馈 |
-| 算法逻辑（伤害计算、属性加成） | unit | 纯函数，易 mock |
-| 技能效果（Buff 应用、CD 管理） | integration | 依赖游戏 API |
-| 副本流程（多波次、Boss 机制） | e2e | 全流程验证 |
-| 任务链（多步骤、状态机） | e2e | 跨系统交互 |
-
-### 测试设计原则（结合项目实际）
-
-**核心原则**：测试内容的写法要根据所在项目的实际情况设计，**不要凭空设计**。测试内容（数据结构、模块风格、输入数据）用项目已有代码/规范生成。
-
-1. **数据结构对齐项目**：测试用的输入/输出数据结构参考项目已有模块的真实结构，不要自己发明。例如 wzns 残卷测试用 `CanJuanData.Tags` / 残卷配置字段（`id`/`rarity`/`tags`/`waveRange`），不要凭空设计 recipe/inventory。
-2. **模块风格对齐项目**：被测模块的代码风格参考项目同类模块。例如 wzns data 模块用纯 table+函数（对齐 `CanJuanData`），system 用 `class()`（对齐 `CanJuanSystem`）。
-3. **测试数据从项目已有代码生成**：用项目真实数据配置、查询函数作为测试输入，而非构造玩具数据。例如用 `CanJuanData.getAllCanJuan()` 真实数据校验，守护项目数据完整性。
-4. **require 路径对齐项目**：用项目的 require 约定（点分/裸名），配 `extra_package_path` 让桌面解析项目模块。
-
-**反例**：凭空设计模块（如自造"残卷合成"用 recipe/inventory，不对齐项目残卷标签机制）+ 玩具数据测试，无法守护项目真实数据，且与项目风格脱节。
-
-### 可测性约定（纯逻辑与 jass 调用分离）
-
-**问题**：项目代码深度耦合 jass（`CreateUnit`、`GetUnitX` 等），桌面跑不了。
-
-**解决**：
-1. **纯逻辑模块**：不直接调 jass，用参数传入依赖（依赖注入）
-   ```lua
-   -- 可测：纯逻辑
-   function TalentSystem.calculate_bonus(talent_config, hero_level)
-       return talent_config.base * hero_level
-   end
-
-   -- 不可测：耦合 jass
-   function TalentSystem.apply_bonus(hero)
-       local unit = hero:getUnit()  -- jass 调用
-       SetUnitX(unit, 100)          -- jass 调用
-   end
-   ```
-
-2. **jass mock**：桌面测试时，插件内置 `jass_mock.lua` 自动 stub 高频 jass 函数
-   - `CreateUnit`、`GetUnitTypeId`、`SetUnitX` 等返回假 handle
-   - 记录调用日志供断言
-
-3. **测试隔离**：unit 层测试不启动游戏，integration/e2e 层才启动游戏
-
-4. **⚠️ 纯逻辑模块放生产目录，不放 test_dir**（防"生产代码依赖测试目录"）
-   - 从生产代码（技能/system/Buff）提取的可测纯逻辑模块，放**生产目录**（与被测代码同目录，如 `技能/`/`systems/`），**不放 test_dir**
-   - 理由：纯逻辑模块被生产代码运行时 `require`（生产依赖）。放 test_dir 会导致：① 生产代码反向依赖测试目录（架构坏味道）；② 发布地图若剥离 test_dir（测试不进正式版），生产代码 `require` test_dir 失败 → 相关功能全崩
-   - test_dir 只放：`test_*.lua` 测试文件 + 不被生产 require 的纯测试辅助
-   - 判定：模块被生产代码 require → 生产模块 → 放生产目录；只被测试 require → 测试辅助 → 可放 test_dir
-   - **检查（提取纯逻辑后必做）**：`grep -rn "require.*<test_dir>" <source_dir>` 应零命中（生产代码不依赖 test_dir 路径）。命中=违规
-   - 反例（真实）：`wudang_xinfa_calc.lua`（武当心法数值，被 A106/A107/A108 运行时 require）误放 auto-test/ → 已修正搬至 `技能/` 同目录
-
-### integration/e2e 测试规范（实机 TDD）
-
-integration/e2e 层 TDD 走 `test_commit`（实机，30s+/轮）。注意三个坑：
-
-1. **TestScenario:new 的 name 必须 = test_name**：test_commit 按 test_name 匹配 result_file（`{test_name}.json`）。若 TestScenario name ≠ test_name，POST 写错文件名，test_commit 等不到 -> timeout（red_invalid）。例如测试文件 `test_int_xxx.lua`，`tdd_red(test_name="test_int_xxx")`，则 `TestScenario:new('test_int_xxx', ...)`，name 要与 test_name 完全一致。
-
-2. **8766 端口残留**：/mcp 重连不 kill 旧 mcp_server 进程（SO_REUSEADDR 使多进程同监听 8766）。integration TDD 前若 8766 多进程 LISTENING，游戏 POST /result 到残留进程，当前 test_commit 收不到 -> timeout。**完全重启 Claude Code 清理**（/mcp 重连不够）。诊断特征：netstat 8766 多个 LISTENING + 无 result_file 生成 + 游戏日志显示 HTTP 发送成功。
-
-3. **scaffold 通用骨架不适用有测试框架的项目**：scaffold 生成的 integration 骨架用占位 http_post_result（不真 POST）。项目有自己的测试框架（如 wzns TestScenario）时，参考项目现有 integration 测试写，用项目框架的 POST 机制（结合项目规范，不用通用骨架）。
-
-### TDD 工具清单
-
-| 工具 | 说明 |
-|---|---|
-| `scaffold_test(module, layer, name?)` | 生成 TDD 三段式测试骨架 |
-| `tdd_red(test_name, layer)` | 跑测试预期失败，确认测试有效（区分 assertion fail vs env_error） |
-| `tdd_green(test_name, layer)` | 跑测试预期通过 |
-| `run_unit_test(test_name)` | 桌面秒级跑纯逻辑测试（unit 层） |
-| `test_commit(test_name)` | 游戏内跑测试（integration/e2e 层） |
-| `run_test_batch(layer="unit")` | 按层批量跑测试 |
-
-### TDD 检查清单
-
-- [ ] `scaffold_test` 生成测试骨架
-- [ ] `tdd_red` 确认 Red 成立（failure_type=assertion）
-- [ ] 写最少实现
-- [ ] `tdd_green` 确认 Green 成立
-- [ ] refactor 后 `run_test_batch(layer="unit")` 回归
-- [ ] integration/e2e 层用 `test_commit` 验证
-- [ ] **纯逻辑模块（被生产 require 的）放生产目录不放 test_dir**；grep 确认 source_dir 生产代码无 `require.*test_dir`
-
----
-
-## 错误分析与调试
-
-### 日志来源
-
-1. **游戏运行日志**（`print` 输出）：位置取决于平台/项目配置（通常在平台安装目录的日志文件夹）。含全部游戏内 `print()`。
-2. **测试结果 JSON**（HTTP 上报）：`<plugin_root>/logs/test_results/<test_name>.json`，含 `progress`/`logs`/`assertions`。
-3. **结构化日志（v2）**：`logs[]` 字段，游戏侧 `log.info`/`log.error` 拦截上报（带级别/category/traceback）。
-
-### 常见错误
-
-| 错误类型 | 处置 |
-|---|---|
-| 编译失败 | `compile_only` 看错误 → 修物编/配置 |
-| 测试失败 | 按 `failure_type` 查诊断决策树 |
-| 游戏卡对话框 | `take_screenshot` → 视觉 MCP 判读 → `send_key` 继续 |
-| HTTP 上报失败 | 检查 8766 端口、游戏内 HTTP 客户端、网络连通 |
-| `discover_tests` 找不到测试 | 检查 `test_dir` 配置是否与实际目录一致 |
-
----
-
-## 操作约束
-
-**⚠️ 严禁 AI 直接操作 Windows 端**：所有编译/启动/截图/按键都通过 MCP 工具代理，不直接 `net start`/访问 Windows 路径/手动启停 War3。
-
-**⚠️ 截图后用环境内视觉 MCP 判读**：任何截图（`take_screenshot` / 失败自动截图）后，判读用环境内视觉 MCP 工具读取 PNG 路径（如 `mcp__zhipuVision__analyze_image`），**禁止用 Read 工具自己看图**。判读结果用于决定下一步（如 `send_key` 跳过对话框、定位失败原因）。视觉 MCP 不可用时只影响判读，截图本身仍可用。
-
----
-
-## 已知风险与待验证项（诚实标注）
-
-| 项 | 状态 | 处置 |
-|---|---|---|
-| MCP notification 实时回传渲染 | ⚠️ 未验证 | P0 不依赖它（主依赖 batch 返回报告）；P2 实测，不理想则退化 |
-| `/log` 高频 POST 对游戏性能 | ⚠️ 未验证 | 游戏侧节流（同类 0.2s 合并）+ MCP 侧上限防爆；实测后调参 |
-| 崩溃日志读取（`Errors\`） | P1 | P0 已做进程消失检测（`failure_type=crash`）；`crash_log` 字段 P1 填充 |
-| War3 根目录定位 | ✅ 已验证 | 注册表 `InstallPath` = `D:\war3`（设计文档 4.6） |
-| `analyze_screenshot` 工具不存在 | ℹ️ 预期行为 | v0.20 起插件不含判读能力。判读用环境内视觉 MCP（如 `mcp__zhipuVision__analyze_image`）读取 `take_screenshot` 返回的 PNG 路径 |
-| `name 'os' is not defined` 等 os 相关错误 | ℹ️ 已知不修 | war3 对 os 库做了改造适配（见目标项目 CLAUDE.md「内部定制版 Lua 运行时，对 os 库进行了改造适配」），take_screenshot/analyze_screenshot 等路径偶发；不影响核心测试链路（编译→启动→结果回传），无需修复 |
-
----
-
-## 检查清单
-
-- [ ] `cleanup_all` → `compile_only` 验证编译通过
-- [ ] `discover_tests` 确认测试列表
-- [ ] `run_test_batch(filter="all")` 跑完，读 summary
-- [ ] 失败按 `failure_type` 查决策树 → `codegraph_explore` → 修复
-- [ ] `run_test_batch(filter="failed")` 重验（最多 3 轮）
-- [ ] 全通过报告完成 / 仍失败报告需人工介入（附证据）
+## 可测性约定与纯逻辑分离
+
+1. **纯逻辑模块放生产目录，严禁放 `test_dir`**：
+   - 被生产代码运行时 `require` 的纯计算模块必须放在生产目录（与被测系统同目录），防止正式版剥离 `test_dir` 后崩溃。
+   - 检查命令：`grep -rn "require.*auto-test" map/script/src/` 应零命中（除入口引导外）。
+2. **数据结构与模块风格对齐项目实际**：
+   - 测试输入/输出使用项目真实数据表与组件类，禁止凭空捏造玩具结构。
+3. **测试产物隔离在 `<test_dir>/_war3_tester/`**：
+   - `_target_test.lua`、`_test_off.lua`、`assertions.lua`、`jass_mock.lua`、`adapters/` 均归拢在 `_war3_tester/` 下。

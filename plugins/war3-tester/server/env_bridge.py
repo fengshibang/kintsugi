@@ -756,8 +756,8 @@ class LocalExecutor(ExecutorBase):
             try:
                 proc = subprocess.Popen(
                     full_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     cwd=cwd,
                 )
                 return {
@@ -822,7 +822,10 @@ class LocalExecutor(ExecutorBase):
         else:
             game_exe = str(platform_path / 'YDWE.exe')
 
-        return self.execute(game_exe, ['-war3', '-loadfile', map_path],
+        args = ['-war3', '-loadfile', map_path]
+        if platform_name != 'KKWE':
+            args.append('-closew2l')
+        return self.execute(game_exe, args,
                             kwargs={'cwd': str(platform_path), 'timeout': 10, 'wait': False})
 
     def _parse_war3_pids(self, tasklist_stdout: str) -> list:

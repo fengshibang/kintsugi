@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
+r"""
 War3 Tester 通用 MCP Server
 
-提供地图编译、游戏测试的 MCP 工具接口（stdio JSON-RPC）。
+提供地图编译、游戏测试与 Named Pipe LLM Agent 桥接的 MCP 工具接口（stdio JSON-RPC）。
 
 工具：
 - compile_map / compile_only: 编译地图
@@ -12,6 +12,12 @@ War3 Tester 通用 MCP Server
 - send_key: 发送键盘事件
 - take_screenshot: 截取游戏窗口
 - test_commit: 运行测试（编译+启动+等待结果）
+- run_test_batch / discover_tests / run_unit_test / scaffold_test / tdd_red / tdd_green
+- watch_unit_tests / stop_watch / get_watch_results
+- toggle_test / get_project_info / get_debug_output / save_adapter_hook / setup_environment
+- inspect_game / exec_game: 通过 Windows 命名管道 (\\.\pipe\war3_agent) 执行 Lua 查询/语句
+- game_status / game_set_mode / game_observe / game_act / game_events / game_inspect / game_setup / game_report_bug:
+  LLM Agent 实机探索、步进冻结与五大 Oracle Bug 巡检工具集
 - cleanup_all: 清理所有资源
 - stop_http_server: 停止 HTTP 服务器
 """
@@ -46,25 +52,16 @@ from desktop_runner import DesktopRunner
 from watcher import FileWatcher
 from logger import setup_logger
 from test_state_store import TestStateStore
-# v0.15.0: 三 module（消除 mcp_server↔batch_runner 循环依赖）
 from test_mode_flag import TestModeFlag
 from test_entry_preparer import TestEntryPreparer
 from diagnostics_collector import DiagnosticsCollector
-# v0.19.6(候选③⑤): 两 module（消除 mcp_server 方法膨胀）
 from scaffolder import ProjectScaffolder
 from environment_provisioner import EnvironmentProvisioner
-
-# v0.19.5(候选④): 模块级全局已废弃,四对象(config/executor/store/http_receiver)改由
-# War3TesterMCP.__init__ 构造并存 self。import mcp_server 不触发构造(__init__ 在实例化时调),
-# 保留"消除 import 副作用"(v0.19.0 目标)。
+from pipe_client import PipeClient, PipeClientError
 
 
 class ToolSpec:
-    """工具注册条目：绑定 schema 与 handler 到同一条目（单源注册）。
-
-    v0.17.0: 消除 schema 与 handler 双源注册。capabilities["tools"] 由 registry 单源生成，
-    handle_tool_call 改为查表分发。新增工具只需在 _register_tools() 添加一个 ToolSpec。
-    """
+    """工具注册条目：绑定 schema 与 handler 到同一条目（单源注册）。"""
     __slots__ = ('name', 'schema', 'handler')
 
     def __init__(self, name: str, schema: dict, handler):
@@ -77,29 +74,25 @@ class War3TesterMCP:
     """War3 Tester MCP Server"""
 
     def __init__(self):
-        # v0.19.5(候选④): 构造四全局(废弃 init_runtime/模块级全局),存 self。
-        # import mcp_server 不触发构造(__init__ 在 War3TesterMCP() 时调),保留消除 import 副作用。
         _war3_project_root = os.getenv('WAR3_PROJECT_ROOT')
         self.config = Config(project_root=Path(_war3_project_root) if _war3_project_root else None)
         self.logger = setup_logger('war3-mcp')
         self.executor = create_executor(self.config)
-        self.store = TestStateStore()  # v0.14.0: 跨线程状态 owner
+        self.store = TestStateStore()
         self.http_receiver = HTTPReceiver(host=self.config.http_host, port=self.config.http_port, store=self.store)
+        self.pipe_client = PipeClient()
         self.project_root = self.config.project_root
 
-        # v0.15.0: 三 module（消除 mcp_server↔batch_runner 循环依赖）
         self.test_mode_flag = TestModeFlag(logger=self.logger)
         self.diagnostics_collector = DiagnosticsCollector(self.store, self.config, logger=self.logger)
         self.test_entry_preparer = TestEntryPreparer(
             self.test_mode_flag, SERVER_DIR, self.config, logger=self.logger
         )
-        # v0.19.6(候选③⑤): 两 module（消除 mcp_server 方法膨胀）
         self.project_scaffolder = ProjectScaffolder(self.config, logger=self.logger)
         self.environment_provisioner = EnvironmentProvisioner(
             self.config, SERVER_DIR.parent, logger=self.logger
         )
 
-        # v2: 批量测试编排器（注入 store + 三 module，与 http_receiver 共享状态访问）
         self.batch_runner = TestBatchRunner(
             self.config, self.executor, self.http_receiver,
             test_mode_flag=self.test_mode_flag,
@@ -107,15 +100,11 @@ class War3TesterMCP:
             diagnostics_collector=self.diagnostics_collector,
             store=self.store
         )
-        # M2: 桌面纯逻辑单测运行器（不启动游戏，秒级反馈）
         self.desktop_runner = DesktopRunner(self.config, self.executor)
-        # M4: 文件监控器（watch 模式）
         self.file_watcher = FileWatcher(self.desktop_runner, self.config)
 
-        # v0.17.0: 工具注册表（单源）。capabilities["tools"] 与 handle_tool_call 都从这里派生。
         self._tool_registry = self._register_tools()
 
-        # MCP 能力声明（tools 由 registry 单源生成，resources 仍手写）
         self.capabilities = {
             "tools": [spec.schema for spec in self._tool_registry.values()],
             "resources": [
@@ -137,15 +126,13 @@ class War3TesterMCP:
             ]
         }
 
+    def _format_pipe_value(self, val) -> str:
+        if isinstance(val, (dict, list)):
+            return json.dumps(val, ensure_ascii=False, indent=2)
+        return str(val)
+
     def _register_tools(self) -> dict:
-        """v0.17.0: 注册所有工具到 registry（单源）。
-
-        每个 ToolSpec 绑定 schema 与 handler。capabilities["tools"] 由此派生，
-        handle_tool_call 改为查表分发。新增工具只需在此添加一个 ToolSpec。
-
-        Returns:
-            dict: name -> ToolSpec
-        """
+        """注册所有工具到 registry（单源）。"""
         registry = {}
 
         def _add(name, description, input_schema, handler):
@@ -156,7 +143,7 @@ class War3TesterMCP:
             }
             registry[name] = ToolSpec(name, schema, handler)
 
-        # 1. compile_map / compile_only（合并：同一 handler 服务两个 name）
+        # 1. compile_map / compile_only
         def _handle_compile(arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             source_dir = self.config.resolve_source_dir(arguments.get("source_dir"))
@@ -291,7 +278,7 @@ class War3TesterMCP:
              }},
              _handle_discover_tests)
 
-        # 5. launch_only / run_game（合并：同一 handler，通过 tool_name 区分 inject_inspect 行为）
+        # 5. launch_only / run_game
         def _handle_launch_or_run(tool_name, arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             map_path = arguments.get("map_path", str(self.config.compile_output_path / self.config.compile_output_name))
@@ -301,7 +288,6 @@ class War3TesterMCP:
                 run_mode, _ = self.config.get_run_mode_with_source()
                 platform = run_mode
             if inject_inspect:
-                # v0.19.3: 收敛 source_dir 归一化(×3 复用)
                 resolved_source = self.config.resolve_source_dir(arguments.get("source_dir"))
                 test_dir = self.test_entry_preparer.prepare_inspect_only(resolved_source)
                 if test_dir is None:
@@ -315,12 +301,12 @@ class War3TesterMCP:
                         "content": [{"type": "text", "text": f"[FAIL] 地图编译失败（inject_inspect 启用）\n\n时间：{timestamp}\n\n{compile_result.get('error', '未知错误')}"}],
                         "isError": True
                     }
-                self.logger.info(f"[run_game] 编译成功，准备启动游戏（inject_inspect 已注入）")
+                self.logger.info("[run_game] 编译成功，准备启动游戏（Named Pipe Agent 已注入）")
             result = self.executor.run_game(map_path, platform)
             if result.get("success"):
                 msg = f"[OK] 游戏已启动\n\n{result.get('message', '')}"
                 if inject_inspect:
-                    msg += "\n\n（inspect_handler 已注入，可使用 inspect_game 运行时查询）"
+                    msg += "\n\n（Named Pipe Agent 引导已注入，可使用 inspect_game / exec_game / game_* 工具）"
                 return {"content": [{"type": "text", "text": msg}]}
             else:
                 return {
@@ -341,19 +327,18 @@ class War3TesterMCP:
              {"type": "object", "properties": {
                  "map_path": {"type": "string", "description": "地图文件路径"},
                  "platform": {"type": "string", "description": "游戏平台：'ydwe' 或 'kkwe'", "enum": ["ydwe", "kkwe"]},
-                 "inject_inspect": {"type": "boolean", "description": "是否注入运行时查询处理器（inspect_handler）。True 时自动注入 inspect_handler + 写 inspect-only run_auto_test + 删 _test_off + 编译，让 inspect_game 在 run_game 启动的游戏里可用。默认 True", "default": True},
+                 "inject_inspect": {"type": "boolean", "description": "是否自动注入 Named Pipe Agent 启动引导并重编译（默认 True，支持 inspect_game/exec_game/game_* 工具直接连接 \\\\.\\pipe\\war3_agent）", "default": True},
                  "source_dir": {"type": "string", "description": "inject_inspect 启用时，地图源码目录（如 D:\\maps\\wzns），默认 config.compile_source_dir"}
              }},
              lambda args: _handle_launch_or_run("run_game", args))
 
         # 6. stop_game
         def _handle_stop_game(arguments):
+            self.pipe_client.close()
             result = self.executor.stop_game()
             if result.get("success"):
                 return {"content": [{"type": "text", "text": f"[OK] {result.get('message', '游戏已关闭')}"}]}
             else:
-                # 显示 _check_war3_remaining 的 message/remaining 诚实细节（它返回 message 非 error，
-                # 旧版只报默认"游戏关闭失败"，掩盖"仍未清除"或"复查失败"的真实原因）
                 detail = result.get('message') or result.get('error') or '游戏关闭失败'
                 if result.get('remaining'):
                     detail += f"\n残留: {result['remaining']}"
@@ -378,16 +363,17 @@ class War3TesterMCP:
 
         # 8. cleanup_all
         def _handle_cleanup_all(arguments):
+            self.pipe_client.close()
             stop_result = self.executor.stop_game()
             self.http_receiver.stop()
             return {"content": [{"type": "text", "text": f"[OK] 清理完成\n\n{stop_result.get('message', '')}"}]}
 
         _add("cleanup_all",
-             "清理所有资源 - 关闭 war3.exe 进程和 HTTP 服务器",
+             "清理所有资源 - 关闭 war3.exe 进程、命名管道连接和 HTTP 服务器",
              {"type": "object", "properties": {}, "required": []},
              _handle_cleanup_all)
 
-        # 9. take_screenshot（只采集截图，判读交给环境内视觉 MCP 由 AI 调用）
+        # 9. take_screenshot
         def _handle_take_screenshot(arguments):
             test_name = arguments.get("test_name", "unknown")
             filename = arguments.get("filename")
@@ -420,7 +406,7 @@ class War3TesterMCP:
                 return {"content": [{"type": "text", "text": f"[FAIL] 发送按键失败\n\n{result.get('error', '未知错误')}"}], "isError": True}
 
         _add("send_key",
-             "向 War3 游戏窗口发送键盘事件。支持单键（'enter', 'a', 'f1', 'up' 等）和组合键（'ctrl+c', 'shift+a', 'alt+f4', 'ctrl+shift+s' 等，+ 分隔修饰键与主键）。完整 VK 表：字母 A-Z、数字 0-9、F1-F12、方向键、修饰键(Shift/Ctrl/Alt)、Tab/Backspace/Delete/Home/End/PageUp/PageDown 等。",
+             "向 War3 游戏窗口发送键盘事件。支持单键（'enter', 'a', 'f1', 'up' 等）和组合键（'ctrl+c', 'shift+a', 'alt+f4', 'ctrl+shift+s' 等，+ 分隔修饰键与主键）。",
              {"type": "object", "properties": {
                  "key": {"type": "string", "description": "按键名称。单键如 'enter', 'space', 'escape', 'a'-'z', '0'-'9', 'f1'-'f12', 'up', 'down', 'left', 'right', 'shift', 'ctrl', 'alt', 'tab', 'backspace', 'delete' 等。组合键用 + 分隔：'ctrl+c', 'shift+enter', 'alt+f4', 'ctrl+shift+a'。"}
              }, "required": ["key"]},
@@ -459,64 +445,80 @@ class War3TesterMCP:
                 return {"content": [{"type": "text", "text": f"[FAIL] get_project_info 失败：{e}"}], "isError": True}
 
         _add("get_project_info",
-             "地图/脚本结构分析 - 扫描项目地图脚本目录，返回结构化分析：目录树概要、各模块文件计数（技能/Buff/物品/任务/副本/系统/entities/components 等子目录）、代码行数统计、关键入口文件（init.lua 等）。纯静态分析，只读文件系统，不启动游戏。",
+             "地图/脚本结构分析 - 扫描项目地图脚本目录，返回结构化分析：目录树概要、各模块文件计数、代码行数统计、关键入口文件。纯静态分析，只读文件系统，不启动游戏。",
              {"type": "object", "properties": {
                  "source_dir": {"type": "string", "description": "源码目录路径，默认 config.compile_source_dir"},
                  "max_depth": {"type": "integer", "description": "目录树扫描最大深度，默认 3", "default": 3}
              }},
              _handle_get_project_info)
 
-        # 14. inspect_game
+        # 14. inspect_game (Named Pipe)
         def _handle_inspect_game(arguments):
             expr = arguments.get("expr")
             timeout = arguments.get("timeout", 5)
+            pid = arguments.get("pid")
             if not expr:
                 return {"content": [{"type": "text", "text": "[FAIL] 缺少 expr 参数"}], "isError": True}
             try:
-                query_id = self.store.submit_inspect(expr)
+                resp = self.pipe_client.request(
+                    "inspect",
+                    {"expr": expr},
+                    timeout_ms=int(timeout * 1000),
+                    pid=pid
+                )
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"[FAIL] 加入查询队列失败：{e}"}], "isError": True}
-            result = self.store.take_inspect(query_id, timeout=timeout)
-            if result:
-                if "error" in result:
-                    return {"content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}], "isError": True}
-                else:
-                    value = result.get("value", "")
-                    return {"content": [{"type": "text", "text": f"[OK] 查询结果：\n{value}"}]}
-            return {"content": [{"type": "text", "text": f"[FAIL] 超时（{timeout}秒）：游戏端未回传结果"}], "isError": True}
+                return {"content": [{"type": "text", "text": f"[FAIL] 命名管道查询失败：{e}"}], "isError": True}
+
+            if resp.get("ok"):
+                payload = resp.get("payload", {})
+                val = payload.get("result") if isinstance(payload, dict) else payload
+                return {"content": [{"type": "text", "text": f"[OK] 查询结果：\n{self._format_pipe_value(val)}"}]}
+            else:
+                err = resp.get("error", {})
+                err_msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return {"content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{err_msg}"}], "isError": True}
 
         _add("inspect_game",
-             "运行时对象检查 - 在游戏内执行一段 Lua 表达式并返回结果。AI 调用后，MCP 将查询放入 pending 队列，游戏端轮询拉取执行并回传结果。用于运行时调试、查看单位属性、检查游戏状态等。",
+             "运行时对象检查（Named Pipe） - 通过 Windows 命名管道 (\\\\.\\pipe\\war3_agent) 在游戏内实时执行 Lua 表达式并返回结果。支持多进程并发且无端口冲突。",
              {"type": "object", "properties": {
-                 "expr": {"type": "string", "description": "要在游戏内执行的 Lua 表达式（如 'UnitObj.all_count()' 或 'Player(1):getGold()'）"},
-                 "timeout": {"type": "integer", "description": "等待游戏端回传结果的超时时间（秒），默认 5", "default": 5}
+                 "expr": {"type": "string", "description": "要在游戏内执行的 Lua 表达式（如 'Player.get(1):getGold()'）"},
+                 "timeout": {"type": "integer", "description": "超时时间（秒），默认 5", "default": 5},
+                 "pid": {"type": "integer", "description": "指定连接的 War3.exe 进程 PID（多开时可选，连接 \\\\.\\pipe\\war3_agent_<pid>）"}
              }, "required": ["expr"]},
              _handle_inspect_game)
 
-        # 14b. exec_game
+        # 14b. exec_game (Named Pipe)
         def _handle_exec_game(arguments):
             code = arguments.get("code")
             timeout = arguments.get("timeout", 5)
+            pid = arguments.get("pid")
             if not code:
                 return {"content": [{"type": "text", "text": "[FAIL] 缺少 code 参数"}], "isError": True}
             try:
-                query_id = self.store.submit_inspect(code, mode='exec')
+                resp = self.pipe_client.request(
+                    "inspect",
+                    {"expr": code},
+                    timeout_ms=int(timeout * 1000),
+                    pid=pid
+                )
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"[FAIL] 加入执行队列失败：{e}"}], "isError": True}
-            result = self.store.take_inspect(query_id, timeout=timeout)
-            if result:
-                if "error" in result:
-                    return {"content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{result['error']}"}], "isError": True}
-                else:
-                    value = result.get("value", "")
-                    return {"content": [{"type": "text", "text": f"[OK] 执行结果：\n{value}"}]}
-            return {"content": [{"type": "text", "text": f"[FAIL] 超时（{timeout}秒）：游戏端未回传结果"}], "isError": True}
+                return {"content": [{"type": "text", "text": f"[FAIL] 命名管道执行失败：{e}"}], "isError": True}
+
+            if resp.get("ok"):
+                payload = resp.get("payload", {})
+                val = payload.get("result") if isinstance(payload, dict) else payload
+                return {"content": [{"type": "text", "text": f"[OK] 执行结果：\n{self._format_pipe_value(val)}"}]}
+            else:
+                err = resp.get("error", {})
+                err_msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return {"content": [{"type": "text", "text": f"[FAIL] 游戏端执行错误：{err_msg}"}], "isError": True}
 
         _add("exec_game",
-             "游戏端执行 Lua 语句块 - AI 提交任意 Lua 语句块，游戏端执行（带副作用，可改游戏态），回传返回值。与 inspect_game（只读表达式）并存，共享 inspect HTTP 通道，mode 标记区分。",
+             "游戏端执行 Lua 语句块（Named Pipe） - 通过 Windows 命名管道 (\\\\.\\pipe\\war3_agent) 在游戏内执行任意 Lua 语句块（可带副作用、修改游戏态）并回传返回值。",
              {"type": "object", "properties": {
-                 "code": {"type": "string", "description": "要在游戏内执行的 Lua 语句块（如 'Player(1):addGold(100); return Player(1):getGold()'）"},
-                 "timeout": {"type": "integer", "description": "等待游戏端回传结果的超时时间（秒），默认 5", "default": 5}
+                 "code": {"type": "string", "description": "要在游戏内执行的 Lua 语句块（如 'Player.get(1):addGold(100); return Player.get(1):getGold()'）"},
+                 "timeout": {"type": "integer", "description": "超时时间（秒），默认 5", "default": 5},
+                 "pid": {"type": "integer", "description": "指定连接的 War3.exe 进程 PID（多开时可选）"}
              }, "required": ["code"]},
              _handle_exec_game)
 
@@ -532,7 +534,7 @@ class War3TesterMCP:
                 return {"content": [{"type": "text", "text": f"[FAIL] get_debug_output 失败：{e}"}], "isError": True}
 
         _add("get_debug_output",
-             "调试输出捕获 - 聚合游戏的调试输出：① War3 游戏日志（按 config.war3_log_dir 定位）② HTTP /error 端点缓存的运行时错误（http_receiver 内存缓冲）。按 error/warning 分级返回最近 N 条。纯读取，不启动游戏。",
+             "调试输出捕获 - 聚合游戏的调试输出：① War3 游戏日志（按 config.war3_log_dir 定位）② HTTP /error 端点缓存的运行时错误。按 error/warning 分级返回最近 N 条。纯读取，不启动游戏。",
              {"type": "object", "properties": {
                  "limit": {"type": "integer", "description": "每级最多返回条数，默认 50", "default": 50},
                  "level": {"type": "string", "description": "过滤级别：'all'(默认) | 'error' | 'warning'", "enum": ["all", "error", "warning"]},
@@ -632,7 +634,7 @@ class War3TesterMCP:
                 return {"content": [{"type": "text", "text": f"[FAIL] save_adapter_hook 失败：{e}"}], "isError": True}
 
         _add("save_adapter_hook",
-             "保存 AI 生成的适配钩子 - 持久化到 _war3_tester/adapters/ 目录，test_entry_preparer 自动生成 adapter_loader.lua，inspect_handler 启动时自动加载。",
+             "保存 AI 生成的适配钩子 - 持久化到 _war3_tester/adapters/ 目录，test_entry_preparer 自动生成 adapter_loader.lua，启动时自动加载。",
              {"type": "object", "properties": {
                  "name": {"type": "string", "description": "钩子名（不含 .lua 后缀，如 'difficulty_skip'）"},
                  "content": {"type": "string", "description": "钩子 lua 内容"},
@@ -797,66 +799,220 @@ class War3TesterMCP:
              _handle_get_watch_results)
 
         # 23. setup_environment
-        # v0.19.6(候选⑤): 闭包体搬至 EnvironmentProvisioner.setup，此处 thin delegate
         def _handle_setup_environment(arguments):
             return self.environment_provisioner.setup(arguments)
 
         _add("setup_environment",
-             "一键部署测试环境组件（socket.dll/nopause.asi/Flask 依赖）。游戏端靠 socket.dll 发 HTTP 回传测试结果，靠 nopause.asi 防失焦暂停，MCP 端靠 Flask 接收。缺装任一组件会导致 test_commit 静默超时。",
+             "一键安装、体检或修复测试与 Named Pipe Agent 环境组件。支持 mode='repair'（默认，安装缺失并修复损坏组件）、'install'（仅装缺失）、'check'（只读体检）。涵盖六大项目组件（socket / http / nopause / agent_bridge / agent_lua / entry_hook）及可选 plugin_sync（同步插件缓存）。",
              {"type": "object", "properties": {
-                 "source_dir": {"type": "string", "description": "目标项目根目录，默认取环境变量 WAR3_PROJECT_ROOT"},
-                 "components": {"type": "array", "items": {"type": "string", "enum": ["socket", "http", "nopause"]}, "description": "要安装的组件列表，默认三个全装：socket（拷 socket.dll 到项目 map/）、http（pip install flask werkzeug）、nopause（拷 nopause.asi 到 war3 安装目录）", "default": ["socket", "http", "nopause"]},
-                 "war3_dir": {"type": "string", "description": "war3 安装目录（war3.exe 同目录，用于 nopause 部署）。默认从 config.war3_log_dir 反推；反推不到则跳过 nopause 并提示传参"}
+                 "source_dir": {"type": "string", "description": "目标项目根目录（如 'D:\\\\maps\\\\wzns'），默认取环境变量 WAR3_PROJECT_ROOT"},
+                 "mode": {"type": "string", "enum": ["repair", "install", "check"], "default": "repair", "description": "执行模式：'repair'(默认，安装并覆盖修复所有组件) | 'install'(仅安装缺失文件) | 'check'(只读体检诊断)"},
+                 "components": {
+                     "type": "array",
+                     "items": {"type": "string", "enum": ["socket", "http", "nopause", "agent_bridge", "agent_lua", "entry_hook", "plugin_sync"]},
+                     "description": "要处理的组件列表，默认处理项目全部六大组件：socket(socket.dll) / http(flask) / nopause(nopause.asi) / agent_bridge(agent_bridge.dll) / agent_lua(15个Lua Agent及Oracle脚本) / entry_hook(-test on入口钩子)",
+                     "default": ["socket", "http", "nopause", "agent_bridge", "agent_lua", "entry_hook"]
+                 },
+                 "war3_dir": {"type": "string", "description": "war3 安装目录（war3.exe 同目录，用于 nopause.asi / agent_bridge.asi 部署）"}
              }},
              _handle_setup_environment)
+
+        # ── 24~31: LLM Agent 命名管道探索与步进控制工具集 ──────────────────────────
+
+        def _call_pipe_tool(req_type: str, payload: dict = None, timeout_ms: int = 10000, pid: Optional[int] = None) -> dict:
+            try:
+                resp = self.pipe_client.request(req_type, payload, timeout_ms=timeout_ms, pid=pid)
+                if resp.get("ok"):
+                    return {"content": [{"type": "text", "text": self._format_pipe_value(resp.get("payload", {}))}]}
+                else:
+                    err = resp.get("error", {})
+                    err_msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    return {"content": [{"type": "text", "text": f"[FAIL] {err_msg}"}], "isError": True}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] 命名管道请求失败 ({req_type})：{e}"}], "isError": True}
+
+        # 24. game_status
+        def _handle_game_status(arguments):
+            pid = arguments.get("pid")
+            try:
+                ping_resp = self.pipe_client.request("ping", {}, timeout_ms=3000, pid=pid)
+                status_resp = self.pipe_client.request("status", {}, timeout_ms=3000, pid=pid)
+                combined = {
+                    "ping": ping_resp.get("payload", {}),
+                    "runtime": status_resp.get("payload", {}) if status_resp.get("ok") else status_resp.get("error")
+                }
+                return {"content": [{"type": "text", "text": self._format_pipe_value(combined)}]}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] game_status 失败：{e}"}], "isError": True}
+
+        _add("game_status",
+             "查询游戏内 Named Pipe Agent 桥接状态、插件版本、Lua 帧钟与当前冻结状态（step/free）。",
+             {"type": "object", "properties": {
+                 "pid": {"type": "integer", "description": "可选 War3.exe 进程 PID（多开时指定 \\\\.\\pipe\\war3_agent_<pid>）"}
+             }},
+             _handle_game_status)
+
+        # 25. game_set_mode
+        def _handle_game_set_mode(arguments):
+            mode = arguments.get("mode", "free")
+            pid = arguments.get("pid")
+            try:
+                resp = self.pipe_client.request("set_mode", {"mode": mode}, timeout_ms=5000, pid=pid)
+                if mode == "free":
+                    self.pipe_client.request("resume", {}, timeout_ms=5000, pid=pid)
+                if resp.get("ok"):
+                    return {"content": [{"type": "text", "text": self._format_pipe_value(resp.get("payload", {}))}]}
+                return {"content": [{"type": "text", "text": f"[FAIL] {resp.get('error')}"}], "isError": True}
+            except Exception as e:
+                return {"content": [{"type": "text", "text": f"[FAIL] game_set_mode 失败：{e}"}], "isError": True}
+
+        _add("game_set_mode",
+             "切换游戏运行模式：'step'（步进冻结模式，每次 game_act 推进指定秒数后硬冻结主线程等待 LLM 决策）或 'free'（自由运行模式，立即解除冻结恢复正常游玩）。",
+             {"type": "object", "properties": {
+                 "mode": {"type": "string", "enum": ["step", "free"], "description": "'step' 步进冻结 | 'free' 自由运行"},
+                 "pid": {"type": "integer", "description": "可选 War3.exe 进程 PID"}
+             }, "required": ["mode"]},
+             _handle_game_set_mode)
+
+        # 26. game_observe
+        def _handle_game_observe(arguments):
+            detail = arguments.get("detail", "full")
+            radius = arguments.get("radius", 1200)
+            pid = arguments.get("pid")
+            return _call_pipe_tool("observe", {"detail": detail, "radius": radius}, timeout_ms=5000, pid=pid)
+
+        _add("game_observe",
+             "获取游戏当前结构化视界快照（英雄属性/坐标/技能冷却/背包、半径内敌友单位、未选英雄时的候选英雄台、最近事件摘要）。",
+             {"type": "object", "properties": {
+                 "detail": {"type": "string", "enum": ["full", "brief"], "default": "full", "description": "'full' 完整快照（含技能与背包）| 'brief' 简要快照"},
+                 "radius": {"type": "integer", "default": 1200, "description": "周围单位搜索半径，默认 1200"},
+                 "pid": {"type": "integer", "description": "可选 War3.exe 进程 PID"}
+             }},
+             _handle_game_observe)
+
+        # 27. game_act
+        def _handle_game_act(arguments):
+            actions = arguments.get("actions", [])
+            run_seconds = float(arguments.get("run_seconds", 1.0))
+            pid = arguments.get("pid")
+            timeout_ms = int(run_seconds * 1000 + 10000)
+            return _call_pipe_tool("act", {"actions": actions, "run_seconds": run_seconds}, timeout_ms=timeout_ms, pid=pid)
+
+        _add("game_act",
+             "下发一组语义动作（select_hero / move / attack / attack_move / cast / use_item / stop / chat / wait）并推进游戏 run_seconds 秒。在 step 模式下推进完成后自动冻结并返回期间事件与最新观测。",
+             {"type": "object", "properties": {
+                 "actions": {
+                     "type": "array",
+                     "description": "语义动作列表，每项为对象，如 {'op': 'select_hero', 'unit_id': 1048902} 或 {'op': 'attack', 'target_id': 1049100} 或 {'op': 'cast', 'slot': 'Q', 'target': 'point', 'x': 0, 'y': 0}",
+                     "items": {"type": "object"}
+                 },
+                 "run_seconds": {"type": "number", "default": 1.0, "description": "动作下发后推进游戏的时长（秒，0.1 ~ 10.0），默认 1.0"},
+                 "pid": {"type": "integer", "description": "可选 War3.exe 进程 PID"}
+             }, "required": ["actions"]},
+             _handle_game_act)
+
+        # 28. game_events
+        def _handle_game_events(arguments):
+            since_seq = arguments.get("since_seq", 0)
+            kinds = arguments.get("kinds")
+            pid = arguments.get("pid")
+            return _call_pipe_tool("events", {"since_seq": since_seq, "kinds": kinds}, timeout_ms=5000, pid=pid)
+
+        _add("game_events",
+             "增量拉取自指定 seq 以后的游戏事件流（伤害 unit_damaged、击杀 unit_died、五大 Oracle 违规 violation 等）。",
+             {"type": "object", "properties": {
+                 "since_seq": {"type": "integer", "default": 0, "description": "起始事件序号（不含），默认 0"},
+                 "kinds": {"type": "array", "items": {"type": "string"}, "description": "按事件类型过滤（如 ['violation', 'unit_died']），可选"},
+                 "pid": {"type": "integer", "description": "可选 War3.exe 进程 PID"}
+             }},
+             _handle_game_events)
+
+        # 29. game_inspect
+        def _handle_game_inspect(arguments):
+            expr = arguments.get("expr", "")
+            pid = arguments.get("pid")
+            return _call_pipe_tool("inspect", {"expr": expr}, timeout_ms=5000, pid=pid)
+
+        _add("game_inspect",
+             "对游戏内 Lua 表达式求值并返回结构化 JSON 结果（与 inspect_game 共享命名管道通道）。",
+             {"type": "object", "properties": {
+                 "expr": {"type": "string", "description": "Lua 表达式"},
+                 "pid": {"type": "integer", "description": "可选 War3.exe 进程 PID"}
+             }, "required": ["expr"]},
+             _handle_game_inspect)
+
+        # 30. game_setup
+        def _handle_game_setup(arguments):
+            cmd = arguments.get("cmd")
+            args = arguments.get("args", {})
+            pid = arguments.get("pid")
+            return _call_pipe_tool("setup", {"cmd": cmd, "args": args}, timeout_ms=5000, pid=pid)
+
+        _add("game_setup",
+             "预置游戏测试场景：支持 spawn_enemy（刷怪）、set_hero_level（设等级）、grant_item（发物品）、add_gold（加金币）、heal_full（满状态）、reset_cooldowns（刷CD）、teleport（传送）、kill_all_enemies（清场）、clear_ground_items（清掉落）。",
+             {"type": "object", "properties": {
+                 "cmd": {
+                     "type": "string",
+                     "enum": ["spawn_enemy", "set_hero_level", "grant_item", "add_gold", "heal_full", "reset_cooldowns", "teleport", "kill_all_enemies", "clear_ground_items"],
+                     "description": "场景预置指令名"
+                 },
+                 "args": {"type": "object", "description": "指令参数字典，如 {'level': 10} 或 {'unit_type': 'hfoo', 'count': 3, 'dx': 300, 'dy': 0}"},
+                 "pid": {"type": "integer", "description": "可选 War3.exe 进程 PID"}
+             }, "required": ["cmd"]},
+             _handle_game_setup)
+
+        # 31. game_report_bug
+        def _handle_game_report_bug(arguments):
+            title = arguments.get("title", "未命名 Bug")
+            severity = arguments.get("severity", "medium")
+            steps = arguments.get("steps", [])
+            evidence_seqs = arguments.get("evidence_seqs", [])
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            bugs_file = SERVER_DIR / "logs" / "agent_bugs.md"
+            bugs_file.parent.mkdir(parents=True, exist_ok=True)
+            lines = [
+                f"## [{severity.upper()}] {title}",
+                f"- **时间**: {timestamp}",
+                f"- **证据事件序号**: {evidence_seqs}",
+                "- **复现步骤**:",
+            ]
+            for idx, s in enumerate(steps, 1):
+                lines.append(f"  {idx}. {s}")
+            lines.append("\n---\n")
+            with open(bugs_file, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            return {"content": [{"type": "text", "text": f"[OK] Bug 已记录到 {bugs_file}\n标题：{title}"}]}
+
+        _add("game_report_bug",
+             "提交 LLM Agent 探索测试发现的 Bug 报告，持久化到插件 logs/agent_bugs.md。",
+             {"type": "object", "properties": {
+                 "title": {"type": "string", "description": "Bug 标题"},
+                 "severity": {"type": "string", "enum": ["high", "medium", "low"], "default": "medium", "description": "严重程度"},
+                 "steps": {"type": "array", "items": {"type": "string"}, "description": "复现步骤列表"},
+                 "evidence_seqs": {"type": "array", "items": {"type": "integer"}, "description": "关联的违规/事件序号列表"}
+             }, "required": ["title", "severity", "steps"]},
+             _handle_game_report_bug)
 
         return registry
 
     async def handle_tool_call(self, tool_name: str, arguments: dict) -> dict:
-        """v0.17.0: 查表分发。从 registry 查找 handler 并调用。未知工具走 fallback。"""
+        """查表分发。从 registry 查找 handler 并调用。未知工具走 fallback。"""
         spec = self._tool_registry.get(tool_name)
         if spec:
             return await spec.handler(arguments) if asyncio.iscoroutinefunction(spec.handler) else spec.handler(arguments)
-        # fallback: 未知工具
         return {
             "content": [{"type": "text", "text": f"未知工具：{tool_name}"}],
             "isError": True
         }
 
     def _prepare_test_entry(self, test_name: str, test_file: str, source_dir: str) -> None:
-        """
-        准备测试入口文件（编译前调用）。
-
-        v0.15.0: 委托 TestEntryPreparer.prepare（消除反向依赖，保留方法签名供内部调用）
-
-        Args:
-            test_name: 测试名称
-            test_file: 测试文件名（如 'test_skill_a00d.lua'）
-            source_dir: 源码目录
-        """
-        # v0.15.0: 委托 test_entry_preparer（内部已含 _get_war3_tester_dir/_inject_war3_tester_assets/删_test_off）
+        """准备测试入口文件（编译前调用）。"""
         self.test_entry_preparer.prepare(test_name, test_file, source_dir)
 
     def test_commit(self, test_name: str, test_file: str = None,
                     timeout: int = 60, platform: str = None, source_dir: str = None,
                     auto_screenshot_on_failure: bool = True) -> dict:
-        """运行测试 - 编译 + 启动游戏 + 等待 HTTP 结果
-
-        v2 增强（设计文档 4.1）：委托 batch_runner.run_single_test，与 run_test_batch
-        共享单测执行核心，自动获得：
-        - 进程存活监控（游戏崩溃 → failure_type='crash'）
-        - failure_type 分类（compile_error/crash/timeout/assertion/runtime_error/env_error）
-        - 失败按类型触发截图（仅 crash/timeout/unknown）
-        - 结果附加 game_errors / progress / logs / crash_log
-
-        Args:
-            test_name: 测试名称
-            test_file: 测试文件名
-            timeout: 超时时间（秒）
-            platform: 游戏平台
-            source_dir: 源码目录
-            auto_screenshot_on_failure: 失败时自动截图
-        """
+        """运行测试 - 编译 + 启动游戏 + 等待 HTTP 结果"""
         single = self.batch_runner.run_single_test(
             test_name, test_file, timeout, platform, source_dir, auto_screenshot_on_failure)
 
@@ -877,7 +1033,6 @@ class War3TesterMCP:
             'result': single.get('result'),
             'result_file': single.get('result_file'),
             'elapsed': single.get('elapsed', 0),
-            # v2 字段
             'failure_type': single.get('failure_type'),
             'game_errors': single.get('game_errors'),
             'crash_log': single.get('crash_log'),
@@ -887,22 +1042,12 @@ class War3TesterMCP:
         }
 
     def toggle_test(self, enabled: bool, source_dir: str) -> dict:
-        """一键开关自动测试模式（写/删 _test_off.lua + 清测试残留 + 重编译）。
-
-        【M1 归拢】_test_off.lua / _target_test.lua / run_auto_test.lua 均移入 _war3_tester/。
-
-        关闭(false)：写入 _war3_tester/_test_off.lua（内容 return true），auto-test/init.lua 顶部
-            pcall(require) 命中后整个模块 early-return → 手动游戏零干扰。
-            同时删除 _war3_tester/_target_test.lua / run_auto_test.lua 残留，避免旧测试入口意外激活。
-        开启(true)：删除 _war3_tester/_test_off.lua，恢复 auto-test 模块默认加载。
-        注：跑测试本身仍需 test_commit（它写入 _war3_tester/_target_test.lua，并会自动删除 _test_off.lua）。
-        """
+        """一键开关自动测试模式（写/删 _test_off.lua + 清测试残留 + 重编译）。"""
         test_dir = self.config.get_test_dir_path(self.config.resolve_path(source_dir))
         if test_dir is None:
             return {'success': False, 'enabled': enabled,
                     'action': '失败：source_dir 非有效 w2l 项目根',
                     'compile_error': f'source_dir 非有效 w2l 项目根（缺 w3x2lni/）: {source_dir}'}
-        # v0.15.0: 委托 test_mode_flag（内部已含 _test_off 写/删 + legacy 清理 + _target_test/run_auto_test 残留清理）
         if enabled:
             self.test_mode_flag.enable(test_dir)
             action = '已开启：auto-test 模块恢复加载（跑测试请用 test_commit）'
@@ -912,7 +1057,6 @@ class War3TesterMCP:
             action = '已关闭：auto-test 模块不加载，手动游戏零干扰'
             self.logger.info('[toggle_test] 关闭：写入 _war3_tester/_test_off.lua，清理 _target_test.lua/run_auto_test.lua 残留')
 
-        # 重编译让 .w3x 反映标志文件变更
         compile_result = self.executor.compile(source_dir)
         return {
             'success': compile_result.get('success', False),
@@ -922,75 +1066,31 @@ class War3TesterMCP:
         }
 
     def _get_project_info(self, source_dir: str, max_depth: int = 3) -> str:
-        """
-        扫描项目地图脚本目录，返回结构化分析（纯静态，只读）。
-
-        v0.19.6(候选③): thin delegate，委托 project_scaffolder.get_project_info
-        """
         return self.project_scaffolder.get_project_info(source_dir, max_depth)
 
     def _get_debug_output(self, limit: int = 50, level: str = "all", source_dir: str = None) -> str:
-        """
-        聚合游戏调试输出（纯读取，不启动游戏）。
-
-        v0.15.0: 委托 diagnostics_collector（thin delegate）
-        """
         return self.diagnostics_collector.get_debug_output(limit, level, source_dir)
 
     def _scaffold_test(self, module: str, layer: str, name: str = None, source_dir: str = None) -> dict:
-        """
-        生成 TDD 测试骨架（M3 方向 D）
-
-        v0.19.6(候选③): thin delegate，委托 project_scaffolder.scaffold_test
-        """
         return self.project_scaffolder.scaffold_test(module, layer, name, source_dir)
 
     def _save_adapter_hook(self, name: str, content: str, source_dir: str = None) -> dict:
-        """
-        保存 AI 生成的适配钩子
-
-        v0.19.10: thin delegate，委托 project_scaffolder.save_adapter_hook
-        """
         return self.project_scaffolder.save_adapter_hook(name, content, source_dir)
 
     def _generate_test_skeleton(self, module: str, layer: str, test_name: str) -> str:
-        """生成测试骨架内容（通用，不硬编码项目路径）
-
-        v0.19.6(候选③): thin delegate，委托 project_scaffolder.generate_test_skeleton
-        """
         return self.project_scaffolder.generate_test_skeleton(module, layer, test_name)
 
     def _tdd_red(self, test_name: str, layer: str, source_dir: str = None, timeout: int = 60) -> dict:
-        """
-        TDD Red 阶段 - 跑测试预期失败，确认测试有效（M3 方向 E）
-
-        关键：区分「预期 assertion fail」（测试有效，Red 成立）vs「意外 env_error/compile_error」
-        （测试写错或环境问题，Red 不成立）。
-
-        Returns:
-            {
-                'status': 'red_valid' | 'red_invalid' | 'green',
-                'failure_type': str | None,
-                'reason': str | None,
-                'error': str | None,
-                'elapsed': float,
-            }
-        """
-        # 根据 layer 选择运行方式
         if layer == 'unit':
-            # 桌面单测
             result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
         else:
-            # integration/e2e: 游戏内测试
             result = self.test_commit(test_name, None, timeout, None, source_dir, False)
 
         elapsed = result.get('elapsed', 0)
         failure_type = result.get('failure_type')
         success = result.get('success', False)
 
-        # 判断 Red 是否成立
         if success:
-            # 测试通过了，但预期应该失败
             return {
                 'status': 'green',
                 'failure_type': None,
@@ -999,13 +1099,7 @@ class War3TesterMCP:
                 'elapsed': elapsed,
             }
 
-        # 测试失败了，判断是否是「预期失败」
-        # 预期失败 = assertion failure（测试逻辑正确，功能未实现导致断言失败）
-        # 非预期失败 = runtime_error / env_error / compile_error / module_load_error 等
-        #   runtime_error = 测试运行时错（调用 nil 函数、数组越界等），可能是测试写错，不一定是功能未实现
-        #   env_error / compile_error / module_load_error = 测试写错或环境问题
         if failure_type == 'assertion':
-            # Red 成立：测试逻辑正确，断言失败，功能未实现
             return {
                 'status': 'red_valid',
                 'failure_type': failure_type,
@@ -1014,9 +1108,6 @@ class War3TesterMCP:
                 'elapsed': elapsed,
             }
         else:
-            # Red 不成立：非 assertion 失败，可能是测试写错或环境问题
-            # runtime_error：可能是测试代码 bug（调用 nil 函数、数组越界等），需检查测试代码
-            # env_error/compile_error/module_load_error：环境问题或测试文件写错
             return {
                 'status': 'red_invalid',
                 'failure_type': failure_type,
@@ -1028,20 +1119,10 @@ class War3TesterMCP:
             }
 
     def _tdd_green(self, test_name: str, layer: str, source_dir: str = None, timeout: int = 60) -> dict:
-        """
-        TDD Green 阶段 - 跑测试预期通过（M3 方向 E）
-
-        Returns:
-            与 test_commit / run_unit_test 同结构的 result
-        """
-        # 根据 layer 选择运行方式
         if layer == 'unit':
-            # 桌面单测
             result = self.desktop_runner.run_unit_test(test_name, source_dir, timeout)
         else:
-            # integration/e2e: 游戏内测试
             result = self.test_commit(test_name, None, timeout, None, source_dir, True)
-
         return result
 
     async def handle_resource_read(self, uri: str) -> dict:
@@ -1073,14 +1154,12 @@ class War3TesterMCP:
 
 async def run_server():
     """运行 MCP 服务器（stdio JSON-RPC 主循环）"""
-    # v0.19.5(候选④): init_runtime 废弃,War3TesterMCP.__init__ 构造四全局
     server = War3TesterMCP()
 
-    # 检测执行器连通性
     if not server.executor.check_connectivity():
         print(file=sys.stderr)
         print("=" * 60, file=sys.stderr)
-        if self.config.is_wsl:
+        if server.config.is_wsl:
             print("[ERROR] 无法连接到 Windows 代理", file=sys.stderr)
             print("请确保 Windows 代理已启动:", file=sys.stderr)
             print("  python win_proxy.py start", file=sys.stderr)
@@ -1091,7 +1170,6 @@ async def run_server():
 
     server.logger.info("执行器连接检测通过")
 
-    # 启动 HTTP 接收端
     http_result = server.http_receiver.start()
     if http_result:
         server.logger.info(f"HTTP 服务器已启动（端口 {server.config.http_port}）")
@@ -1102,13 +1180,16 @@ async def run_server():
     print("[OK] War3 Tester MCP Server 已启动", file=sys.stderr)
 
     def _cleanup_on_exit():
-        """退出清理：停 HTTP 接收端 + 杀 war3 进程（仅 Windows）"""
+        """退出清理：关命名管道 + 停 HTTP 接收端 + 杀 war3 进程（仅 Windows）"""
+        try:
+            server.pipe_client.close()
+        except Exception:
+            pass
         try:
             server.http_receiver.stop()
         except Exception as e:
             server.logger.warning(f"退出清理 http_receiver.stop 异常：{e}")
 
-        # war3 是 Windows 游戏，仅 Windows 执行 taskkill；Linux/macOS 跳过
         if server.config.is_windows or server.config.is_wsl:
             for proc_name in server.config.war3_process_names:
                 try:
@@ -1120,18 +1201,14 @@ async def run_server():
                 except Exception:
                     pass
 
-    # 兜底：atexit 保证任何退出路径都执行清理
     atexit.register(_cleanup_on_exit)
 
-    # SIGTERM handler：Claude Code /exit 给 MCP 发 SIGTERM 时触发清理
-    # Windows 下 SIGTERM 可注册，但实际是否触发取决于退出方式（TerminateProcess 等价 SIGKILL 不跑 handler）
     def _on_sigterm(signum, frame):
         server.logger.info("收到 SIGTERM，执行退出清理")
         _cleanup_on_exit()
         sys.exit(0)
     signal.signal(signal.SIGTERM, _on_sigterm)
 
-    # stdio JSON-RPC 主循环
     try:
         while True:
             try:
@@ -1160,7 +1237,7 @@ async def run_server():
                             },
                             "serverInfo": {
                                 "name": "war3-tester",
-                                "version": "1.0.0"
+                                "version": "0.21.0"
                             }
                         }
                     }
