@@ -12,7 +12,11 @@
    - `game_status`、`game_set_mode`（`step` 步进硬冻结 / `free` 自动解冻）、`game_observe`、`game_act`（支持 `select_hero` / `move` / `attack` / `attack_move` / `cast` / `use_item` 等语义动作）、`game_events`、`game_inspect`、`game_setup`、`game_report_bug`。
    - 内置全部 15 个游戏内 Lua Agent 与五大 Oracle 脚本（`assets/agent/`：`numeric`、`runtime_error`、`stuck`、`consistency`、`leak`）。
 3. **升级环境一键安装 / 体检 / 修复（`setup_environment` & `scripts/install_or_repair.py`）**：
-   - 支持 `mode="repair" | "install" | "check"` 三种模式，覆盖七大组件：`socket`、`http`、`nopause`、`agent_bridge`、`agent_lua`（自动适配项目 `test_module_prefix`）、`entry_hook`（自动注入 `-test on` 钩子并清理 `_test_off.lua`）、`plugin_sync`（同步插件缓存）。
+   - 支持 `mode="repair" | "install" | "check"` 三种模式，覆盖七大组件：`socket`、`http`、`nopause`、`agent_bridge`（仅部署 `map/agent_bridge.dll` 并清理 `war3_dir` 冗余 `.asi`）、`agent_lua`（自动适配项目 `test_module_prefix`）、`entry_hook`（自动注入 `-test on` 钩子、默认静默启动命名管道监听并清理 `_test_off.lua` 与废弃 `inspect_handler.lua`）、`plugin_sync`（同步 Claude Code 与 Antigravity 插件缓存）。
+4. **多 IDE 共存与防卡死体验优化**：
+   - 移除 `start_mcp.js` 启动时对 `8766` 端口的无条件强杀，`http_receiver` 改为按需接管，使 Antigravity 与 Claude Code 可同时运行 MCP 实例而不互杀。
+   - `runtime.lua` 新增 **30 秒空闲自动解冻看门狗**（`step` 冻结态连续 30 秒无指令自动切回 `free` 并解冻）与 **`free` 模式 `run_seconds` 自然帧推进支持**。
+   - 修复 `oracle/consistency.lua` 非单位实体过滤与死亡英雄排除，打通 `actions.lua` 移动指令对 `oracle/stuck.lua` 的计数钩子，补齐 `setup.lua` 的 `clear_enemies` 命令。
 
 ## 0.20.1 - 2026-09-26
 
