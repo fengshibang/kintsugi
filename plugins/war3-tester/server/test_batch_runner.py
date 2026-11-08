@@ -24,6 +24,7 @@ TestBatchRunner - 批量测试编排（v2 新增，设计文档 4.1）
 import json
 import time
 import os
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -35,6 +36,16 @@ class TestBatchRunner:
 
     # 失败时触发截图的类型（设计文档 4.7：assertion/runtime_error/compile_error 不截图）
     SCREENSHOT_FAILURE_TYPES = {'crash', 'timeout', 'unknown'}
+
+    # 防失控护栏（v0.21.1）：杜绝批量测试在后台无限反复拉起 War3
+    # 这些失败类型重试无意义（环境/编译问题不会因为再启动一次游戏而变好）
+    NON_RETRYABLE_FAILURE_TYPES = {'env_error', 'compile_error', 'cancelled'}
+    # 连续 N 个 env_error 即熔断整个批次（通常是 War3 残留杀不掉 / 启动器异常）
+    MAX_CONSECUTIVE_ENV_ERRORS = 2
+    # 单批次最多拉起游戏次数（含重试）
+    DEFAULT_MAX_GAME_LAUNCHES = 10
+    # 单批次墙钟上限（秒）
+    DEFAULT_MAX_BATCH_SECONDS = 900
 
     def __init__(self, config, executor, http_receiver, test_mode_flag, test_entry_preparer, diagnostics_collector, store=None, pipe_client=None):
         """
@@ -60,6 +71,19 @@ class TestBatchRunner:
         # 本次 batch 的 failed 列表（内存，不持久化），供 filter="failed" 复用
         self._failed_cache: List[Dict[str, str]] = []
         self.launched_war3: bool = False
+        # v0.21.1 防失控：桌面单测执行器（unit 层绝不启动游戏）、取消信号、批次互斥锁
+        self.desktop_runner = None
+        self.cancel_event = threading.Event()
+        self._batch_lock = threading.Lock()
+
+    def cancel(self, reason: str = 'cancel requested') -> None:
+        """请求取消正在运行的批量/单个实机测试（stop_game / cleanup_all / notifications/cancelled / stdin EOF 触发）"""
+        if not self.cancel_event.is_set():
+            self.logger.warning(f"[batch] 收到取消请求：{reason}")
+        self.cancel_event.set()
+
+    def is_busy(self) -> bool:
+        return self._batch_lock.locked()
 
     # ------------------------------------------------------------------
     # 测试发现
@@ -178,7 +202,9 @@ class TestBatchRunner:
                        max_retries: int = 1, timeout_per_test: int = 90,
                        auto_screenshot_on_failure: bool = True,
                        source_dir: str = None, platform: str = None,
-                       layer: str = None) -> dict:
+                       layer: str = None,
+                       max_game_launches: int = None,
+                       max_batch_seconds: int = None) -> dict:
         """顺序运行多个测试，每个独立游戏会话，返回汇总报告（设计文档 4.1 run_test_batch）
 
         Args:
@@ -191,6 +217,33 @@ class TestBatchRunner:
             platform: 游戏平台
             layer: 按层过滤 'all' | 'unit' | 'integration' | 'e2e'（默认 None 不过滤）
         """
+        # ⓪ 批次互斥：同一时刻只允许一个批次，杜绝并发批次叠加拉起游戏
+        if not self._batch_lock.acquire(blocking=False):
+            return {
+                'success': False,
+                'error': '已有批量/实机测试在运行，拒绝并发启动（如需中止请调用 stop_game 或 cleanup_all）',
+                'summary': {'total': 0, 'passed': 0, 'failed': 0, 'pass_rate': 0},
+                'results': [],
+            }
+        try:
+            self.cancel_event.clear()
+            return self._run_test_batch_locked(
+                test_filter, stop_on_first_failure, max_retries, timeout_per_test,
+                auto_screenshot_on_failure, source_dir, platform, layer,
+                max_game_launches, max_batch_seconds)
+        finally:
+            self._batch_lock.release()
+
+    def _run_test_batch_locked(self, test_filter, stop_on_first_failure, max_retries, timeout_per_test,
+                               auto_screenshot_on_failure, source_dir, platform, layer,
+                               max_game_launches, max_batch_seconds) -> dict:
+        max_game_launches = max_game_launches or self.DEFAULT_MAX_GAME_LAUNCHES
+        max_batch_seconds = max_batch_seconds or self.DEFAULT_MAX_BATCH_SECONDS
+        batch_start = time.time()
+        game_launches = 0
+        consecutive_env_errors = 0
+        abort_reason: Optional[str] = None
+
         # ① 环境检查
         if not self.executor.check_connectivity():
             return {
@@ -225,30 +278,75 @@ class TestBatchRunner:
         for i, t in enumerate(selected):
             test_name = t['test_name']
             test_file = t.get('file') or f'{test_name}.lua'
-            self.logger.info(f"[batch] ({i + 1}/{len(selected)}) {test_name}")
+            test_layer = t.get('layer') or self._layer_of(test_file, source_dir)
 
-            attempt = 0
-            single = None
-            while attempt <= max_retries:
-                single = self.run_single_test(
-                    test_name, test_file, timeout_per_test, platform, source_dir,
-                    auto_screenshot_on_failure)
-                if single.get('success'):
-                    break
-                attempt += 1
-                if attempt <= max_retries:
-                    self.logger.info(
-                        f"[batch] {test_name} 失败({single.get('failure_type')}), 第 {attempt} 次重试...")
+            # ③.0 护栏：取消 / 墙钟上限
+            if self.cancel_event.is_set():
+                abort_reason = '收到取消请求'
+                break
+            if time.time() - batch_start > max_batch_seconds:
+                abort_reason = f'超过批次墙钟上限 {max_batch_seconds}s'
+                break
+
+            self.logger.info(f"[batch] ({i + 1}/{len(selected)}) {test_name} [layer={test_layer}]")
+
+            # ③.1 unit 层：一律走桌面 Lua，绝不启动游戏
+            if test_layer == 'unit':
+                single = self._run_unit_via_desktop(test_name)
+            else:
+                attempt = 0
+                single = None
+                while attempt <= max_retries:
+                    if self.cancel_event.is_set():
+                        abort_reason = '收到取消请求'
+                        break
+                    if game_launches >= max_game_launches:
+                        abort_reason = f'达到单批次游戏启动上限 {max_game_launches} 次'
+                        break
+                    game_launches += 1
+                    single = self.run_single_test(
+                        test_name, test_file, timeout_per_test, platform, source_dir,
+                        auto_screenshot_on_failure)
+                    if single.get('success'):
+                        break
+                    if single.get('failure_type') in self.NON_RETRYABLE_FAILURE_TYPES:
+                        break  # 环境/编译/取消类失败重试无意义，避免反复拉起游戏
+                    attempt += 1
+                    if attempt <= max_retries:
+                        self.logger.info(
+                            f"[batch] {test_name} 失败({single.get('failure_type')}), 第 {attempt} 次重试...")
+                if single is None:
+                    break  # 护栏触发，本测试未执行
 
             results.append(single)
             if single.get('success'):
                 passed += 1
+                consecutive_env_errors = 0
             else:
                 failed_list.append(test_name)
                 self._failed_cache.append({'test_name': test_name, 'file': test_file})
+                ft = single.get('failure_type')
+                if ft == 'env_error' and test_layer != 'unit':
+                    consecutive_env_errors += 1
+                else:
+                    consecutive_env_errors = 0
+                if single.get('residue_detected'):
+                    abort_reason = 'War3 进程残留且无法清理，熔断整个批次（请手动关闭游戏后重试）'
+                    break
+                if consecutive_env_errors >= self.MAX_CONSECUTIVE_ENV_ERRORS:
+                    abort_reason = f'连续 {consecutive_env_errors} 个 env_error，熔断整个批次'
+                    break
+                if ft == 'cancelled':
+                    abort_reason = '收到取消请求'
+                    break
                 if stop_on_first_failure:
                     self.logger.info("[batch] stop_on_first_failure，停止后续测试")
                     break
+            if abort_reason:
+                break
+
+        if abort_reason:
+            self.logger.warning(f"[batch] 批次中止：{abort_reason}")
 
         # ④ 汇总
         total = len(results)
@@ -261,15 +359,20 @@ class TestBatchRunner:
             'pass_rate': pass_rate,
             'stop_on_first_failure': stop_on_first_failure,
             'failure_types': self._tally_failure_types(results),
+            'game_launches': game_launches,
+            'aborted': abort_reason,
+            'not_run': len(selected) - total,
         }
 
-        # ⑤ 清理
-        self.executor.stop_game()
+        # ⑤ 清理（仅当本批次真的拉起过游戏）
+        if game_launches > 0:
+            self.executor.stop_game()
 
         self.logger.info(f"[batch] 完成：{passed}/{total} 通过")
         return {
             'success': failed == 0,
-            'message': f'批量测试完成：{passed}/{total} 通过，通过率 {pass_rate:.0%}',
+            'message': (f'批量测试完成：{passed}/{total} 通过，通过率 {pass_rate:.0%}'
+                        + (f'（已中止：{abort_reason}，{len(selected) - total} 个未执行）' if abort_reason else '')),
             'summary': summary,
             'results': results,
             'failed': failed_list,
@@ -293,7 +396,37 @@ class TestBatchRunner:
                 'summary': {'total': 0, 'passed': 0, 'failed': 0, 'pass_rate': 0},
                 'results': [],
             }
-        return [{'test_name': t['test_name'], 'file': t['file']} for t in discovery['tests']]
+        return [{'test_name': t['test_name'], 'file': t['file'], 'layer': t.get('layer')}
+                for t in discovery['tests']]
+
+    def _layer_of(self, test_file: str, source_dir: str = None) -> str:
+        """按文件推断测试层（找不到文件时保守返回 integration）"""
+        try:
+            resolved = self.config.resolve_path(source_dir) if source_dir else self.config.compile_source_dir
+            test_dir = self.config.get_test_dir_path(resolved)
+            if test_dir is not None and (test_dir / test_file).exists():
+                return self._infer_test_layer(test_dir / test_file)
+        except Exception:
+            pass
+        return 'integration'
+
+    def _run_unit_via_desktop(self, test_name: str) -> dict:
+        """unit 层测试走桌面 Lua（秒级，零游戏进程）。无 desktop_runner 时直接拒绝，绝不回退到实机。"""
+        if self.desktop_runner is None:
+            return self._build_result(test_name, success=False, failure_type='env_error',
+                                      error='unit 层测试需要 desktop_runner，已拒绝回退到实机启动游戏',
+                                      elapsed=0)
+        try:
+            r = self.desktop_runner.run_unit_test(test_name)
+        except Exception as e:
+            return self._build_result(test_name, success=False, failure_type='runtime_error',
+                                      error=f'桌面单测异常：{e}', elapsed=0)
+        ok = bool(r.get('success'))
+        return self._build_result(
+            test_name, success=ok,
+            failure_type=None if ok else (r.get('failure_type') or 'assertion'),
+            error=None if ok else (r.get('error') or r.get('details')),
+            elapsed=round(r.get('elapsed', 0), 2))
 
     def _normalize_test(self, t) -> Dict[str, str]:
         """把字符串/字典归一为 {test_name, file}"""
@@ -345,6 +478,7 @@ class TestBatchRunner:
 
         # 0. 预清理
         self.logger.info(f"[{test_name}] 预清理...")
+        self.graceful_quit_via_pipe()
         self.executor.stop_game()
         time.sleep(3)
 
@@ -352,10 +486,12 @@ class TestBatchRunner:
         # 残留则报错(env_error)不自启新游戏，避免旧进程没死透时新游戏在脏环境卡住
         clean_check = self.executor.is_war3_clean()
         if not clean_check.get('success'):
-            return self._build_result(
+            res = self._build_result(
                 test_name, success=False, failure_type='env_error',
                 error=f'预清理后仍有 war3 进程残留: {clean_check.get("remaining")};请 stop_game 重试或手动清理',
                 elapsed=0)
+            res['residue_detected'] = True
+            return res
 
         try:
             # 0.5 准备测试入口（写 _target_test.lua + run_auto_test.lua）
@@ -394,6 +530,10 @@ class TestBatchRunner:
             pipe_seq = 0
 
             while elapsed < timeout:
+                if self.cancel_event.is_set():
+                    outcome = 'cancelled'
+                    self.logger.warning(f"[{test_name}] 收到取消请求，立即中止等待")
+                    break
                 time.sleep(poll_interval)
                 elapsed += poll_interval
 
@@ -458,7 +598,8 @@ class TestBatchRunner:
                     pre_screenshots = self._take_failure_screenshot(test_name)
                     pre_inspect_snapshot = self._collect_inspect_snapshot()
 
-            # 6. 停止游戏
+            # 6. 停止游戏（先经命名管道让游戏自行退出，再走进程级兜底）
+            self.graceful_quit_via_pipe()
             self.executor.stop_game()
             time.sleep(1)
 
@@ -471,6 +612,24 @@ class TestBatchRunner:
             # 需求1：测试完成后（成功/失败/超时/早返回——所有路径）自动写 _test_off.lua，
             # 让手动游戏时 auto-test 模块不加载（零干扰）；下次 _prepare_test_entry 自动删除它
             self._write_test_off(source_dir)
+
+    def graceful_quit_via_pipe(self) -> bool:
+        """经命名管道让 War3 自行退出（War3.exe 常拒绝 taskkill/Stop-Process 强杀）。失败静默返回 False。"""
+        pipe = getattr(self, 'pipe_client', None)
+        if pipe is None:
+            return False
+        expr = ("pcall(function() local f = package.loaded.ffi or require('ffi'); "
+                "f.cdef('void ExitProcess(unsigned int);'); f.C.ExitProcess(0) end)")
+        try:
+            pipe.request('inspect', {'expr': expr}, timeout_ms=1500)
+        except Exception:
+            pass  # 管道断开通常意味着进程已退出
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+        return True
 
     def _write_test_off(self, source_dir: str) -> None:
         """测试完成后写 _test_off.lua，让手动游戏时 auto-test 模块不加载（零干扰）。
@@ -591,6 +750,12 @@ class TestBatchRunner:
                 progress=progress,
                 logs=logs,
                 error=f'测试超时 ({elapsed}s)，最后进度：{self._last_progress_step(test_name, progress)}')
+
+        if outcome == 'cancelled':
+            self.store.clear_test(test_name)
+            return self._build_result(
+                test_name, success=False, failure_type='cancelled',
+                elapsed=elapsed, error='测试被取消（stop_game / cleanup_all / 客户端取消）')
 
         # outcome == 'env_error'（游戏从未启动）
         return self._build_result(

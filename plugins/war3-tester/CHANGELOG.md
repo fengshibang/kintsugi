@@ -1,5 +1,18 @@
 # Changelog — war3-tester
 
+## 0.21.1 - 2026-11-09
+
+### 修复（根治「批量测试在后台无限反复拉起 War3」）
+
+事故：`run_test_batch(layer="unit")` 把 73 个测试全部当实机测试串行拉起游戏；客户端 3 分钟超时后服务端仍在后台继续循环，且连 `stop_game` 都无法打断。四个独立缺陷叠加，逐一根治：
+
+1. **unit 层绝不启动游戏**：批量测试按层分流，`unit` 一律走 `desktop_runner`（桌面 Lua 秒级）；缺少 desktop_runner 时直接失败，**禁止回退到实机**。
+2. **主循环并发化，长任务可被打断**：`tools/call` 改在工作线程执行，stdio 主循环保持可读；`stop_game` / `cleanup_all` 运行中即可生效并触发 `cancel()`；支持 MCP `notifications/cancelled`（客户端超时自动熔断）；stdin EOF（客户端断开）与服务退出时自动取消。
+3. **熔断器**：`env_error` / `compile_error` / `cancelled` 不再重试；连续 2 个 `env_error` 熔断整个批次；预清理发现 War3 残留杀不掉时立即熔断。
+4. **硬上限**：单批次游戏启动次数上限 `max_game_launches`（默认 10，含重试）、墙钟上限 `max_batch_seconds`（默认 900s）；同一时刻仅允许一个实机批次（互斥锁，并发请求直接拒绝）。
+5. **退出更可靠**：停止游戏前先经命名管道让 War3 自行 `ExitProcess`（War3.exe 常拒绝 taskkill / Stop-Process 强杀）。
+6. 单测：`test_batch_runner_test.py` 新增 7 例护栏回归（4 → 11 例全部通过）。
+
 ## 0.21.0 - 2026-11-08
 
 ### 新增（Named Pipe 架构升级 + 8 个 LLM Agent 实机探索工具 + 一键安装/体检/修复）

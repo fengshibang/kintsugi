@@ -102,6 +102,8 @@ class War3TesterMCP:
             pipe_client=self.pipe_client
         )
         self.desktop_runner = DesktopRunner(self.config, self.executor)
+        # v0.21.1 防失控：unit 层批量测试一律走桌面 Lua，绝不启动游戏
+        self.batch_runner.desktop_runner = self.desktop_runner
         self.file_watcher = FileWatcher(self.desktop_runner, self.config)
 
         self._tool_registry = self._register_tools()
@@ -226,7 +228,9 @@ class War3TesterMCP:
                 test_filter=test_filter, stop_on_first_failure=stop_on_first_failure,
                 max_retries=max_retries, timeout_per_test=timeout_per_test,
                 auto_screenshot_on_failure=auto_ss, source_dir=source_dir, platform=platform,
-                layer=layer)
+                layer=layer,
+                max_game_launches=arguments.get("max_game_launches"),
+                max_batch_seconds=arguments.get("max_batch_seconds"))
             messages = [f"## 批量测试\n\n时间：{timestamp}", batch_result.get("message", "")]
             if not batch_result.get("success") and batch_result.get("error"):
                 messages.append(f"\n[ERROR] {batch_result['error']}")
@@ -249,7 +253,9 @@ class War3TesterMCP:
                  "auto_screenshot_on_failure": {"type": "boolean", "default": True, "description": "失败时自动截图（仅 crash/timeout/unknown 触发）"},
                  "platform": {"type": "string", "enum": ["ydwe", "kkwe"], "description": "游戏平台，默认自动选择"},
                  "source_dir": {"type": "string", "description": "源码目录路径"},
-                 "layer": {"type": "string", "description": "按测试层过滤：'all'(默认) | 'unit' | 'integration' | 'e2e'（M3 新增）", "enum": ["all", "unit", "integration", "e2e"]}
+                 "layer": {"type": "string", "description": "按测试层过滤：'all'(默认) | 'unit' | 'integration' | 'e2e'（unit 层一律走桌面 Lua，不启动游戏）", "enum": ["all", "unit", "integration", "e2e"]},
+                 "max_game_launches": {"type": "integer", "default": 10, "description": "单批次最多拉起游戏次数（含重试），超出即中止，防止失控"},
+                 "max_batch_seconds": {"type": "integer", "default": 900, "description": "单批次墙钟上限（秒），超出即中止"}
              }},
              _handle_run_test_batch)
 
@@ -335,6 +341,8 @@ class War3TesterMCP:
 
         # 6. stop_game
         def _handle_stop_game(arguments):
+            self.batch_runner.cancel('stop_game')
+            self.batch_runner.graceful_quit_via_pipe()
             self.pipe_client.close()
             result = self.executor.stop_game()
             if result.get("success"):
@@ -364,6 +372,8 @@ class War3TesterMCP:
 
         # 8. cleanup_all
         def _handle_cleanup_all(arguments):
+            self.batch_runner.cancel('cleanup_all')
+            self.batch_runner.graceful_quit_via_pipe()
             self.pipe_client.close()
             stop_result = self.executor.stop_game()
             self.http_receiver.stop()
@@ -1199,11 +1209,45 @@ async def run_server():
         sys.exit(0)
     signal.signal(signal.SIGTERM, _on_sigterm)
 
+    # v0.21.1 防失控：tools/call 在工作线程执行，主循环保持可读 stdin，
+    # 使 stop_game / cleanup_all / notifications/cancelled 能在长任务运行期间被及时处理。
+    import threading as _threading
+    _stdout_lock = _threading.Lock()
+    _loop = asyncio.get_event_loop()
+    _inflight = {}
+    # 可打断长任务的“控制类”工具：不排队，直接并发执行
+    _LONG_RUNNING_TOOLS = {"run_test_batch", "test_commit", "tdd_red", "tdd_green"}
+
+    def _emit(obj):
+        with _stdout_lock:
+            print(json.dumps(obj, ensure_ascii=False), flush=True)
+
+    def _run_tool_sync(tool_name, arguments):
+        return asyncio.run(server.handle_tool_call(tool_name, arguments))
+
+    async def _dispatch_tool(request_id, tool_name, arguments):
+        try:
+            if tool_name in _LONG_RUNNING_TOOLS and server.batch_runner.is_busy():
+                result = {"content": [{"type": "text", "text": "[FAIL] 已有实机测试在运行，拒绝并发启动；如需中止请调用 stop_game"}],
+                          "isError": True}
+            else:
+                result = await _loop.run_in_executor(None, _run_tool_sync, tool_name, arguments)
+            _emit({"jsonrpc": "2.0", "id": request_id, "result": result})
+        except Exception as e:
+            server.logger.error(f"工具执行错误：{e}", exc_info=True)
+            _emit({"jsonrpc": "2.0", "id": request_id,
+                   "error": {"code": -32603, "message": f"Internal error: {e}"}})
+        finally:
+            _inflight.pop(request_id, None)
+
     try:
         while True:
+            request_id = None
             try:
-                line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+                line = await _loop.run_in_executor(None, sys.stdin.readline)
                 if not line:
+                    # 客户端断开：立即取消一切实机测试，杜绝后台继续拉起游戏
+                    server.batch_runner.cancel('stdin EOF（客户端断开）')
                     break
 
                 line = line.strip()
@@ -1242,12 +1286,16 @@ async def run_server():
                 elif method == "tools/call":
                     tool_name = params.get("name")
                     arguments = params.get("arguments", {})
-                    result = await server.handle_tool_call(tool_name, arguments)
-                    response = {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": result
-                    }
+                    _inflight[request_id] = tool_name
+                    asyncio.ensure_future(_dispatch_tool(request_id, tool_name, arguments))
+                    continue
+
+                elif method == "notifications/cancelled":
+                    # 客户端超时/取消：若被取消的是实机测试，立刻熔断
+                    cancelled_id = params.get("requestId")
+                    if _inflight.get(cancelled_id) in _LONG_RUNNING_TOOLS or cancelled_id is None:
+                        server.batch_runner.cancel(f"notifications/cancelled id={cancelled_id}")
+                    continue
 
                 elif method == "resources/list":
                     response = {
@@ -1278,7 +1326,7 @@ async def run_server():
                         }
                     }
 
-                print(json.dumps(response, ensure_ascii=False), flush=True)
+                _emit(response)
 
             except json.JSONDecodeError as e:
                 server.logger.error(f"JSON 解析错误：{str(e)}")
@@ -1287,7 +1335,7 @@ async def run_server():
                     "id": None,
                     "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
                 }
-                print(json.dumps(error_response, ensure_ascii=False), flush=True)
+                _emit(error_response)
             except Exception as e:
                 server.logger.error(f"内部错误：{str(e)}", exc_info=True)
                 error_response = {
@@ -1295,8 +1343,9 @@ async def run_server():
                     "id": request_id,
                     "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
                 }
-                print(json.dumps(error_response, ensure_ascii=False), flush=True)
+                _emit(error_response)
     finally:
+        server.batch_runner.cancel('server exit')
         _cleanup_on_exit()
 
 

@@ -38,6 +38,8 @@ cleanup_all → compile_only → discover_tests → run_test_batch(test_filter="
                               run_test_batch(test_filter="failed") 重验
 ```
 
+> **🛡️ 防失控护栏（v0.21.1）**：`run_test_batch` 中 `unit` 层一律走桌面 Lua、绝不启动游戏；`env_error` 不重试且连续 2 次即熔断；单批次最多拉起游戏 `max_game_launches=10` 次、墙钟 `max_batch_seconds=900`；同一时刻只允许一个实机批次。运行中随时可调用 `stop_game` / `cleanup_all` 立即中止（客户端超时取消也会自动熔断）。**跑全部单测请用 `run_test_batch(layer="unit")` 或 `run_unit_test`，不要用无 layer 的 `run_test_batch`。**
+
 ### B. Named Pipe 实机步进探索与交互调试（Tier 3 & Tier 4）
 
 > **通信机制**：通过 `agent_bridge.dll` 建立 Windows 命名管道 `\\.\pipe\war3_agent`（以及支持多开的 `\\.\pipe\war3_agent_<pid>`），设置 `PIPE_UNLIMITED_INSTANCES` 与跨权限安全描述符。多个 IDE / MCP 进程可同时连接同一游戏实例，**零 TCP 端口冲突，零轮询延迟**。

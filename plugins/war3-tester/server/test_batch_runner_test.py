@@ -12,6 +12,7 @@ test_batch_runner 单测
 
 import sys
 import os
+import threading
 from unittest.mock import MagicMock
 
 # 确保能 import 同目录下的模块
@@ -33,7 +34,19 @@ def _make_runner():
     runner.store = MagicMock()
     runner.logger = MagicMock()
     runner._failed_cache = []
+    runner.launched_war3 = False
+    runner.pipe_client = None
+    runner.desktop_runner = None
+    runner.cancel_event = threading.Event()
+    runner._batch_lock = threading.Lock()
+    runner.executor.check_connectivity.return_value = True
     return runner
+
+
+def _fake_selection(runner, tests):
+    """tests: [(name, layer)]"""
+    runner._select_tests = MagicMock(return_value=[
+        {'test_name': n, 'file': f'{n}.lua', 'layer': l} for n, l in tests])
 
 
 def test_run_single_test_war3_remaining_returns_env_error():
@@ -186,6 +199,105 @@ def test_poll_pipe_events_collects_progress_logs_and_result():
     print("  PASS test_poll_pipe_events_collects_progress_logs_and_result")
 
 
+# ---------------------------------------------------------------------------
+# v0.21.1 防失控护栏
+# ---------------------------------------------------------------------------
+
+def test_unit_layer_never_launches_game():
+    """unit 层测试必须走 desktop_runner，绝不调用 run_single_test / run_game"""
+    runner = _make_runner()
+    _fake_selection(runner, [('test_unit_a', 'unit'), ('test_unit_b', 'unit')])
+    runner.desktop_runner = MagicMock()
+    runner.desktop_runner.run_unit_test.return_value = {'success': True, 'elapsed': 0.01}
+    runner.run_single_test = MagicMock()
+
+    res = runner.run_test_batch(test_filter='all', layer='unit')
+
+    assert res['summary']['passed'] == 2, res
+    assert res['summary']['game_launches'] == 0, res
+    runner.run_single_test.assert_not_called()
+    runner.executor.run_game.assert_not_called()
+    runner.executor.stop_game.assert_not_called()
+    print("  PASS test_unit_layer_never_launches_game")
+
+
+def test_unit_layer_without_desktop_runner_refuses():
+    """没有 desktop_runner 时 unit 测试直接失败，不得回退到实机"""
+    runner = _make_runner()
+    _fake_selection(runner, [('test_unit_a', 'unit')])
+    runner.run_single_test = MagicMock()
+    res = runner.run_test_batch(test_filter='all')
+    assert res['summary']['failed'] == 1
+    runner.run_single_test.assert_not_called()
+    print("  PASS test_unit_layer_without_desktop_runner_refuses")
+
+
+def test_env_error_not_retried_and_circuit_breaks():
+    """env_error 不重试；连续 2 个 env_error 熔断，剩余测试不执行"""
+    runner = _make_runner()
+    _fake_selection(runner, [(f'test_int_{i}', 'integration') for i in range(10)])
+    runner.run_single_test = MagicMock(return_value={
+        'success': False, 'failure_type': 'env_error', 'error': 'x'})
+
+    res = runner.run_test_batch(test_filter='all', max_retries=3)
+
+    assert runner.run_single_test.call_count == 2, runner.run_single_test.call_count
+    assert res['summary']['aborted'], res
+    assert res['summary']['not_run'] == 8, res
+    print("  PASS test_env_error_not_retried_and_circuit_breaks")
+
+
+def test_residue_aborts_batch_immediately():
+    """War3 残留杀不掉 → 第一个测试后立即熔断"""
+    runner = _make_runner()
+    _fake_selection(runner, [(f'test_int_{i}', 'integration') for i in range(5)])
+    runner.run_single_test = MagicMock(return_value={
+        'success': False, 'failure_type': 'env_error', 'residue_detected': True})
+    res = runner.run_test_batch(test_filter='all')
+    assert runner.run_single_test.call_count == 1
+    assert 'War3' in res['summary']['aborted']
+    print("  PASS test_residue_aborts_batch_immediately")
+
+
+def test_game_launch_budget():
+    """单批次游戏启动次数受 max_game_launches 限制（含重试）"""
+    runner = _make_runner()
+    _fake_selection(runner, [(f'test_int_{i}', 'integration') for i in range(10)])
+    runner.run_single_test = MagicMock(return_value={
+        'success': False, 'failure_type': 'timeout'})
+    res = runner.run_test_batch(test_filter='all', max_retries=1, max_game_launches=3)
+    assert runner.run_single_test.call_count == 3, runner.run_single_test.call_count
+    assert '启动上限' in res['summary']['aborted']
+    print("  PASS test_game_launch_budget")
+
+
+def test_cancel_stops_batch():
+    """cancel() 后批次在下一个测试前停止"""
+    runner = _make_runner()
+    _fake_selection(runner, [(f'test_int_{i}', 'integration') for i in range(5)])
+
+    def _side(*a, **kw):
+        runner.cancel('test')
+        return {'success': True}
+    runner.run_single_test = MagicMock(side_effect=_side)
+    res = runner.run_test_batch(test_filter='all')
+    assert runner.run_single_test.call_count == 1
+    assert '取消' in res['summary']['aborted']
+    print("  PASS test_cancel_stops_batch")
+
+
+def test_concurrent_batch_rejected():
+    """已有批次运行时，第二个批次被拒绝"""
+    runner = _make_runner()
+    runner._batch_lock.acquire()
+    try:
+        res = runner.run_test_batch(test_filter='all')
+        assert res['success'] is False and '并发' in res['error']
+    finally:
+        runner._batch_lock.release()
+    print("  PASS test_concurrent_batch_rejected")
+
+
 if __name__ == "__main__":
     print("=== test_batch_runner 单测 ===")
     tests = [
@@ -193,6 +305,13 @@ if __name__ == "__main__":
         test_run_single_test_war3_clean_continues,
         test_run_single_test_calls_is_war3_clean_after_sleep,
         test_poll_pipe_events_collects_progress_logs_and_result,
+        test_unit_layer_never_launches_game,
+        test_unit_layer_without_desktop_runner_refuses,
+        test_env_error_not_retried_and_circuit_breaks,
+        test_residue_aborts_batch_immediately,
+        test_game_launch_budget,
+        test_cancel_stops_batch,
+        test_concurrent_batch_rejected,
     ]
 
     passed = 0
