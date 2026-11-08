@@ -262,7 +262,7 @@ class EnvironmentProvisioner:
             except Exception as e:
                 results.append({"component": "nopause", "status": "failed", "message": f"处理失败：{e}"})
 
-        # 4. agent_bridge 组件
+        # 4. agent_bridge 组件（仅部署 map/agent_bridge.dll 供 Lua require('agent_bridge') 加载，并清理 war3_dir 下冗余 .asi）
         if "agent_bridge" in components:
             try:
                 if not project_root:
@@ -272,7 +272,10 @@ class EnvironmentProvisioner:
                     bridge_dst = project_root / "map" / "agent_bridge.dll"
                     if is_check:
                         if bridge_dst.exists():
-                            results.append({"component": "agent_bridge", "status": "success", "message": f"检查通过：{bridge_dst} 已存在 ({bridge_dst.stat().st_size} bytes)"})
+                            msg = f"检查通过：{bridge_dst} 已存在 ({bridge_dst.stat().st_size} bytes)"
+                            if war3_dir and (Path(war3_dir) / "agent_bridge.asi").exists():
+                                msg += f"（发现冗余 {Path(war3_dir) / 'agent_bridge.asi'}，建议执行 repair 清理）"
+                            results.append({"component": "agent_bridge", "status": "success", "message": msg})
                         else:
                             results.append({"component": "agent_bridge", "status": "failed", "message": f"缺失文件：{bridge_dst}"})
                     else:
@@ -280,9 +283,16 @@ class EnvironmentProvisioner:
                             results.append({"component": "agent_bridge", "status": "failed", "message": f"插件 bin/agent_bridge.dll 不存在：{bridge_src}"})
                         else:
                             copied = [self._safe_copy_binary(bridge_src, bridge_dst)]
+                            # 清理 war3_dir 下历史遗留的 agent_bridge.asi / agent_bridge.dll / agent_bridge.log，防止 Mss32 重复加载与文件锁死
                             if war3_dir and Path(war3_dir).exists():
-                                asi_dst = Path(war3_dir) / "agent_bridge.asi"
-                                copied.append(self._safe_copy_binary(bridge_src, asi_dst))
+                                for legacy_name in ["agent_bridge.asi", "agent_bridge.dll", "agent_bridge.log"]:
+                                    legacy_file = Path(war3_dir) / legacy_name
+                                    if legacy_file.exists():
+                                        try:
+                                            legacy_file.unlink()
+                                            copied.append(f"已清理冗余文件: {legacy_file}")
+                                        except PermissionError:
+                                            copied.append(f"冗余文件被占用暂跳过（关闭 War3 后再运行可清理）: {legacy_file}")
                             results.append({"component": "agent_bridge", "status": "success", "message": f"已部署/校验 agent_bridge.dll 到 {bridge_dst}", "files": copied})
             except Exception as e:
                 results.append({"component": "agent_bridge", "status": "failed", "message": f"处理失败：{e}"})
@@ -373,6 +383,15 @@ class EnvironmentProvisioner:
                         if test_off.exists():
                             test_off.unlink()
                             actions_taken.append("已清除 _war3_tester/_test_off.lua 关闭标志")
+
+                        # 清理已废弃的旧 HTTP 轮询 inspect_handler.lua 与双轨冗余文件
+                        legacy_inspect = test_dir / "_war3_tester" / "inspect_handler.lua"
+                        if legacy_inspect.exists():
+                            legacy_inspect.unlink()
+                            actions_taken.append("已移除废弃的 _war3_tester/inspect_handler.lua")
+                        if (test_dir / "wzns_auto_test.lua").exists() and (test_dir / "run_auto_test.lua").exists():
+                            (test_dir / "run_auto_test.lua").unlink()
+                            actions_taken.append("已清理双轨冗余文件 run_auto_test.lua")
 
                         agent_init_mod = f"{prefix}agent.init"
                         hook_code = CHAT_HOOK_SNIPPET.replace("@@AGENT_INIT_MODULE@@", agent_init_mod)

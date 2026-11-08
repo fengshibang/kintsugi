@@ -124,27 +124,36 @@ class TestEntryPreparer:
         test_dir.mkdir(parents=True, exist_ok=True)
 
         wt_dir = self._get_war3_tester_dir(test_dir)
+        # 清理可能残留的 _target_test.lua，避免 run_game 启动时误跑上次的单测
+        target_test_path = wt_dir / '_target_test.lua'
+        if target_test_path.exists():
+            try:
+                target_test_path.unlink()
+            except OSError:
+                pass
+
         self._inject_war3_tester_assets(wt_dir)
         self._generate_adapter_loader(wt_dir)
 
         run_auto_test_path = test_dir / 'run_auto_test.lua'
-        _prefix = self.config.test_module_prefix or ''
-        inspect_only_content = (
-            "-- Named Pipe Agent bootstrap（run_game 注入，启动 \\\\.\\pipe\\war3_agent 管道桥接与适配钩子，不跑测试）\n"
-            "pcall(function()\n"
-            f"    require('{_prefix}_war3_tester.adapter_loader')\n"
-            "end)\n"
-            "pcall(function()\n"
-            f"    local ag = require('{_prefix}agent.init')\n"
-            "    if ag and ag.start then ag.start() end\n"
-            "end)\n"
-        )
-        try:
-            with open(run_auto_test_path, 'w', encoding='utf-8') as f:
-                f.write(inspect_only_content)
-            self.logger.info("[prepare_inspect_only] 已写入 Named Pipe Agent run_auto_test.lua → %s", run_auto_test_path)
-        except (IOError, OSError) as e:
-            self.logger.warning("[prepare_inspect_only] 写入 run_auto_test.lua 失败（graceful）: %s", e)
+        if not (test_dir / 'wzns_auto_test.lua').exists():
+            _prefix = self.config.test_module_prefix or ''
+            inspect_only_content = (
+                "-- Named Pipe Agent bootstrap（run_game 注入，启动 \\\\.\\pipe\\war3_agent 管道桥接与适配钩子，不跑测试）\n"
+                "pcall(function()\n"
+                f"    require('{_prefix}_war3_tester.adapter_loader')\n"
+                "end)\n"
+                "pcall(function()\n"
+                f"    local ag = require('{_prefix}agent.init')\n"
+                "    if ag and ag.start then ag.start() end\n"
+                "end)\n"
+            )
+            try:
+                with open(run_auto_test_path, 'w', encoding='utf-8') as f:
+                    f.write(inspect_only_content)
+                self.logger.info("[prepare_inspect_only] 已写入 Named Pipe Agent run_auto_test.lua → %s", run_auto_test_path)
+            except (IOError, OSError) as e:
+                self.logger.warning("[prepare_inspect_only] 写入 run_auto_test.lua 失败（graceful）: %s", e)
 
         self.test_mode_flag.enable(test_dir)
         return test_dir
