@@ -56,9 +56,9 @@ local function select_hero_for_player(hero_spec)
     end
     if not player then return false, "NO_PLAYER" end
 
-    -- 查找目标选人单位（支持 u:N 引用、unit_id 整数、四字物编 Hgbx 或名称子串）
+    -- 查找目标选人单位（支持 u12345 / u:12345 引用、unit_id 整数、四字物编 Hgbx 或名称子串）
     local target_unit = nil
-    if type(hero_spec) == 'string' and hero_spec:match("^u:") then
+    if type(hero_spec) == 'string' and hero_spec:match("^u:?%d+") then
         target_unit = entity_ref.resolve(hero_spec)
     end
     local spec_num = tonumber(hero_spec)
@@ -120,7 +120,7 @@ end
 local function resolve_target_from_act(act)
     local ref = (act.target and act.target.ref) or act.ref or act.target_ref
     if not ref and act.target_id then
-        ref = "u:" .. tostring(act.target_id)
+        ref = "u" .. tostring(act.target_id)
     end
     return entity_ref.resolve(ref)
 end

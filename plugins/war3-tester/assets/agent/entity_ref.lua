@@ -4,7 +4,7 @@
 
 local entity_ref = {}
 
--- 映射表：ref -> { handle = h, type_id = id, name = name }
+-- 映射表：ref -> { handle = h, obj = obj, type_id = id, name = name }
 local ref_cache = {}
 
 local function to_handle(target)
@@ -22,10 +22,10 @@ function entity_ref.get_ref(unit_or_handle)
     if not h then return "nil" end
 
     local handle_id = 0
-    if GetHandleId then
-        handle_id = GetHandleId(h)
-    elseif type(h) == 'number' then
+    if type(h) == 'number' then
         handle_id = h
+    elseif GetHandleId then
+        handle_id = GetHandleId(h)
     end
 
     local ref = "u" .. tostring(handle_id)
@@ -41,7 +41,7 @@ function entity_ref.get_ref(unit_or_handle)
     return ref
 end
 
---- 解析并校验 ref 是否有效
+--- 解析并校验 ref 是否有效（兼容 "u12345" 与 "u:12345"）
 ---@param ref string
 ---@return any|nil handle_or_obj, string|nil error_code
 function entity_ref.resolve(ref)
@@ -49,7 +49,8 @@ function entity_ref.resolve(ref)
         return nil, "INVALID_TARGET"
     end
 
-    local entry = ref_cache[ref]
+    local norm_ref = ref:gsub("^u:", "u")
+    local entry = ref_cache[norm_ref]
     if not entry then
         return nil, "STALE_REF"
     end
@@ -58,14 +59,18 @@ function entity_ref.resolve(ref)
     -- 校验单位句柄是否已被 War3 回收或改变类型
     if GetUnitTypeId then
         local cur_type_id = GetUnitTypeId(h)
-        if cur_type_id == 0 or cur_type_id ~= entry.type_id then
-            ref_cache[ref] = nil
+        if cur_type_id ~= entry.type_id then
+            ref_cache[norm_ref] = nil
             return nil, "STALE_REF"
         end
     end
 
-    -- 校验是否已彻底死亡
-    if UnitAlive then
+    -- 校验是否已死亡
+    if entry.obj and entry.obj.isAlive then
+        if not entry.obj:isAlive() then
+            return nil, "STALE_REF"
+        end
+    elseif UnitAlive then
         if not UnitAlive(h) then
             return nil, "STALE_REF"
         end

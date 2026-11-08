@@ -101,11 +101,9 @@ end
 --- GetUnitTypeId - 返回 unit 的类型 ID
 ---@param whichUnit table unit handle
 function mock_functions.GetUnitTypeId(whichUnit)
-    log_call('GetUnitTypeId', { whichUnit }, whichUnit and whichUnit.unitTypeId)
-    if type(whichUnit) == 'table' and whichUnit._mock_type == 'unit' then
-        return whichUnit.unitTypeId or 0
-    end
-    return 0  -- TODO: 验证 - 非 mock handle 时返回 0 是否合理
+    local typeId = (type(whichUnit) == 'table' and whichUnit._mock_type == 'unit' and whichUnit.unitTypeId) or 0
+    log_call('GetUnitTypeId', { whichUnit }, typeId)
+    return typeId
 end
 
 --- CreateTrigger - 返回假 trigger handle
