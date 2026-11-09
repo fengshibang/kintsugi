@@ -423,6 +423,29 @@ class War3TesterMCP:
              }, "required": ["key"]},
              _handle_send_key)
 
+        # 10b. send_mouse_click
+        def _handle_send_mouse_click(arguments):
+            x = arguments.get("x", 0)
+            y = arguments.get("y", 0)
+            button = arguments.get("button", "left")
+            double_click = arguments.get("double_click", False)
+            result = self.executor.send_mouse_click(x, y, button, double_click)
+            if result.get("success"):
+                action_str = "双击" if double_click else "单击"
+                return {"content": [{"type": "text", "text": f"[OK] 已在 ({x}, {y}) 发送鼠标{button}{action_str}\n\n{result.get('message', '')}"}]}
+            else:
+                return {"content": [{"type": "text", "text": f"[FAIL] 发送鼠标事件失败\n\n{result.get('error', '未知错误')}"}], "isError": True}
+
+        _add("send_mouse_click",
+             "向 War3 游戏窗口发送虚拟鼠标点击事件（支持前台/后台静默，完全模拟玩家物理操作，用于选人双击、关闭弹窗、点选 UI 等）。",
+             {"type": "object", "properties": {
+                 "x": {"type": "integer", "description": "窗口相对横坐标 (像素)"},
+                 "y": {"type": "integer", "description": "窗口相对纵坐标 (像素)"},
+                 "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left", "description": "鼠标按键 ('left', 'right', 'middle')"},
+                 "double_click": {"type": "boolean", "default": False, "description": "是否为双击（双击间隔约 80-100ms）"}
+             }, "required": ["x", "y"]},
+             _handle_send_mouse_click)
+
         # 12. toggle_test
         def _handle_toggle_test(arguments):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1291,9 +1314,10 @@ async def run_server():
                     continue
 
                 elif method == "notifications/cancelled":
-                    # 客户端超时/取消：若被取消的是实机测试，立刻熔断
+                    # 客户端超时/取消：仅当明确取消当前正在运行的长任务时才熔断（杜绝 None 误触发）
                     cancelled_id = params.get("requestId")
-                    if _inflight.get(cancelled_id) in _LONG_RUNNING_TOOLS or cancelled_id is None:
+                    if cancelled_id is not None and _inflight.get(cancelled_id) in _LONG_RUNNING_TOOLS:
+                        server.logger.warning(f"[MCP] 收到客户端针对任务 {cancelled_id} ({_inflight.get(cancelled_id)}) 的取消通知")
                         server.batch_runner.cancel(f"notifications/cancelled id={cancelled_id}")
                     continue
 

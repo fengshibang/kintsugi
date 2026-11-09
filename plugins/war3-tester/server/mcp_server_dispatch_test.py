@@ -55,7 +55,7 @@ EXPECTED_34_TOOLS = {
     'compile_map', 'compile_only', 'test_commit', 'run_test_batch',
     'discover_tests', 'launch_only', 'run_game', 'stop_game',
     'stop_http_server', 'cleanup_all', 'take_screenshot',
-    'send_key', 'toggle_test', 'get_project_info', 'inspect_game',
+    'send_key', 'send_mouse_click', 'toggle_test', 'get_project_info', 'inspect_game',
     'get_debug_output', 'run_unit_test', 'scaffold_test', 'tdd_red',
     'tdd_green', 'watch_unit_tests', 'stop_watch', 'get_watch_results',
     'setup_environment', 'exec_game', 'save_adapter_hook',
@@ -88,7 +88,7 @@ def test_single_source_consistency():
         f"  多: {capability_names - EXPECTED_34_TOOLS}"
     )
     assert registry_keys == capability_names
-    assert len(EXPECTED_34_TOOLS) == 34
+    assert len(EXPECTED_34_TOOLS) == 35
 
     print("  PASS test_single_source_consistency")
 
@@ -139,6 +139,21 @@ def test_send_key_routes_to_executor():
     assert result.get('isError') is not True
 
     print("  PASS test_send_key_routes_to_executor")
+
+
+def test_send_mouse_click_routes_to_executor():
+    """send_mouse_click 路由：handle_tool_call('send_mouse_click', ...) 调用 executor.send_mouse_click(...) """
+    instance = _make_instance()
+    instance.executor = MagicMock()
+    instance.executor.send_mouse_click.return_value = {'success': True, 'message': 'ok'}
+
+    result = asyncio.run(instance.handle_tool_call('send_mouse_click', {'x': 100, 'y': 200, 'button': 'left', 'double_click': True}))
+
+    instance.executor.send_mouse_click.assert_called_once_with(100, 200, 'left', True)
+    assert isinstance(result, dict)
+    assert result.get('isError') is not True
+
+    print("  PASS test_send_mouse_click_routes_to_executor")
 
 
 def test_registry_handler_is_callable():
@@ -192,6 +207,7 @@ if __name__ == "__main__":
         test_unknown_tool_fallback,
         test_stop_game_routes_to_executor,
         test_send_key_routes_to_executor,
+        test_send_mouse_click_routes_to_executor,
         test_registry_handler_is_callable,
         test_inspect_and_exec_game_route_to_pipe_client,
         test_game_observe_routes_to_pipe_client,

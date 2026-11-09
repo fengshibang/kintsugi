@@ -463,6 +463,7 @@ class TestBatchRunner:
         # v0.14.0: 清缓冲（委托 store）
         # 决策5：每测试开头只用 clear_test（清该 test 的 progress/logs）
         # clear_all 只在 batch 边界调（会清 game_errors，违背全局保留）
+        self.cancel_event.clear()
         self.store.clear_test(test_name)
         if getattr(self, 'pipe_client', None) is not None:
             try:

@@ -36,7 +36,7 @@ local function get_unit_type_str(ent)
     return tostring(ent and ent.id or "Unit")
 end
 
---- 获取玩家主英雄（兼容哈希表形式的 getEntitiesWithComponent('HeroComp')）
+--- 获取玩家主英雄（支持项目扩展与原生 JASS 优雅降级）
 local function get_player_hero()
     if PlayerObj and PlayerObj.getPlayerById then
         local p0 = PlayerObj.getPlayerById(0) or PlayerObj.getPlayerById(1)
@@ -58,6 +58,44 @@ local function get_player_hero()
             return fallback
         end
     end
+
+    -- 原生 JASS 降级：优先检查当前玩家当前选中的单位
+    if GroupEnumUnitsSelected and Player and FirstOfGroup and CreateGroup then
+        local p = (GetLocalPlayer and GetLocalPlayer()) or (Player and Player(0))
+        local g = CreateGroup()
+        if g then
+            GroupEnumUnitsSelected(g, p, nil)
+            local selected = FirstOfGroup(g)
+            if DestroyGroup then DestroyGroup(g) end
+            if selected and selected ~= 0 then
+                return { handle = selected, id = selected, name = (GetUnitName and GetUnitName(selected)) or "Hero" }
+            end
+        end
+    end
+
+    -- 原生 JASS 降级：遍历当前玩家所有单位，寻找英雄单位
+    if GroupEnumUnitsOfPlayer and Player and FirstOfGroup and CreateGroup then
+        local p = (GetLocalPlayer and GetLocalPlayer()) or (Player and Player(0))
+        local g = CreateGroup()
+        if g then
+            GroupEnumUnitsOfPlayer(g, p, nil)
+            local u = FirstOfGroup(g)
+            local found = nil
+            while u and u ~= 0 do
+                if IsUnitType and IsUnitType(u, UNIT_TYPE_HERO) then
+                    found = u
+                    break
+                end
+                if GroupRemoveUnit then GroupRemoveUnit(g, u) end
+                u = FirstOfGroup(g)
+            end
+            if DestroyGroup then DestroyGroup(g) end
+            if found then
+                return { handle = found, id = found, name = (GetUnitName and GetUnitName(found)) or "Hero" }
+            end
+        end
+    end
+
     return nil
 end
 
@@ -173,6 +211,22 @@ local function extract_items(hero)
                 charges = item.charges or 1,
                 usable = item.usable ~= false
             })
+        end
+    end
+
+    -- 原生 JASS 背包物品兜底提取
+    if #list == 0 and hero and hero.handle and UnitItemInSlot then
+        for i = 0, 5 do
+            local item_h = UnitItemInSlot(hero.handle, i)
+            if item_h and item_h ~= 0 then
+                table.insert(list, {
+                    slot = i + 1,
+                    id = (GetItemTypeId and GetItemTypeId(item_h)) or i,
+                    name = (GetItemName and GetItemName(item_h)) or "Item",
+                    charges = (GetItemCharges and GetItemCharges(item_h)) or 1,
+                    usable = true
+                })
+            end
         end
     end
     return list

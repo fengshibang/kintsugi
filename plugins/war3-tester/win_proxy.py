@@ -155,6 +155,73 @@ def handle_client(conn, addr):
                 time.sleep(0.05)
                 user32.PostMessageA(found_hwnd, WM_KEYUP, vk, 0)
                 response = {'success': True, 'message': f'已发送按键 VK={vk}'}
+        elif executable == '__send_mouse_click__':
+            import ctypes
+            from ctypes import wintypes
+            x = int(args[0]) if len(args) > 0 else 0
+            y = int(args[1]) if len(args) > 1 else 0
+            button = str(args[2]).lower() if len(args) > 2 else 'left'
+            double_click = bool(args[3]) if len(args) > 3 else False
+
+            WM_MOUSEMOVE = 0x0200
+            WM_LBUTTONDOWN = 0x0201
+            WM_LBUTTONUP = 0x0202
+            WM_RBUTTONDOWN = 0x0204
+            WM_RBUTTONUP = 0x0205
+            WM_MBUTTONDOWN = 0x0207
+            WM_MBUTTONUP = 0x0208
+
+            user32 = ctypes.windll.user32
+            EnumWindowsProc = ctypes.WINFUNCTYPE(
+                wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+            )
+            keywords = ['魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
+            found_hwnd = None
+
+            def enum_callback(hwnd, lparam):
+                nonlocal found_hwnd
+                if user32.IsWindowVisible(hwnd):
+                    text = ctypes.create_unicode_buffer(256)
+                    user32.GetWindowTextW(hwnd, text, 256)
+                    title = text.value
+                    if title:
+                        for kw in keywords:
+                            if kw.lower() in title.lower():
+                                found_hwnd = hwnd
+                                return False
+                return True
+
+            callback = EnumWindowsProc(enum_callback)
+            user32.EnumWindows(callback, 0)
+
+            if found_hwnd is None:
+                response = {'success': False, 'error': '未找到 War3 窗口'}
+            else:
+                try:
+                    lparam = (y << 16) | (x & 0xFFFF)
+                    if button == 'right':
+                        down_msg, up_msg = WM_RBUTTONDOWN, WM_RBUTTONUP
+                    elif button == 'middle':
+                        down_msg, up_msg = WM_MBUTTONDOWN, WM_MBUTTONUP
+                    else:
+                        down_msg, up_msg = WM_LBUTTONDOWN, WM_LBUTTONUP
+
+                    user32.PostMessageA(found_hwnd, WM_MOUSEMOVE, 0, lparam)
+                    time.sleep(0.02)
+                    user32.PostMessageA(found_hwnd, down_msg, 0, lparam)
+                    time.sleep(0.05)
+                    user32.PostMessageA(found_hwnd, up_msg, 0, lparam)
+
+                    if double_click:
+                        time.sleep(0.08)
+                        user32.PostMessageA(found_hwnd, down_msg, 0, lparam)
+                        time.sleep(0.05)
+                        user32.PostMessageA(found_hwnd, up_msg, 0, lparam)
+
+                    action_str = "双击" if double_click else "单击"
+                    response = {'success': True, 'message': f'已在坐标 ({x}, {y}) 发送鼠标{button}{action_str}'}
+                except Exception as e:
+                    response = {'success': False, 'error': f'鼠标消息发送异常: {e}'}
         else:
             full_cmd = [executable] + args
 

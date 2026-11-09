@@ -1,5 +1,24 @@
 # Changelog — war3-tester
 
+## 0.21.8 - 2026-11-10
+
+### 架构演进与通用化解耦（纯原生 Order 契约、防伪造回调与提权清理）
+
+1. **防作弊铁律落地：彻底清除直接业务回调**：
+   - 彻底删除 `assets/agent/actions.lua` 中伪造事件的 `state.eventManager:fireEvent`；
+   - 确立规则：严禁通过 `fireEvent`、`on_cast`、`on_damage` 等方式直接触发业务回调，战斗必须严格走暴雪引擎原生 `IssuePointOrder` / `IssueTargetOrder` / `IssueImmediateOrder` 契约，经历真实前摇、消耗与 CD 校验；
+   - 选人全面走暴雪原生 API `SelectUnitForPlayerSingle` 触发原生引擎选择事件泵。
+2. **新增物理虚拟鼠标外设工具 (`send_mouse_click`)**：
+   - 在 `win_proxy.py` 与 `env_bridge.py` 中新增 `send_mouse_click(x, y, button='left', double_click=False)`；
+   - 注册为第 35 个 MCP 工具，支持后台向 War3 窗口静默发送 `WM_MOUSEMOVE`、`WM_LBUTTONDOWN`、`WM_LBUTTONUP` 消息，支持 80ms 拟真双击间隔，用于无感选人双击与 UI 点选。
+3. **跨项目通用无假设（Universal Fallback）**：
+   - `actions.lua` 与 `observe.lua` 彻底剥离对 `HeroComp`、`PlayerObj`、特定门派物编 `HERO_CANDIDATE_TYPES` 的私有硬编码假设；
+   - 增加原生 JASS 优雅降级机制（`GroupEnumUnitsSelected`、`UnitItemInSlot` 等），在无特定 ECS 的普通魔兽地图中也能即插即用完成测试与状态采集。
+4. **方案一：RunAs 自动提权强杀机制**：
+   - `stop_game()` 在常规清理后复查进程池，一旦检测到旧 War3/KKWE 进程因管理员权限导致普通 `taskkill` 报 `Access is denied`，自动触发 RunAs 提权强杀，实现开测前与收尾后 0 进程残留。
+5. **修复 MCP 客户端取消通知误熔断 Bug**：
+   - 修复 `mcp_server.py` 中 `notifications/cancelled` 因 `requestId=None` 误杀正在执行的实机测试长任务的缺陷。
+
 ## 0.21.7 - 2026-11-09
 
 ### 铁律确立（实机测试证据确凿铁律：防 AI 臆想通过规范）

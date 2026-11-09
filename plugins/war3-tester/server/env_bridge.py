@@ -324,6 +324,9 @@ class WinProxyExecutor(ExecutorBase):
 
     def run_game(self, map_path: str = None, platform: str = None) -> dict:
         """运行游戏"""
+        # 启动前必须先清理旧游戏进程
+        self.stop_game()
+        time.sleep(1)
         proxy_check = self.require_proxy()
         if not proxy_check.get('success'):
             return {
@@ -486,6 +489,24 @@ class WinProxyExecutor(ExecutorBase):
                 return {'success': False, 'error': f'不支持的按键：{key}'}
             return self.execute('__send_key__', [vk], kwargs={'timeout': 5})
 
+    def send_mouse_click(self, x: int, y: int, button: str = 'left', double_click: bool = False) -> dict:
+        """
+        向 War3 窗口发送鼠标点击事件（通过 win_proxy 转发）。
+
+        Args:
+            x: 窗口相对横坐标 (像素)
+            y: 窗口相对纵坐标 (像素)
+            button: 鼠标按键 ('left', 'right', 'middle')
+            double_click: 是否为双击
+        """
+        proxy_check = self.require_proxy()
+        if not proxy_check.get('success'):
+            return {
+                'success': False,
+                'error': f'❌ 鼠标事件必须通过 win_proxy 代理执行\n\n{proxy_check.get("error", "")}'
+            }
+        return self.execute('__send_mouse_click__', [int(x), int(y), str(button), bool(double_click)], kwargs={'timeout': 5})
+
     def take_screenshot(self, test_name: str, filename: str = None, window_title: str = None) -> dict:
         """
         通过 Python + Win32 API 执行截图（WSL 模式经 win_proxy 转发）
@@ -554,6 +575,9 @@ def enum_callback(hwnd, lparam):
     return True
 
 # 枚举窗口
+hDesk = user32.OpenDesktopW('default', 0, False, 0x01FF)
+if hDesk:
+    user32.SetThreadDesktop(hDesk)
 callback = EnumWindowsProc(enum_callback)
 user32.EnumWindows(callback, 0)
 
@@ -802,6 +826,9 @@ class LocalExecutor(ExecutorBase):
 
     def run_game(self, map_path: str = None, platform: str = None) -> dict:
         """运行游戏"""
+        # 启动前必须先清理旧游戏进程
+        self.stop_game()
+        time.sleep(1)
         if not platform:
             platform_info = self.config.find_war3_platform()
             if platform_info:
@@ -949,7 +976,24 @@ class LocalExecutor(ExecutorBase):
             # 3. 复查：等进程退出 + tasklist（解码已修复 + 防御 stdout=''）
             time.sleep(0.5)
             verify = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
-            return _check_war3_remaining(verify.get('stdout', ''))
+            check_res = _check_war3_remaining(verify.get('stdout', ''))
+            
+            # 方案一：若仍有残留（通常因管理员高权限挂死），自动触发 RunAs 提权强杀
+            if not check_res.get('success'):
+                self.logger.warning(f"[stop_game] 普通权限终止后仍有残留: {check_res.get('remaining')}，尝试 RunAs 自动提权强杀...")
+                try:
+                    elevated_cmd = "Start-Process powershell -ArgumentList '-NoProfile -Command \"taskkill /F /IM war3.exe /IM KKWE.exe /IM YDWE.exe /T\"' -Verb RunAs -WindowStyle Hidden"
+                    self.execute('powershell.exe', ['-NoProfile', '-Command', elevated_cmd], kwargs={'timeout': 10})
+                    time.sleep(2.5)
+                    verify2 = self.execute('tasklist.exe', ['/FO', 'CSV'], kwargs={'timeout': 10})
+                    check_res2 = _check_war3_remaining(verify2.get('stdout', ''))
+                    if check_res2.get('success'):
+                        self.logger.info("[stop_game] RunAs 提权强杀成功，进程残留已全部清除")
+                    return check_res2
+                except Exception as ex:
+                    self.logger.warning(f"[stop_game] RunAs 提权强杀异常: {ex}")
+
+            return check_res
         except Exception as e:
             return {'success': False, 'error': f'停止游戏失败：{e}'}
 
@@ -1083,6 +1127,82 @@ class LocalExecutor(ExecutorBase):
                 return {'success': True, 'message': f'已发送按键 VK={main_vk}'}
         except Exception as e:
             return {'success': False, 'error': f'按键发送异常: {e}'}
+
+    def send_mouse_click(self, x: int, y: int, button: str = 'left', double_click: bool = False) -> dict:
+        """
+        本地执行器 send_mouse_click（Windows 原生模式，ctypes 直接调 Win32 API）
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+        except ImportError:
+            return {'success': False, 'error': 'ctypes 不可用（非 Windows 环境？）'}
+
+        WM_MOUSEMOVE = 0x0200
+        WM_LBUTTONDOWN = 0x0201
+        WM_LBUTTONUP = 0x0202
+        WM_RBUTTONDOWN = 0x0204
+        WM_RBUTTONUP = 0x0205
+        WM_MBUTTONDOWN = 0x0207
+        WM_MBUTTONUP = 0x0208
+
+        try:
+            user32 = ctypes.windll.user32
+        except Exception as e:
+            return {'success': False, 'error': f'无法加载 user32.dll: {e}'}
+
+        EnumWindowsProc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        keywords = ['魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
+        found_hwnd = None
+
+        def enum_callback(hwnd, lparam):
+            nonlocal found_hwnd
+            if user32.IsWindowVisible(hwnd):
+                text = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, text, 256)
+                title = text.value
+                if title:
+                    for kw in keywords:
+                        if kw.lower() in title.lower():
+                            found_hwnd = hwnd
+                            return False
+            return True
+
+        callback = EnumWindowsProc(enum_callback)
+        user32.EnumWindows(callback, 0)
+
+        if found_hwnd is None:
+            return {'success': False, 'error': '未找到 War3 窗口'}
+
+        try:
+            lparam = (int(y) << 16) | (int(x) & 0xFFFF)
+            btn = button.lower()
+            if btn == 'right':
+                down_msg, up_msg = WM_RBUTTONDOWN, WM_RBUTTONUP
+            elif btn == 'middle':
+                down_msg, up_msg = WM_MBUTTONDOWN, WM_MBUTTONUP
+            else:
+                down_msg, up_msg = WM_LBUTTONDOWN, WM_LBUTTONUP
+
+            user32.PostMessageA(found_hwnd, WM_MOUSEMOVE, 0, lparam)
+            time.sleep(0.02)
+            user32.PostMessageA(found_hwnd, down_msg, 0, lparam)
+            time.sleep(0.05)
+            user32.PostMessageA(found_hwnd, up_msg, 0, lparam)
+
+            if double_click:
+                time.sleep(0.08)
+                user32.PostMessageA(found_hwnd, down_msg, 0, lparam)
+                time.sleep(0.05)
+                user32.PostMessageA(found_hwnd, up_msg, 0, lparam)
+
+            action_str = '双击' if double_click else '单击'
+            return {'success': True, 'message': f'已在坐标 ({x}, {y}) 发送鼠标{button}{action_str}'}
+        except Exception as e:
+            return {'success': False, 'error': f'鼠标消息发送异常: {e}'}
 
     def take_screenshot(self, test_name: str, filename: str = None, window_title: str = None) -> dict:
         """
