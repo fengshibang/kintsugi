@@ -40,14 +40,14 @@ description: "魔兽争霸 3 地图自动化测试与 LLM Agent 实机探索（v
 ```
 cleanup_all → compile_only → discover_tests → run_test_batch(test_filter="all")
                                                       ↓
-                                           全通过？──是──→ 报告完成
-                                               │否
-                                               ↓
-                               按 failure_type 查诊断决策树（至多 3 轮）
-                                               ↓
-                               codegraph_explore 定位根因 → 修改代码
-                                               ↓
-                               run_test_batch(test_filter="failed") 重验
+                                          全通过？──是──→ 报告完成
+                                              │否
+                                              ↓
+                              按 failure_type 查诊断决策树（至多 3 轮）
+                                              ↓
+                              codegraph_explore 定位根因 → 修改代码
+                                              ↓
+                              run_test_batch(test_filter="failed") 重验
 ```
 
 > **🛡️ 防失控护栏（v0.21.1）**：`run_test_batch` 中 `unit` 层一律走桌面 Lua、绝不启动游戏；`env_error` 不重试且连续 2 次即熔断；单批次最多拉起游戏 `max_game_launches=10` 次、墙钟 `max_batch_seconds=900`；同一时刻只允许一个实机批次。运行中随时可调用 `stop_game` / `cleanup_all` 立即中止（客户端超时取消也会自动熔断）。**跑全部单测请用 `run_test_batch(layer="unit")` 或 `run_unit_test`，不要用无 layer 的 `run_test_batch`。**
@@ -73,11 +73,12 @@ game_status（确认管道连通）
 
 > **⚠️ 重要铁律**：使用 `game_set_mode(mode="step")` 冻结游戏做完步进调试后，**结束时必须调用 `game_set_mode(mode="free")` 解冻游戏**，否则游戏画面会一直停留在冻结态等待指令。
 
-### C. 测试收尾与生命周期清理决策（Cleanup Lifecycle）
+### C. 测试收尾与切换回人工测试规范（Teardown & Switch to Manual Testing）
 
-- **自动闭环清理**：批处理测试、CI 回归或自动化 TDD 验证全部通过后，Agent 自主判定工作完成，自动调用 `cleanup_all` / `stop_game` 释放进程与管道，不残留进程。
-- **人工观察后询问清理**：带有可视化演练（技能动画、玩家查看）的实机测试完成后，游戏退回主界面，Agent 汇报结果并**主动询问用户是否收尾清理**（如：“实机测试完成，游戏已退至主界面，是否需要为您关闭魔兽窗口并释放测试环境？”），待用户确认后执行 `cleanup_all`。
-- **环境还原**：若切回手动游玩，调用 `toggle_test(enabled=false)` 恢复难度选择弹窗与手动选人。
+自动化测试或 Agent 探索完成后的核心收尾动作是**「平滑切换回人工测试模式」**，杜绝自动化钩子（跳过选难度、自动选英雄）对人工测试的干扰：
+- **核心机制**：调用 `toggle_test(enabled=false)` 写入 `_test_off.lua` 并重新编译地图，彻底交还 UI 交互（难度弹窗正常弹出）与英雄挑选权，使地图与环境立即可供人工开图测试。
+- **自动闭环场景**：CI 回归、批量测试或 TDD 纯逻辑验证通过后，Agent 自主判定工作完成，自动调用 `toggle_test(enabled=false)` 还原环境并执行 `cleanup_all`。
+- **实机演示场景**：演练完成退回主菜单后，Agent 汇报结果并主动询问用户：“实机测试已完成，是否为您**切换回人工测试模式**（关闭自动化钩子并关闭当前窗口）？”收到确认后执行切换。
 
 
 ---
