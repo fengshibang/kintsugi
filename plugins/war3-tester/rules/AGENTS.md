@@ -69,3 +69,23 @@
    - `EventManager:addListener` 要求监听器实例包含 `listener.class.name` 字段。在 `auto-test` 或 `agent` 中注册 ECS 事件监听时，必须定义为 `class("XxxSystem", System)` 并通过 `engine:addSystem` 与 `em:addListener` 注册。
 4. **选人阶段动作**：
    - 刚进入地图尚未双击选英雄时，`game_observe` 的 `hero` 为 `nil`，但会在 `nearby_units` 中列出候选英雄台（`selectable_hero = true`）。此时应先下发 `{"op": "select_hero", "unit_id": <id>}` 完成选人。
+
+---
+
+## 五、测试收尾与生命周期环境清理规范（Teardown & Cleanup Lifecycle）
+
+实机自动化测试或探索结束后，为避免占用系统资源、挂起游戏进程或干扰后续正常游玩，Agent 必须遵循以下收尾决策规则：
+
+1. **自主收尾清理（工作闭环场景）**：
+   - 当 Agent 在执行无需用户人工介入的自动化任务（如：CI 自动化回归、批量单测/集成测试 `run_test_batch`、TDD 红绿循环中的快速验证）：
+   - 一旦测试用例全部执行通过、断言验证完毕，**Agent 应自行判断工作已完成，主动调用 `cleanup_all` / `stop_game` 释放游戏进程与命名管道**，并按需调用 `toggle_test(enabled=false)` 将地图还原为纯净游玩模式，无需等待用户手动输入。
+
+2. **主动询问收尾清理（人工观察/演练验收场景）**：
+   - 当执行的是带有可视化展示性质的实机测试（如展示技能特效、全流程演练、录屏调试），战局结束退回到魔兽主界面后：
+   - Agent **必须在汇报测试结果的同时，主动询问用户是否进行收尾清理**（例如：“实机测试演练完成，游戏已退至主界面。请问是否需要为您关闭魔兽窗口并清理测试环境（`cleanup_all`）？”）。
+   - 用户确认或告知已看完后，Agent 立即调用 `cleanup_all` 清理。
+
+3. **清理动作标准清单**：
+   - ① **解冻主线程**：若此前使用了 step 步进模式，确保调用 `game_set_mode(mode="free")`；
+   - ② **关闭游戏进程与管道**：调用 `cleanup_all` 或 `stop_game`，终止 `War3.exe` 并关闭 `\\.\pipe\war3_agent`，释放句柄；
+   - ③ **还原纯净环境**：若用户后续需要手动进入地图正常体验游戏，调用 `toggle_test(enabled=false)` 恢复难度选择弹窗与手动选人。
