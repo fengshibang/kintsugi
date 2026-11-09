@@ -1,5 +1,18 @@
 # Changelog — war3-tester
 
+## 0.21.2 - 2026-11-09
+
+### 规则强化（实机测试“零命令直接启动”与 Agent 全权主导 TDD 铁律）
+
+1. **实机测试“零命令直接启动”铁律**：
+   - 严禁要求用户在聊天框输入 `-test on`、`-agent on` 或任何指令；
+   - 自动注入测试锚点、自动屏蔽难度选择弹窗（`difficulty_skip`）、自动双击选人（`hero_auto_select`）、进图即跑，全屏彩色大字广播进度。
+2. **Agent 全权主导 TDD 方案开发**：
+   - 功能开发方案由 Agent 全权设计设定，严格遵循标准化 TDD 闭环：契约设计先行 -> Red (Tier 1 桌面单测 + Tier 2 实机剧本) -> Green (纯逻辑放生产目录，run_unit_test 秒级全绿) -> Verify (test_commit 自动拉起实机验收，零手动交互)。
+3. **新增规则契约规范**：
+   - 引入 `rules/AGENTS.md` 规则约束，同步更新 `skills/war3-auto-test/SKILL.md`。
+
+
 ## 0.21.1 - 2026-11-09
 
 ### 修复（根治「批量测试在后台无限反复拉起 War3」）
