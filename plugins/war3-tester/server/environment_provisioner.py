@@ -456,7 +456,23 @@ class EnvironmentProvisioner:
                 home = Path.home()
                 cache_root = home / ".claude" / "plugins" / "cache" / "kintsugi" / "war3-tester"
                 synced_targets = []
+
+                # 读取当前插件版本
+                plugin_ver = None
+                plugin_json_path = plugin_root / ".claude-plugin" / "plugin.json"
+                if plugin_json_path.exists():
+                    try:
+                        import json
+                        meta = json.loads(plugin_json_path.read_text(encoding="utf-8"))
+                        plugin_ver = meta.get("version")
+                    except Exception:
+                        pass
+
                 if cache_root.exists():
+                    # 确保当前最新版本的缓存目录存在
+                    if plugin_ver and not is_check:
+                        (cache_root / plugin_ver).mkdir(parents=True, exist_ok=True)
+
                     for ver_dir in cache_root.iterdir():
                         if ver_dir.is_dir():
                             if not is_check:
@@ -465,7 +481,31 @@ class EnvironmentProvisioner:
                                     dst_sub = ver_dir / sub
                                     if src_sub.exists():
                                         shutil.copytree(src_sub, dst_sub, dirs_exist_ok=True)
+                                for f in ["win_proxy.py", "CHANGELOG.md", "README.md"]:
+                                    src_f = plugin_root / f
+                                    if src_f.exists():
+                                        shutil.copy2(src_f, ver_dir / f)
                             synced_targets.append(str(ver_dir))
+
+                    # 同步升级 ~/.claude/plugins/installed_plugins.json
+                    installed_json = home / ".claude" / "plugins" / "installed_plugins.json"
+                    if installed_json.exists() and plugin_ver and not is_check:
+                        try:
+                            import json
+                            data = json.loads(installed_json.read_text(encoding="utf-8"))
+                            updated = False
+                            if "plugins" in data and "war3-tester@kintsugi" in data["plugins"]:
+                                for entry in data["plugins"]["war3-tester@kintsugi"]:
+                                    target_cache_dir = cache_root / plugin_ver
+                                    entry["version"] = plugin_ver
+                                    entry["installPath"] = str(target_cache_dir)
+                                    entry["lastUpdated"] = datetime.now().isoformat()
+                                    updated = True
+                            if updated:
+                                installed_json.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+                                synced_targets.append(str(installed_json))
+                        except Exception:
+                            pass
 
                 # 同步 Antigravity 本地插件与全局 Skill 目录
                 skill_src = plugin_root / "skills" / "war3-auto-test" / "SKILL.md"
