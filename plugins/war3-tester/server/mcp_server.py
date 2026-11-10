@@ -1294,7 +1294,7 @@ async def run_server():
                             },
                             "serverInfo": {
                                 "name": "war3-tester",
-                                "version": "0.21.9"
+                                "version": "0.21.10"
                             }
                         }
                     }
