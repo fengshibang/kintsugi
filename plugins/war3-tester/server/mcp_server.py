@@ -837,17 +837,17 @@ class War3TesterMCP:
             return self.environment_provisioner.setup(arguments)
 
         _add("setup_environment",
-             "一键安装、体检或修复测试与 Named Pipe Agent 环境组件。支持 mode='repair'（默认，安装缺失并修复损坏组件）、'install'（仅装缺失）、'check'（只读体检）。涵盖六大项目组件（socket / http / nopause / agent_bridge / agent_lua / entry_hook）及可选 plugin_sync（同步插件缓存）。",
+             "一键安装、体检或修复测试与 Named Pipe Agent 环境组件。支持 mode='repair'（默认，安装缺失并修复损坏组件，彻底清理历史残留）、'install'（仅装缺失）、'check'（只读体检）。涵盖六大项目组件（socket / http / nopause / agent_bridge / agent_lua / entry_hook）及可选 plugin_sync（同步插件与规则到本地环境）。",
              {"type": "object", "properties": {
                  "source_dir": {"type": "string", "description": "目标项目根目录（如 'D:\\\\maps\\\\wzns'），默认取环境变量 WAR3_PROJECT_ROOT"},
-                 "mode": {"type": "string", "enum": ["repair", "install", "check"], "default": "repair", "description": "执行模式：'repair'(默认，安装并覆盖修复所有组件) | 'install'(仅安装缺失文件) | 'check'(只读体检诊断)"},
+                 "mode": {"type": "string", "enum": ["repair", "install", "check"], "default": "repair", "description": "执行模式：'repair'(默认，安装并覆盖修复所有组件并清理残留) | 'install'(仅安装缺失文件) | 'check'(只读体检诊断)"},
                  "components": {
                      "type": "array",
                      "items": {"type": "string", "enum": ["socket", "http", "nopause", "agent_bridge", "agent_lua", "entry_hook", "plugin_sync"]},
-                     "description": "要处理的组件列表，默认处理项目全部六大组件：socket(socket.dll) / http(flask) / nopause(nopause.asi) / agent_bridge(agent_bridge.dll) / agent_lua(15个Lua Agent及Oracle脚本) / entry_hook(-test on入口钩子)",
+                     "description": "要处理的组件列表，默认处理全部六大组件：socket(socket.dll) / http(全部Python依赖: flask, werkzeug, pillow) / nopause(nopause.asi) / agent_bridge(agent_bridge.dll) / agent_lua(15个Lua Agent模块) / entry_hook(入口文件校验与残留清理)",
                      "default": ["socket", "http", "nopause", "agent_bridge", "agent_lua", "entry_hook"]
                  },
-                 "war3_dir": {"type": "string", "description": "war3 安装目录（war3.exe 同目录，用于 nopause.asi / agent_bridge.asi 部署）"}
+                 "war3_dir": {"type": "string", "description": "war3 安装目录（war3.exe 同目录，用于 nopause.asi 部署及旧版 .asi 残留清理）"}
              }},
              _handle_setup_environment)
 

@@ -132,16 +132,30 @@ def test_setup_agent_lua_and_entry_hook_repair_and_check():
         project_root = tmp / 'proj'
         test_dir = project_root / 'map' / 'script' / 'src' / 'auto-test'
         test_dir.mkdir(parents=True)
-        # 制造一个残留的 _test_off.lua 和缺少钩子的 init.lua
+        # 制造一个残留的 _test_off.lua 和带旧聊天钩子残留的 init.lua
         wt_dir = test_dir / '_war3_tester'
         wt_dir.mkdir(parents=True)
         (wt_dir / '_test_off.lua').write_text('return true', encoding='utf-8')
-        (test_dir / 'init.lua').write_text("print('hello init')\n", encoding='utf-8')
+        (wt_dir / 'inspect_handler.lua').write_text('-- legacy inspect', encoding='utf-8')
+        legacy_init_content = (
+            "-- ============================================================================\n"
+            "-- 全局聊天命令：-test on / -test off / -agent on（由 war3-tester 自动注入/修复）\n"
+            "-- ============================================================================\n"
+            "_G.__auto_test_enabled = false\n\n"
+            "local _chat_switch_trg = war3.CreateTrigger(function()\n"
+            "    local msg = GetEventPlayerChatString()\n"
+            "end)\n"
+            "for i = 0, 15 do\n"
+            "    jass.TriggerRegisterPlayerChatEvent(_chat_switch_trg, Player(i), '', false)\n"
+            "end\n\n"
+            "print('keep business logic')\n"
+        )
+        (test_dir / 'init.lua').write_text(legacy_init_content, encoding='utf-8')
 
         cfg = MockConfig(project_root=project_root, test_module_prefix='custom.test.')
         provisioner = EnvironmentProvisioner(cfg, plugin_root, logger=_make_logger())
 
-        # 1. 修复前 check 应报告失败
+        # 1. 修复前 check 应报告发现旧残留与缺失
         chk1 = provisioner.setup({
             'mode': 'check',
             'components': ['agent_lua', 'entry_hook'],
@@ -155,12 +169,15 @@ def test_setup_agent_lua_and_entry_hook_repair_and_check():
         })
         assert rep['isError'] is False, f"repair 应成功: {rep['content'][0]['text']}"
 
-        # 验证模块前缀替换与钩子注入
+        # 验证模块前缀替换与旧残留清理
         deployed_init = (test_dir / 'agent' / 'init.lua').read_text(encoding='utf-8')
         assert 'custom.test.agent.bridge' in deployed_init, "应自动替换 test_module_prefix"
         assert not (wt_dir / '_test_off.lua').exists(), "repair 应清除残留 _test_off.lua"
+        assert not (wt_dir / 'inspect_handler.lua').exists(), "repair 应清除废弃 inspect_handler.lua"
         entry_text = (test_dir / 'init.lua').read_text(encoding='utf-8')
-        assert 'custom.test.agent.init' in entry_text, "init.lua 应被注入 -test on 钩子"
+        assert '-test on' not in entry_text, "repair 应彻底清理 -test on 聊天钩子残留"
+        assert '_chat_switch_trg' not in entry_text, "repair 应清理 _chat_switch_trg 残留"
+        assert "print('keep business logic')" in entry_text, "原业务逻辑必须保留"
 
         # 3. 修复后再次 check 应全绿通过
         chk2 = provisioner.setup({
@@ -170,6 +187,37 @@ def test_setup_agent_lua_and_entry_hook_repair_and_check():
         assert chk2['isError'] is False, f"修复后 check 应通过: {chk2['content'][0]['text']}"
 
     print("  PASS test_setup_agent_lua_and_entry_hook_repair_and_check")
+
+
+def test_setup_plugin_sync_and_rules():
+    """测试 plugin_sync 对 SKILL.md、rules/AGENTS.md、plugin.json 的完整同步"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        plugin_root = tmp / 'plugin'
+        (plugin_root / 'skills' / 'war3-auto-test').mkdir(parents=True)
+        (plugin_root / 'skills' / 'war3-auto-test' / 'SKILL.md').write_text('# Skill', encoding='utf-8')
+        (plugin_root / 'rules').mkdir(parents=True)
+        (plugin_root / 'rules' / 'AGENTS.md').write_text('# Rules', encoding='utf-8')
+        (plugin_root / 'plugin.json').write_text('{}', encoding='utf-8')
+
+        fake_home = tmp / 'home'
+        fake_gemini_plugin = fake_home / '.gemini' / 'config' / 'plugins' / 'war3-tester'
+        fake_gemini_plugin.mkdir(parents=True)
+
+        cfg = MockConfig()
+        provisioner = EnvironmentProvisioner(cfg, plugin_root, logger=_make_logger())
+
+        with patch('pathlib.Path.home', return_value=fake_home):
+            res = provisioner.setup({
+                'mode': 'repair',
+                'components': ['plugin_sync'],
+            })
+            assert res['isError'] is False
+            assert (fake_gemini_plugin / 'skills' / 'war3-auto-test' / 'SKILL.md').exists()
+            assert (fake_gemini_plugin / 'rules' / 'AGENTS.md').exists()
+            assert (fake_gemini_plugin / 'plugin.json').exists()
+
+    print("  PASS test_setup_plugin_sync_and_rules")
 
 
 def test_setup_return_structure():
@@ -200,6 +248,7 @@ if __name__ == "__main__":
         test_setup_nopause_skipped,
         test_setup_agent_bridge_success,
         test_setup_agent_lua_and_entry_hook_repair_and_check,
+        test_setup_plugin_sync_and_rules,
         test_setup_return_structure,
     ]
 

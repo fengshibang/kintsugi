@@ -5,21 +5,22 @@ EnvironmentProvisioner - 测试与 Named Pipe Agent 环境安装/诊断/修复�
 
 职责：
 - 支持三种模式（mode）：
-  - 'repair'（默认）：检测并安装/覆盖修复所有缺失或损坏的组件
+  - 'repair'（默认）：检测并安装/覆盖修复所有缺失或损坏的组件，彻底清理历史残留
   - 'install'：仅安装缺失组件（已存在的 Lua 脚本不覆盖）
   - 'check'：只读体检（Doctor 模式），检查各组件完整性并输出诊断报告，不改文件
 - 支持七大组件（components）：
   1. 'socket'       : 部署 socket.dll + libwinpthread-1.dll 到项目 map/ 目录
-  2. 'http'         : 检查/安装 Flask + werkzeug Python 依赖
+  2. 'http' / 'python_deps' : 检查/安装全部 Python 依赖（Flask + Werkzeug + Pillow 实机截图）
   3. 'nopause'      : 部署 nopause.asi 到 War3 安装目录
-  4. 'agent_bridge' : 部署 agent_bridge.dll 到项目 map/ 目录（及 War3 目录 agent_bridge.asi）
-  5. 'agent_lua'    : 部署/修复 <test_dir>/agent/*.lua（含 oracle/*.lua）及 _war3_tester 断言/mock 库
-  6. 'entry_hook'   : 检查/修复 <test_dir>/init.lua 的 '-test on' / '-agent on' 聊天热启动钩子并清理残留 _test_off.lua
-  7. 'plugin_sync'  : 将插件源码同步至 Claude 插件缓存目录与全局技能目录（可选组件）
+  4. 'agent_bridge' : 部署 agent_bridge.dll 到项目 map/ 目录，清理 War3 目录旧 .asi 残留
+  5. 'agent_lua'    : 部署/修复 <test_dir>/agent/*.lua（15个模块，含原生Order契约与Oracle）及 _war3_tester 断言/mock 库
+  6. 'entry_hook'   : 校验入口文件，清理废弃的 -test on 聊天钩子残留、旧 inspect_handler 与 _test_off.lua
+  7. 'plugin_sync'  : 将插件源码（Skill、rules/AGENTS.md、plugin.json）同步至 Claude 缓存与 Antigravity 插件目录
 
 零反向依赖：只依赖标准库 + 收 config/plugin_root 参数，不引用 mcp_server / test_batch_runner / http_receiver
 """
 
+import re
 import sys
 import shutil
 import subprocess
@@ -46,33 +47,27 @@ AGENT_LUA_FILES = [
     "oracle/leak.lua",
 ]
 
-CHAT_HOOK_SNIPPET = """-- ============================================================================
--- 全局聊天命令：-test on / -test off / -agent on（由 war3-tester 自动注入/修复）
+# 纯净默认入口模板（零聊天命令侵入，纯文件标志 + Named Pipe 自启动）
+CLEAN_DEFAULT_INIT_TEMPLATE = """-- ============================================================================
+-- init.lua - 自动化测试入口（由 war3-tester 自动生成）
 -- ============================================================================
-_G.__auto_test_enabled = false
+local jass = require('jass.common')
 
-local _chat_switch_trg = war3.CreateTrigger(function()
-    local msg = GetEventPlayerChatString()
-    if not msg then return end
+-- toggle_test 关闭标志：本文件存在则自动测试不加载（手动游戏零干扰）
+do
+    local _off_ok = pcall(require, '@@PREFIX@@_war3_tester._test_off')
+    if _off_ok then
+        return
+    end
+end
 
-    local cmd = msg:match("^%-test%s+(%S+)") or msg:match("^%-agent%s+(%S+)")
-    if cmd == 'off' then
-        _G.__auto_test_enabled = false
-        DisplayTextToPlayer(GetTriggerPlayer(), 0, 0, "[AutoTest] 自动测试已关闭")
-    elseif cmd == 'on' then
-        _G.__auto_test_enabled = true
-        DisplayTextToPlayer(GetTriggerPlayer(), 0, 0, "[AutoTest] 自动测试已开启")
-        pcall(function()
-            local ag = require('@@AGENT_INIT_MODULE@@')
-            if ag and ag.start then
-                ag.start(true)
-            end
-        end)
+-- 加载 Named Pipe Agent 模块（空闲时零开销，点开即连）
+pcall(function()
+    local ag = require('@@PREFIX@@agent.init')
+    if ag and ag.start then
+        ag.start(false)
     end
 end)
-for i = 0, 15 do
-    jass.TriggerRegisterPlayerChatEvent(_chat_switch_trg, Player(i), '', false)
-end
 """
 
 
@@ -92,6 +87,34 @@ class EnvironmentProvisioner:
         self.config = config
         self.plugin_root = Path(plugin_root)
         self.logger = logger or logging.getLogger(__name__)
+
+    @staticmethod
+    def _clean_chat_hook_residue(text: str) -> tuple:
+        """
+        清理 init.lua 中历史注入的 -test on / -agent on 聊天触发器残留代码。
+        返回: (清理后的文本, 是否发生了清理)
+        """
+        # 1. 匹配聊天触发器定义块（从 -- 全局聊天命令 到 TriggerRegisterPlayerChatEvent 循环结束）
+        pattern_trigger = re.compile(
+            r'(--\s*=+[\r\n]+)?'
+            r'--\s*全局聊天命令[^\r\n]*[\r\n]+'
+            r'.*?'
+            r'for\s+i\s*=\s*0,\s*15\s+do[\r\n]+'
+            r'\s*jass\.TriggerRegisterPlayerChatEvent\(_chat_switch_trg,\s*Player\(i\),\s*[\'"].*?[\'"],\s*false\)[\r\n]+'
+            r'end[\r\n]*',
+            re.DOTALL
+        )
+        # 2. 匹配残留的提示日志与全局测试开关提示
+        pattern_print = re.compile(
+            r'(--\s*=+[\r\n]+)?'
+            r'--\s*全局测试开关[^\r\n]*[\r\n]+'
+            r'print\(["\']\[AutoTest\] 聊天命令：-test off.*?["\']\)[\r\n]*',
+            re.DOTALL
+        )
+        cleaned = pattern_trigger.sub('', text)
+        cleaned = pattern_print.sub('', cleaned)
+        changed = (cleaned != text)
+        return cleaned, changed
 
     @staticmethod
     def _safe_copy_binary(src: Path, dst: Path) -> str:
@@ -220,25 +243,32 @@ class EnvironmentProvisioner:
             except Exception as e:
                 results.append({"component": "socket", "status": "failed", "message": f"处理失败：{e}"})
 
-        # 2. http 组件
-        if "http" in components:
+        # 2. http / python_deps 组件（检查/安装 flask, werkzeug 及黑盒实机截图必需的 pillow）
+        if "http" in components or "python_deps" in components:
+            comp_name = "http" if "http" in components else "python_deps"
             try:
                 if is_check:
-                    proc = subprocess.run([sys.executable, "-c", "import flask, werkzeug"], capture_output=True, text=True, timeout=15)
+                    proc = subprocess.run([sys.executable, "-c", "import flask, werkzeug, PIL"], capture_output=True, text=True, timeout=15)
                     if proc.returncode == 0:
-                        results.append({"component": "http", "status": "success", "message": "检查通过：flask + werkzeug 已安装"})
+                        results.append({"component": comp_name, "status": "success", "message": "检查通过：全部 Python 依赖（flask + werkzeug + pillow）已安装"})
                     else:
-                        results.append({"component": "http", "status": "failed", "message": "未安装 flask 或 werkzeug"})
+                        # 细化排查缺失模块
+                        missing_modules = []
+                        for mod in ["flask", "werkzeug", "PIL"]:
+                            chk = subprocess.run([sys.executable, "-c", f"import {mod}"], capture_output=True, text=True)
+                            if chk.returncode != 0:
+                                missing_modules.append(mod if mod != "PIL" else "pillow (PIL)")
+                        results.append({"component": comp_name, "status": "failed", "message": f"未安装必要 Python 依赖：{', '.join(missing_modules)}"})
                 else:
-                    proc = subprocess.run([sys.executable, "-m", "pip", "install", "flask", "werkzeug"], capture_output=True, text=True, timeout=120)
+                    proc = subprocess.run([sys.executable, "-m", "pip", "install", "flask", "werkzeug", "pillow"], capture_output=True, text=True, timeout=120)
                     if proc.returncode == 0:
-                        results.append({"component": "http", "status": "success", "message": "flask + werkzeug 已安装（或已是最新）"})
+                        results.append({"component": comp_name, "status": "success", "message": "全部 Python 依赖（flask + werkzeug + pillow）已就绪"})
                     else:
-                        results.append({"component": "http", "status": "failed", "message": f"pip install 失败：{proc.stderr}"})
+                        results.append({"component": comp_name, "status": "failed", "message": f"pip install 失败：{proc.stderr}"})
             except subprocess.TimeoutExpired:
-                results.append({"component": "http", "status": "failed", "message": "pip 操作超时"})
+                results.append({"component": comp_name, "status": "failed", "message": "pip 操作超时"})
             except Exception as e:
-                results.append({"component": "http", "status": "failed", "message": f"http 组件异常：{e}"})
+                results.append({"component": comp_name, "status": "failed", "message": f"Python 依赖组件异常：{e}"})
 
         # 3. nopause 组件
         if "nopause" in components:
@@ -353,7 +383,7 @@ class EnvironmentProvisioner:
             except Exception as e:
                 results.append({"component": "agent_lua", "status": "failed", "message": f"处理失败：{e}"})
 
-        # 6. entry_hook 组件（检查/修复 auto-test/init.lua 的 -test on 聊天钩子 & 清理 _test_off.lua）
+        # 6. entry_hook 组件（校验入口文件，清理废弃聊天钩子残留、旧 inspect_handler 与 _test_off.lua）
         if "entry_hook" in components:
             try:
                 if not project_root:
@@ -366,16 +396,25 @@ class EnvironmentProvisioner:
 
                     if is_check:
                         issues = []
+                        notices = []
                         if not init_lua.exists():
                             issues.append(f"缺少入口文件 {init_lua}")
                         else:
                             init_text = init_lua.read_text(encoding="utf-8", errors="ignore")
-                            if "agent.init" not in init_text:
-                                issues.append("init.lua 未包含 agent.init 聊天启动钩子 (-test on)")
+                            _, has_chat_residue = self._clean_chat_hook_residue(init_text)
+                            if has_chat_residue:
+                                notices.append("检测到旧版 -test on 聊天钩子残留（建议执行 repair 清理）")
                         if test_off.exists():
-                            issues.append(f"存在关闭标志 {test_off}（自动测试当前处于禁用状态）")
+                            notices.append(f"存在关闭标志 {test_off.name}（当前处于人工测试挂起状态）")
+                        legacy_inspect = test_dir / "_war3_tester" / "inspect_handler.lua"
+                        if legacy_inspect.exists():
+                            notices.append(f"检测到废弃 HTTP 轮询脚本 {legacy_inspect.name}（建议执行 repair 清理）")
+
                         if not issues:
-                            results.append({"component": "entry_hook", "status": "success", "message": f"检查通过：{init_lua} 已包含 -test on 钩子且无 _test_off 阻塞"})
+                            msg = f"检查通过：入口文件 {init_lua.name} 就绪"
+                            if notices:
+                                msg += f"（注意：{'；'.join(notices)}）"
+                            results.append({"component": "entry_hook", "status": "success", "message": msg})
                         else:
                             results.append({"component": "entry_hook", "status": "failed", "message": "；".join(issues)})
                     else:
@@ -393,28 +432,25 @@ class EnvironmentProvisioner:
                             (test_dir / "run_auto_test.lua").unlink()
                             actions_taken.append("已清理双轨冗余文件 run_auto_test.lua")
 
-                        agent_init_mod = f"{prefix}agent.init"
-                        hook_code = CHAT_HOOK_SNIPPET.replace("@@AGENT_INIT_MODULE@@", agent_init_mod)
                         if not init_lua.exists():
                             init_lua.parent.mkdir(parents=True, exist_ok=True)
-                            init_lua.write_text(
-                                "local jass = require('jass.common')\n\n" + hook_code + "\n",
-                                encoding="utf-8"
-                            )
-                            actions_taken.append(f"已创建默认入口 {init_lua} 并注入 -test on 钩子")
+                            default_content = CLEAN_DEFAULT_INIT_TEMPLATE.replace("@@PREFIX@@", prefix)
+                            init_lua.write_text(default_content, encoding="utf-8")
+                            actions_taken.append(f"已创建纯净测试入口 {init_lua.name}（零聊天命令侵入）")
                         else:
                             init_text = init_lua.read_text(encoding="utf-8", errors="ignore")
-                            if "agent.init" not in init_text:
-                                init_lua.write_text(hook_code + "\n" + init_text, encoding="utf-8")
-                                actions_taken.append(f"已在 {init_lua} 顶部注入 -test on / -agent on 启动钩子")
+                            cleaned_text, cleaned = self._clean_chat_hook_residue(init_text)
+                            if cleaned:
+                                init_lua.write_text(cleaned_text, encoding="utf-8")
+                                actions_taken.append(f"已成功清理 {init_lua.name} 中的 -test on 聊天钩子残留代码")
                             else:
-                                actions_taken.append(f"{init_lua} 钩子已就绪")
+                                actions_taken.append(f"{init_lua.name} 入口保持整洁")
 
                         results.append({"component": "entry_hook", "status": "success", "message": "；".join(actions_taken)})
             except Exception as e:
                 results.append({"component": "entry_hook", "status": "failed", "message": f"处理失败：{e}"})
 
-        # 7. plugin_sync 组件（同步插件源码到 Claude Code 插件缓存、Antigravity 本地插件与全局 Skill 目录）
+        # 7. plugin_sync 组件（同步插件源码到 Claude Code 插件缓存、Antigravity 本地插件与全局 Skill/规则目录）
         if "plugin_sync" in components:
             try:
                 home = Path.home()
@@ -424,7 +460,7 @@ class EnvironmentProvisioner:
                     for ver_dir in cache_root.iterdir():
                         if ver_dir.is_dir():
                             if not is_check:
-                                for sub in ["bin", "assets", "server", "scripts", "skills", "commands", ".claude-plugin"]:
+                                for sub in ["bin", "assets", "server", "scripts", "skills", "commands", ".claude-plugin", "rules"]:
                                     src_sub = plugin_root / sub
                                     dst_sub = ver_dir / sub
                                     if src_sub.exists():
@@ -441,13 +477,32 @@ class EnvironmentProvisioner:
                         home / ".claude" / "skills" / "war3-auto-test" / "SKILL.md",
                     ]
                     for dst_skill in agy_skill_targets:
-                        if dst_skill.parent.parent.exists():
+                        target_root = dst_skill.parent.parent  # 如 plugins/war3-tester/skills 或 config/skills
+                        if target_root.exists() or target_root.parent.exists():
                             if not is_check:
                                 dst_skill.parent.mkdir(parents=True, exist_ok=True)
                                 shutil.copy2(skill_src, dst_skill)
                             synced_targets.append(str(dst_skill.parent))
 
-                msg = f"{'检查发现' if is_check else '已同步'} {len(synced_targets)} 个本地插件/Skill 目录"
+                # 同步 Antigravity 插件根目录的规则 (rules/AGENTS.md) 与清单文件 (plugin.json, README.md)
+                rules_src = plugin_root / "rules" / "AGENTS.md"
+                agy_plugin_dir = home / ".gemini" / "config" / "plugins" / "war3-tester"
+                if agy_plugin_dir.exists():
+                    if rules_src.exists():
+                        dst_rule = agy_plugin_dir / "rules" / "AGENTS.md"
+                        if not is_check:
+                            dst_rule.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(rules_src, dst_rule)
+                        synced_targets.append(str(dst_rule))
+                    for meta_name in ["plugin.json", "README.md"]:
+                        src_meta = plugin_root / meta_name
+                        if src_meta.exists():
+                            dst_meta = agy_plugin_dir / meta_name
+                            if not is_check:
+                                shutil.copy2(src_meta, dst_meta)
+                            synced_targets.append(str(dst_meta))
+
+                msg = f"{'检查发现' if is_check else '已同步'} {len(synced_targets)} 个本地插件/Skill/规则文件"
                 results.append({"component": "plugin_sync", "status": "success", "message": msg, "files": synced_targets})
             except Exception as e:
                 results.append({"component": "plugin_sync", "status": "failed", "message": f"同步失败：{e}"})

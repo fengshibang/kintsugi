@@ -1,5 +1,22 @@
 # Changelog — war3-tester
 
+## 0.21.9 - 2026-11-10
+
+### 环境修复重构（安装全部依赖、移除聊天钩子注入与历史残留彻底清理）
+
+1. **补齐黑盒测试必需依赖（Pillow / PIL）**：
+   - `setup_environment` 的 Python 依赖组件扩展为 `flask + werkzeug + pillow`；
+   - 自动检测并安装 `pillow`，彻底解决黑盒拟真测试与双重证据链中 `take_screenshot` 保存 PNG 截图时的依赖缺失问题。
+2. **彻底废除 `-test on` / `-agent on` 聊天钩子注入**：
+   - 对齐“零命令直接启动”铁律，彻底删除向 `init.lua` 强插聊天监听器的侵入式逻辑；
+   - `check` 模式不再将“缺少聊天启动钩子”判定为报错，只要入口文件就绪即为健康；
+   - 若项目不存在 `init.lua`，生成零聊天命令侵入的纯净默认引导模板。
+3. **新增历史遗留代码与残留标志自动剥离清理**：
+   - 在 `repair` 执行时，自动正则匹配并彻底清除 `init.lua` 中历史遗留的 `_chat_switch_trg` 聊天触发器残留代码；
+   - 自动清理 `_war3_tester/_test_off.lua`、废弃的 HTTP 轮询脚本 `inspect_handler.lua`、双轨冗余脚本 `run_auto_test.lua`，以及 War3 目录旧版 `.asi` 插件。
+4. **增强 Antigravity 插件与规则同步 (`plugin_sync`)**：
+   - `plugin_sync` 支持自动同步 `rules/AGENTS.md`、`plugin.json`、`README.md` 到 Antigravity 本地插件目录，确保最新的铁律规范随时与插件主分支保持一致。
+
 ## 0.21.8 - 2026-11-10
 
 ### 架构演进与通用化解耦（纯原生 Order 契约、防伪造回调与提权清理）
