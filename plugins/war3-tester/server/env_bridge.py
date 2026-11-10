@@ -580,7 +580,7 @@ def enum_callback(hwnd, lparam):
             if kw and (kw.lower() in title.lower() or kw.lower() in cls_name.lower()):
                 rect = RECT()
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                if (rect.right - rect.left) > 400 and (rect.bottom - rect.top) > 300:
+                if (rect.right - rect.left) > 400 or user32.IsIconic(hwnd) or 'warcraft' in cls_name.lower():
                     found_hwnd = hwnd
                     found_title = title or cls_name
                     return False
@@ -596,6 +596,13 @@ user32.EnumWindows(callback, 0)
 if found_hwnd is None:
     print("未找到 War3 窗口")
     exit(1)
+
+import time
+user32.ShowWindow(found_hwnd, 9)
+user32.BringWindowToTop(found_hwnd)
+user32.SetForegroundWindow(found_hwnd)
+user32.SetWindowPos(found_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+time.sleep(0.3)
 
 print(f"找到窗口: {{found_title}}")
 
@@ -1275,7 +1282,7 @@ def enum_callback(hwnd, lparam):
             if kw and (kw.lower() in title.lower() or kw.lower() in cls_name.lower()):
                 rect = RECT()
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                if (rect.right - rect.left) > 400 and (rect.bottom - rect.top) > 300:
+                if (rect.right - rect.left) > 400 or user32.IsIconic(hwnd) or 'warcraft' in cls_name.lower():
                     found_hwnd = hwnd
                     found_title = title or cls_name
                     return False
@@ -1287,6 +1294,13 @@ user32.EnumWindows(callback, 0)
 if found_hwnd is None:
     print("未找到 War3 窗口")
     exit(1)
+
+import time
+user32.ShowWindow(found_hwnd, 9)
+user32.BringWindowToTop(found_hwnd)
+user32.SetForegroundWindow(found_hwnd)
+user32.SetWindowPos(found_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+time.sleep(0.3)
 
 rect = RECT()
 user32.GetWindowRect(found_hwnd, ctypes.byref(rect))
