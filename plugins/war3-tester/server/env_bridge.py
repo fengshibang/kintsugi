@@ -548,6 +548,13 @@ import os
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 
+try:
+    hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+except Exception:
+    pass
+
 # 查找窗口
 keywords = ['{window_title or ""}', '魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
 found_hwnd = None
@@ -566,11 +573,16 @@ def enum_callback(hwnd, lparam):
         text = ctypes.create_unicode_buffer(256)
         user32.GetWindowTextW(hwnd, text, 256)
         title = text.value
-        if title:
-            for kw in keywords:
-                if kw and kw.lower() in title.lower():
+        cbuf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, cbuf, 256)
+        cls_name = cbuf.value
+        for kw in keywords:
+            if kw and (kw.lower() in title.lower() or kw.lower() in cls_name.lower()):
+                rect = RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                if (rect.right - rect.left) > 400 and (rect.bottom - rect.top) > 300:
                     found_hwnd = hwnd
-                    found_title = title
+                    found_title = title or cls_name
                     return False
     return True
 
@@ -1233,6 +1245,13 @@ import os
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 
+try:
+    hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
+    if hdesk:
+        user32.SetThreadDesktop(hdesk)
+except Exception:
+    pass
+
 keywords = ['{window_title or ""}', '魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
 found_hwnd = None
 found_title = ""
@@ -1249,11 +1268,16 @@ def enum_callback(hwnd, lparam):
         text = ctypes.create_unicode_buffer(256)
         user32.GetWindowTextW(hwnd, text, 256)
         title = text.value
-        if title:
-            for kw in keywords:
-                if kw and kw.lower() in title.lower():
+        cbuf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, cbuf, 256)
+        cls_name = cbuf.value
+        for kw in keywords:
+            if kw and (kw.lower() in title.lower() or kw.lower() in cls_name.lower()):
+                rect = RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                if (rect.right - rect.left) > 400 and (rect.bottom - rect.top) > 300:
                     found_hwnd = hwnd
-                    found_title = title
+                    found_title = title or cls_name
                     return False
     return True
 
@@ -1338,7 +1362,7 @@ print(f"截图已保存: {str(screenshot_path).replace(chr(92), '/')}")
                     'filename': filename,
                 }
             else:
-                error_msg = result.get('stderr', result.get('error', '截图失败'))
+                error_msg = (result.get('stderr') or '').strip() or (result.get('stdout') or '').strip() or result.get('error', '截图失败')
                 return {'success': False, 'error': error_msg}
         finally:
             try:

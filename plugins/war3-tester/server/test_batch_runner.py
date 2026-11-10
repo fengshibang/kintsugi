@@ -599,6 +599,14 @@ class TestBatchRunner:
                     pre_screenshots = self._take_failure_screenshot(test_name)
                     pre_inspect_snapshot = self._collect_inspect_snapshot()
 
+            if outcome == 'result' and result_data and result_data.get('success'):
+                try:
+                    res_ss = self.executor.take_screenshot(test_name, filename="final_verification.png")
+                    if res_ss.get('success'):
+                        pre_screenshots.append(res_ss.get('path') or res_ss.get('path_wsl'))
+                except Exception as e:
+                    self.logger.warning(f"成功截图异常: {e}")
+
             # 6. 停止游戏（先经命名管道让游戏自行退出，再走进程级兜底）
             self.graceful_quit_via_pipe()
             self.executor.stop_game()
@@ -863,6 +871,13 @@ class TestBatchRunner:
                     "elapsed_ms": evt.get("elapsed_ms", 0),
                     "timestamp": evt.get("timestamp", ""),
                 })
+                detail = evt.get("detail") or {}
+                step_name = evt.get("step", "")
+                if detail.get("screenshot") or "inspect" in step_name or "ui" in step_name:
+                    try:
+                        self.executor.take_screenshot(test_name, filename=f"{step_name}.png")
+                    except Exception as e:
+                        self.logger.warning(f"事件驱动截图异常: {e}")
             elif kind == "test_log":
                 self.store.record_log(test_name, {
                     "level": evt.get("level", "info"),
@@ -871,6 +886,13 @@ class TestBatchRunner:
                     "context": evt.get("context") or {},
                     "timestamp": evt.get("timestamp", ""),
                 })
+                detail = evt.get("detail") or {}
+                step_name = evt.get("step", "")
+                if detail.get("screenshot") or "inspect" in step_name or "ui" in step_name:
+                    try:
+                        self.executor.take_screenshot(test_name, filename=f"{step_name}.png")
+                    except Exception as e:
+                        self.logger.warning(f"事件驱动截图异常: {e}")
             elif kind in ("test_error", "lua_error"):
                 self.store.record_error(evt.get("test_name") or test_name, {
                     "test_name": evt.get("test_name") or test_name,
@@ -878,6 +900,13 @@ class TestBatchRunner:
                     "traceback": evt.get("traceback", ""),
                     "timestamp": evt.get("timestamp", ""),
                 })
+                detail = evt.get("detail") or {}
+                step_name = evt.get("step", "")
+                if detail.get("screenshot") or "inspect" in step_name or "ui" in step_name:
+                    try:
+                        self.executor.take_screenshot(test_name, filename=f"{step_name}.png")
+                    except Exception as e:
+                        self.logger.warning(f"事件驱动截图异常: {e}")
             elif kind == "test_result":
                 snap = self.store.snapshot(test_name)
                 res_obj = dict(evt)
