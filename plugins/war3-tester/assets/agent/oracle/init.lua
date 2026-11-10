@@ -89,5 +89,6 @@ pcall(require, 'script.src.auto-test.agent.oracle.numeric')
 pcall(require, 'script.src.auto-test.agent.oracle.consistency')
 pcall(require, 'script.src.auto-test.agent.oracle.leak')
 pcall(require, 'script.src.auto-test.agent.oracle.stuck')
+pcall(require, 'script.src.auto-test.agent.oracle.anti_cheat')
 
 return oracle

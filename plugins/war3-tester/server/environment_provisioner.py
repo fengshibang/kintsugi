@@ -27,6 +27,7 @@ import subprocess
 import logging
 from pathlib import Path
 from datetime import datetime
+from test_cheat_auditor import TestCheatAuditor
 
 
 AGENT_LUA_FILES = [
@@ -45,6 +46,7 @@ AGENT_LUA_FILES = [
     "oracle/stuck.lua",
     "oracle/consistency.lua",
     "oracle/leak.lua",
+    "oracle/anti_cheat.lua",
 ]
 
 # 纯净默认入口模板（零聊天命令侵入，纯文件标志 + Named Pipe 自启动）
@@ -410,6 +412,12 @@ class EnvironmentProvisioner:
                         if legacy_inspect.exists():
                             notices.append(f"检测到废弃 HTTP 轮询脚本 {legacy_inspect.name}（建议执行 repair 清理）")
 
+                        # 审计测试用例三盒纯度与白盒作弊存根
+                        purity = TestCheatAuditor.audit_directory(test_dir)
+                        if purity["spoofed_blackbox"]:
+                            spoofed_names = [s["filename"] for s in purity["spoofed_blackbox"][:3]]
+                            notices.append(f"发现 {len(purity['spoofed_blackbox'])} 个命名为黑盒但包含作弊代码的用例（如 {spoofed_names}），严禁作为黑盒验收！")
+
                         if not issues:
                             msg = f"检查通过：入口文件 {init_lua.name} 就绪"
                             if notices:
@@ -431,6 +439,10 @@ class EnvironmentProvisioner:
                         if (test_dir / "wzns_auto_test.lua").exists() and (test_dir / "run_auto_test.lua").exists():
                             (test_dir / "run_auto_test.lua").unlink()
                             actions_taken.append("已清理双轨冗余文件 run_auto_test.lua")
+
+                        purity = TestCheatAuditor.audit_directory(test_dir)
+                        if purity["spoofed_blackbox"]:
+                            actions_taken.append(f"三盒纯度体检：发现 {len(purity['spoofed_blackbox'])} 个伪黑盒存根需重构（纯黑盒 {len(purity['black_box'])}，灰盒 {len(purity['gray_box'])}）")
 
                         if not init_lua.exists():
                             init_lua.parent.mkdir(parents=True, exist_ok=True)

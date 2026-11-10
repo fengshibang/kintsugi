@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from logger import setup_logger
+from test_cheat_auditor import TestCheatAuditor
 
 
 class TestBatchRunner:
@@ -117,11 +118,16 @@ class TestBatchRunner:
             ttype = self._infer_test_type(f)
             tlayer = self._infer_test_layer(f)
             est = self._estimate_test_time(ttype, tlayer)
+            audit = TestCheatAuditor.audit_file(f)
             tests.append({
                 'test_name': test_name,
                 'file': f.name,
                 'type': ttype,
                 'layer': tlayer,
+                'box_tier': audit.get('box_tier', 'unknown'),
+                'has_cheats': audit.get('has_cheats', False),
+                'cheat_types': audit.get('cheat_types', []),
+                'is_spoofed_blackbox': audit.get('is_spoofed_blackbox', False),
                 'est_seconds': est,
             })
 

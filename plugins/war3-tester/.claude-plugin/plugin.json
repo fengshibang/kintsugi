@@ -1,5 +1,5 @@
 {
   "name": "war3-tester",
-  "version": "0.22.0",
+  "version": "0.22.1",
   "description": "通用 War3 地图自动测试与 Named Pipe LLM Agent 探索 MCP 插件：支持桌面秒级单测、实机集成测试、Windows 命名管道 (\\\\.\\pipe\\war3_agent) 实时查询与 LLM 步进探索/五大 Oracle 自动巡检。"
 }

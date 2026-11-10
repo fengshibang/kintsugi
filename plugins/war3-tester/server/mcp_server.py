@@ -271,9 +271,19 @@ class War3TesterMCP:
             if discovery.get("success"):
                 tests = discovery.get("tests", [])
                 lines = [f"发现 {len(tests)} 个测试（估算 {discovery.get('total_est_seconds')}s）："]
+                spoofed_count = 0
                 for t in tests:
                     layer_info = f", layer={t.get('layer', 'integration')}"
-                    lines.append(f"  - {t['test_name']} ({t['type']}{layer_info}, ~{t['est_seconds']}s)")
+                    tier_info = f", box={t.get('box_tier', 'unknown')}"
+                    warning = ""
+                    if t.get("is_spoofed_blackbox"):
+                        spoofed_count += 1
+                        warning = f" ⚠️【伪黑盒风险: 包含作弊特征 {','.join(t.get('cheat_types', []))}】"
+                    elif t.get("box_tier") == "white_box_stub":
+                        warning = f" (白盒存根: {','.join(t.get('cheat_types', []))})"
+                    lines.append(f"  - {t['test_name']} ({t['type']}{layer_info}{tier_info}, ~{t['est_seconds']}s){warning}")
+                if spoofed_count > 0:
+                    lines.insert(0, f"> ⚠️ **【三盒纯度警告】检测到 {spoofed_count} 个用例命名为黑盒/E2E 但包含白盒作弊代码，请勿作为黑盒验收依据！**\n")
                 return {"content": [{"type": "text", "text": f"## 测试发现\n\n时间：{timestamp}\n\n" + "\n".join(lines)}]}
             return {"content": [{"type": "text", "text": f"[FAIL] {discovery.get('error', '未知错误')}"}], "isError": True}
 
@@ -1294,7 +1304,7 @@ async def run_server():
                             },
                             "serverInfo": {
                                 "name": "war3-tester",
-                                "version": "0.22.0"
+                                "version": "0.22.1"
                             }
                         }
                     }

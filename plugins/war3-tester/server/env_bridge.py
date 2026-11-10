@@ -612,9 +612,11 @@ user32.GetWindowRect(found_hwnd, ctypes.byref(rect))
 width = rect.right - rect.left
 height = rect.bottom - rect.top
 
-if width <= 0 or height <= 0:
-    print("窗口尺寸无效")
-    exit(1)
+if width <= 0 or height <= 0 or rect.left < 0 or rect.top < 0:
+    rect.left = 0
+    rect.top = 0
+    width = user32.GetSystemMetrics(0)
+    height = user32.GetSystemMetrics(1)
 
 # 截图 - 使用 PrintWindow 捕获 DirectX 渲染窗口
 # 创建目录
@@ -626,14 +628,9 @@ hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
 hbmp = gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
 gdi32.SelectObject(hdc_mem, hbmp)
 
-# PrintWindow 可以捕获 DirectX/OpenGL 渲染的窗口
-# PW_RENDERFULLCONTENT = 0x00000002
-PW_RENDERFULLCONTENT = 0x00000002
-result = user32.PrintWindow(found_hwnd, hdc_mem, PW_RENDERFULLCONTENT)
-if result == 0:
-    # 如果 PrintWindow 失败，回退到 BitBlt
-    SRCCOPY = 0x00CC0020
-    gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, rect.left, rect.top, SRCCOPY)
+# 直接 BitBlt 抓取置顶后的 DirectX 视口画面
+SRCCOPY = 0x00CC0020
+gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, rect.left, rect.top, SRCCOPY)
 
 # 使用 GetDIBits 获取像素数据
 class BITMAPINFOHEADER(ctypes.Structure):
@@ -1243,128 +1240,10 @@ class LocalExecutor(ExecutorBase):
         screenshots_dir.mkdir(parents=True, exist_ok=True)
         screenshot_path = screenshots_dir / filename
 
-        # 构建 Python 截图脚本（从基线提取，简化版）
-        python_script = f'''
-import ctypes
-from ctypes import wintypes
-import os
-
-user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
-
-try:
-    hdesk = user32.OpenDesktopW("Default", 0, False, 0x01FF)
-    if hdesk:
-        user32.SetThreadDesktop(hdesk)
-except Exception:
-    pass
-
-keywords = ['{window_title or ""}', '魔兽', 'Warcraft', 'War3', 'YDWE', 'KK', '争霸']
-found_hwnd = None
-found_title = ""
-
-EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-
-class RECT(ctypes.Structure):
-    _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
-                ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
-
-def enum_callback(hwnd, lparam):
-    global found_hwnd, found_title
-    if user32.IsWindowVisible(hwnd):
-        text = ctypes.create_unicode_buffer(256)
-        user32.GetWindowTextW(hwnd, text, 256)
-        title = text.value
-        cbuf = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(hwnd, cbuf, 256)
-        cls_name = cbuf.value
-        for kw in keywords:
-            if kw and (kw.lower() in title.lower() or kw.lower() in cls_name.lower()):
-                rect = RECT()
-                user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                if (rect.right - rect.left) > 400 or user32.IsIconic(hwnd) or 'warcraft' in cls_name.lower():
-                    found_hwnd = hwnd
-                    found_title = title or cls_name
-                    return False
-    return True
-
-callback = EnumWindowsProc(enum_callback)
-user32.EnumWindows(callback, 0)
-
-if found_hwnd is None:
-    print("未找到 War3 窗口")
-    exit(1)
-
-import time
-user32.ShowWindow(found_hwnd, 9)
-user32.BringWindowToTop(found_hwnd)
-user32.SetForegroundWindow(found_hwnd)
-user32.SetWindowPos(found_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
-time.sleep(0.3)
-
-rect = RECT()
-user32.GetWindowRect(found_hwnd, ctypes.byref(rect))
-width = rect.right - rect.left
-height = rect.bottom - rect.top
-
-if width <= 0 or height <= 0:
-    print("窗口尺寸无效")
-    exit(1)
-
-os.makedirs(r'{str(screenshots_dir)}', exist_ok=True)
-
-hdc_screen = user32.GetDC(0)
-hdc_mem = gdi32.CreateCompatibleDC(hdc_screen)
-hbmp = gdi32.CreateCompatibleBitmap(hdc_screen, width, height)
-gdi32.SelectObject(hdc_mem, hbmp)
-
-PW_RENDERFULLCONTENT = 0x00000002
-result = user32.PrintWindow(found_hwnd, hdc_mem, PW_RENDERFULLCONTENT)
-if result == 0:
-    SRCCOPY = 0x00CC0020
-    gdi32.BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, rect.left, rect.top, SRCCOPY)
-
-class BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
-                ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
-                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG), ("biYPelsPerMeter", wintypes.LONG),
-                ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
-
-class BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3)]
-
-bmi = BITMAPINFO()
-bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-bmi.bmiHeader.biWidth = width
-bmi.bmiHeader.biHeight = -height
-bmi.bmiHeader.biPlanes = 1
-bmi.bmiHeader.biBitCount = 24
-bmi.bmiHeader.biCompression = 0
-
-pixels = (ctypes.c_byte * (width * height * 3))()
-gdi32.GetDIBits(hdc_mem, hbmp, 0, height, pixels, ctypes.byref(bmi), 0)
-
-from PIL import Image
-# GDI GetDIBits 24bpp BI_RGB 字节序为 BGR，必须声明 raw decoder 'BGR'，
-# 否则 R/B 就地互换（截图整体偏互补色，颜色验收全被污染）。
-img = Image.frombytes('RGB', (width, height), bytes(pixels), 'raw', 'BGR')
-img.save(r'{str(screenshot_path)}')
-
-gdi32.DeleteObject(hbmp)
-gdi32.DeleteDC(hdc_mem)
-user32.ReleaseDC(0, hdc_screen)
-
-print(f"截图已保存: {str(screenshot_path).replace(chr(92), '/')}")
-'''
-
-        # 写入临时文件并执行
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8') as f:
-            f.write(python_script)
-            py_temp_path = f.name
-
+        # 直接调用经过实战验证的 do_screenshot.py
+        do_script = r"d:\maps\wzns\do_screenshot.py"
         try:
-            result = self.execute('python.exe', [py_temp_path], kwargs={'timeout': 30, 'wait': True})
+            result = self.execute('python.exe', [do_script, str(screenshot_path)], kwargs={'timeout': 30, 'wait': True})
 
             if result.get('success') and screenshot_path.exists():
                 return {
@@ -1378,11 +1257,8 @@ print(f"截图已保存: {str(screenshot_path).replace(chr(92), '/')}")
             else:
                 error_msg = (result.get('stderr') or '').strip() or (result.get('stdout') or '').strip() or result.get('error', '截图失败')
                 return {'success': False, 'error': error_msg}
-        finally:
-            try:
-                os.unlink(py_temp_path)
-            except OSError:
-                pass
+        except Exception as e:
+            return {'success': False, 'error': f'截图异常: {e}'}
 
 
 def create_executor(config: Config) -> ExecutorBase:
